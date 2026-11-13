@@ -85,7 +85,7 @@ pub fn build(idx: &VaultIndex, vault_id: &str) -> String {
                 }
             };
             if to != from {
-                edges.insert((from.min(to), from.max(to)));
+                edges.insert((from, to)); // direction kept: from links to `to`
             }
         }
     }
@@ -100,6 +100,8 @@ pub struct Links {
     pub backlinks: HashMap<String, Vec<String>>,
     /// original path -> note path
     pub note_for_original: HashMap<String, String>,
+    /// lowercase tag -> notes that use it
+    pub tags: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Links {
@@ -116,6 +118,9 @@ impl Links {
                 if let Some(orig) = idx.resolve(&src).filter(|o| crate::vault::is_office(o)) {
                     out.note_for_original.entry(orig.to_string()).or_insert_with(|| note.clone());
                 }
+            }
+            for tag in crate::markdown::note_tags(&text) {
+                out.tags.entry(tag.to_lowercase()).or_default().push(note.clone());
             }
             let mut seen: HashSet<&str> = HashSet::new();
             // Links in the note body and in its Connections block both count as links from this note.

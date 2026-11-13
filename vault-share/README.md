@@ -134,8 +134,30 @@ DATA_DIR=./data COOKIE_SECURE=false BIND_ADDR=127.0.0.1:8080 cargo run
 
 Then open http://127.0.0.1:8080. The initial admin password is printed in the log. Run the unit tests with `cargo test`.
 
+## Editing
+
+Anyone who can read a vault can also edit it (create, edit, rename, move, delete notes and folders, paste images). Think about that before sharing a vault with everyone.
+
+- **Editor:** open a note and press **Ctrl+E** (or the pencil). It autosaves, completes `[[links]]`, and pastes or drops images as attachments. A save is refused (and you are asked what to do) if the note changed on the server since you opened it.
+- **Files:** use the buttons above the file list, or right-click an item. Renaming a note can update links in other notes. Items can be dragged onto folders.
+- **Deleting is safe:** things move to a hidden `.trash` folder inside the vault (not shown on the site, but present on disk and in backups).
+- **Re-uploading replaces everything**, including edits made on the site. The previous version is saved first as a zip (the last three are kept, under **Admin → the vault → Backups**).
+- Every create, rename, delete and upload is recorded in the audit log.
+
+## Features beyond reading
+
+Tabs, split view (Alt+click a link, or right-click a note), hover previews, bookmarks, search with operators (`file:`, `path:`, `tag:`, `content:`, `-word`, `"phrase"`), a tags list, outline and links panels, properties, callouts, math (KaTeX), Mermaid diagrams, graph view with groups, forces, display options and arrows, a quick switcher (Ctrl+O) and Word/PowerPoint viewers.
+
+## Building the browser bundles
+
+`static/office.js`, `editor.js`, `render.js` and `mermaid.js` are built from `viewer/` and committed:
+
+```bash
+cd viewer && npm install && npm run build
+```
+
 ## Not supported (yet)
 
-- Obsidian plugins (Dataview, Excalidraw rendering and so on), math rendering, Mermaid diagrams, Canvas view. These files are kept but shown as downloads or plain text.
+- Obsidian plugins (Dataview, Excalidraw rendering and so on) and Canvas view. These files are kept but shown as downloads or plain text.
 - Note transclusion (`![[Other note]]` renders as a link instead of inlining the note).
-- Editing in the browser. The vault is read-only for everyone; update it by re-uploading.
+- Real-time collaboration: two people editing the same note will get a conflict prompt rather than merged changes.

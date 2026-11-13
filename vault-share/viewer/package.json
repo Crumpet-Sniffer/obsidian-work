@@ -2,7 +2,26 @@
   "name": "vault-share-office-viewer",
   "private": true,
   "description": "Browser bundle (static/office.js) that renders .docx/.pptx originals, based on Microsidian's viewer.",
-  "scripts": { "build": "esbuild office.js --bundle --minify --format=iife --target=es2020 --outfile=../static/office.js" },
-  "dependencies": { "docx-preview": "0.4.1", "jszip": "3.10.2", "pptx-preview": "1.0.7" },
-  "devDependencies": { "esbuild": "^0.25.0" }
+  "scripts": {
+    "build": "esbuild office.js --bundle --minify --format=iife --target=es2020 --outfile=../static/office.js && esbuild editor.js --bundle --minify --format=iife --target=es2020 --outfile=../static/editor.js && esbuild render.js --bundle --minify --format=iife --target=es2020 --outfile=../static/render.js && esbuild mermaid-entry.js --bundle --minify --format=iife --target=es2020 --outfile=../static/mermaid.js"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.4",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@lezer/highlight": "^1.2.5",
+    "@lezer/markdown": "^1.8.1",
+    "docx-preview": "0.4.1",
+    "jszip": "3.10.2",
+    "katex": "^0.19.1",
+    "mermaid": "^12.3.0",
+    "pptx-preview": "1.0.7"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
 }

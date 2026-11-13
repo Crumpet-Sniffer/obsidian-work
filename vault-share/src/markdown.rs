@@ -12,6 +12,7 @@ use std::{
 };
 
 use ammonia::Builder;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
 
 use crate::vault::{esc, file_url, link_url, mime_for, note_url, Kind, VaultIndex};
@@ -23,7 +24,8 @@ pub struct RenderCtx<'a> {
 
 pub fn render(src: &str, ctx: &RenderCtx) -> String {
     let body = strip_frontmatter(src);
-    let pre = preprocess(body, ctx);
+    let (body, maths) = protect_math(body);
+    let pre = preprocess(&body, ctx);
 
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
@@ -36,7 +38,7 @@ pub fn render(src: &str, ctx: &RenderCtx) -> String {
     let mut out = String::with_capacity(pre.len() * 3 / 2);
     html::push_html(&mut out, events.into_iter());
     let out = callouts(&out);
-    sanitizer().clean(&out).to_string()
+    restore_math(sanitizer().clean(&out).to_string(), &maths)
 }
 
 // ---------------------------------------------------------------- properties and callouts
@@ -106,7 +108,9 @@ fn clip(s: &str, max: usize) -> String {
 fn prop_value_html(key: &str, v: &str, ctx: &RenderCtx) -> String {
     let v = clip(v, 500);
     if matches!(key.to_ascii_lowercase().as_str(), "tags" | "tag") {
-        return format!("<span class=\"tag\">{}</span>", esc(v.trim_start_matches('#')));
+        let tag = v.trim_start_matches('#');
+        let q = utf8_percent_encode(&format!("tag:#{tag}"), NON_ALPHANUMERIC).to_string();
+        return format!("<a class=\"tag\" href=\"/v/{}/search?q={}\">{}</a>", ctx.vault_id, q, esc(tag));
     }
     let wiki = v.strip_prefix("[[").and_then(|x| x.strip_suffix("]]"));
     let target = wiki.map(|w| w.split('|').next().unwrap_or(w).trim()).unwrap_or(v.as_str());
@@ -246,6 +250,204 @@ pub fn callouts(html: &str) -> String {
         rest = remainder;
     }
     out.push_str(rest);
+    out
+}
+
+/// Rewrite the target of every `[[wikilink]]` / `![[embed]]` (outside code) with `f`. `f` gets the file part of
+/// the target (no heading or alias) and returns its replacement, or None to leave the link alone.
+/// Returns the new text, or None when nothing changed.
+pub fn rewrite_wikilinks(src: &str, f: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let mut out = String::with_capacity(src.len() + 32);
+    let mut changed = false;
+    for_each_line(src, |line, code| {
+        if code || !line.contains("[[") {
+            out.push_str(line);
+            return;
+        }
+        let mut rest = line;
+        while let Some(i) = rest.find("[[") {
+            let after = &rest[i + 2..];
+            let Some(end) = after.find("]]") else { break };
+            let inner = &after[..end];
+            let cut = inner.find(['#', '|']).unwrap_or(inner.len());
+            let (target, tail) = inner.split_at(cut);
+            match f(target) {
+                Some(new) if new != target => {
+                    out.push_str(&rest[..i + 2]);
+                    out.push_str(&new);
+                    out.push_str(tail);
+                    out.push_str("]]");
+                    changed = true;
+                }
+                _ => out.push_str(&rest[..i + 2 + end + 2]),
+            }
+            rest = &after[end + 2..];
+        }
+        out.push_str(rest);
+    });
+    changed.then_some(out)
+}
+
+// ---------------------------------------------------------------- math and tags
+
+/// Replace `$$...$$` (display) and `$...$` (inline) math with placeholders so Markdown does not mangle
+/// the formulas (underscores, asterisks). The formulas are put back, escaped, by `restore_math`.
+fn protect_math(src: &str) -> (String, Vec<(String, bool)>) {
+    let mut out = String::with_capacity(src.len());
+    let mut maths: Vec<(String, bool)> = Vec::new();
+    let mut block: Option<String> = None;
+    for_each_line(src, |line, code| {
+        if let Some(buf) = block.as_mut() {
+            if let Some(pos) = line.find("$$") {
+                buf.push_str(&line[..pos]);
+                let tex = std::mem::take(buf);
+                block = None;
+                out.push_str(&format!("@@MATH{}@@\n", maths.len()));
+                maths.push((tex, true));
+            } else {
+                buf.push_str(line);
+            }
+            return;
+        }
+        if code {
+            out.push_str(line);
+            return;
+        }
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("$$") {
+            match rest.find("$$") {
+                Some(end) => {
+                    out.push_str(&format!("@@MATH{}@@\n", maths.len()));
+                    maths.push((rest[..end].to_string(), true));
+                }
+                None => block = Some(rest.to_string()),
+            }
+            return;
+        }
+        if !line.contains('$') {
+            out.push_str(line);
+            return;
+        }
+        // inline math, skipping `code spans`
+        let b: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            if c == '`' {
+                let run = b[i..].iter().take_while(|x| **x == '`').count();
+                let mut j = i + run;
+                let mut end = None;
+                while j + run <= b.len() {
+                    if b[j..j + run].iter().all(|x| *x == '`') && b.get(j + run) != Some(&'`') {
+                        end = Some(j + run);
+                        break;
+                    }
+                    j += 1;
+                }
+                let stop = end.unwrap_or(i + run);
+                out.extend(&b[i..stop]);
+                i = stop;
+            } else if c == '\\' && i + 1 < b.len() {
+                out.push(c);
+                out.push(b[i + 1]);
+                i += 2;
+            } else if c == '$' && i + 1 < b.len() && !b[i + 1].is_whitespace() && b[i + 1] != '$' {
+                // closing `$`: not preceded by whitespace, not followed by a digit
+                let mut j = i + 1;
+                let mut close = None;
+                while j < b.len() {
+                    if b[j] == '\\' {
+                        j += 2;
+                        continue;
+                    }
+                    if b[j] == '$' && !b[j - 1].is_whitespace() && !b.get(j + 1).is_some_and(|n| n.is_ascii_digit()) {
+                        close = Some(j);
+                        break;
+                    }
+                    j += 1;
+                }
+                match close {
+                    Some(j) if j > i + 1 => {
+                        out.push_str(&format!("@@MATH{}@@", maths.len()));
+                        maths.push((b[i + 1..j].iter().collect(), false));
+                        i = j + 1;
+                    }
+                    _ => {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+    });
+    if let Some(buf) = block {
+        out.push_str("$$");
+        out.push_str(&buf);
+    }
+    (out, maths)
+}
+
+fn restore_math(html: String, maths: &[(String, bool)]) -> String {
+    let mut out = html;
+    for (i, (tex, display)) in maths.iter().enumerate().rev() {
+        let tex = if tex.len() > 4000 { &tex[..tex.char_indices().take(4000).last().map(|(p, c)| p + c.len_utf8()).unwrap_or(0)] } else { tex.as_str() };
+        let (open, shown) = if *display {
+            ("<span class=\"math math-display\"", format!("$${}$$", esc(tex.trim())))
+        } else {
+            ("<span class=\"math\"", format!("${}$", esc(tex)))
+        };
+        let repl = format!("{open} data-tex=\"{}\">{shown}</span>", esc(tex.trim()));
+        out = out.replace(&format!("@@MATH{i}@@"), &repl);
+    }
+    out
+}
+
+/// Tags of a note: the frontmatter `tags` property and inline `#tags` (outside code), without the `#`.
+pub fn note_tags(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |t: &str| {
+        let t = t.trim().trim_start_matches('#').trim_matches('/');
+        if !t.is_empty() && t.len() <= 100 && !out.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+            out.push(t.to_string());
+        }
+    };
+    for (k, vals) in frontmatter_props(src) {
+        if k.eq_ignore_ascii_case("tags") || k.eq_ignore_ascii_case("tag") {
+            for v in vals {
+                for part in v.split([',', ' ']).filter(|p| !p.is_empty()) {
+                    add(part);
+                }
+            }
+        }
+    }
+    for_each_line(strip_frontmatter(src), |line, code| {
+        if code || !line.contains('#') {
+            return;
+        }
+        let b = line.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            match b[i] {
+                b'`' => i = skip_code_span(b, i),
+                b'#' if (i == 0 || b[i - 1].is_ascii_whitespace() || b[i - 1] == b'(') && i + 1 < b.len() && b[i + 1] != b'#' => {
+                    let start = i + 1;
+                    let mut j = start;
+                    while j < b.len() && (b[j].is_ascii_alphanumeric() || matches!(b[j], b'_' | b'-' | b'/') || b[j] >= 0x80) {
+                        j += 1;
+                    }
+                    let tag = &line[start..j];
+                    if tag.chars().any(|c| c.is_alphabetic()) {
+                        add(tag);
+                    }
+                    i = j.max(i + 1);
+                }
+                _ => i += 1,
+            }
+        }
+    });
     out
 }
 
@@ -646,6 +848,7 @@ fn sanitizer() -> &'static Builder<'static> {
         }
         b.add_allowed_classes("a", &["internal", "embed"]);
         b.add_allowed_classes("span", &["broken"]);
+        b.add_allowed_classes("code", &["language-mermaid"]);
         b.add_allowed_classes("div", &["footnote-definition", "callout-title", "callout-content"]);
         b.add_allowed_classes("sup", &["footnote-reference", "footnote-definition-label"]);
         b.add_allowed_classes(
@@ -801,5 +1004,33 @@ mod callout_tests {
         assert_eq!(p[1].1, vec!["unit-1".to_string(), "docx".to_string()]);
         assert_eq!(p[2].1, vec!["one".to_string(), "two".to_string()]);
         assert!(frontmatter_props("# no frontmatter").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod math_tests {
+    use super::*;
+
+    #[test]
+    fn math_is_protected_from_markdown() {
+        let (p, m) = protect_math("Energy $E_k = \\frac{1}{2}mv^2$ and cost $5 or $10.\n\n$$\na_1 + b_2\n$$\n");
+        assert_eq!(m.len(), 2, "{p:?} {m:?}");
+        assert!(!m[0].1 && m[1].1);
+        assert!(p.contains("$5 or $10"), "{p}");
+        let html = restore_math("<p>@@MATH0@@</p>".to_string(), &m);
+        assert!(html.contains("data-tex=\"E_k"), "{html}");
+    }
+
+    #[test]
+    fn math_in_code_is_untouched() {
+        let (p, m) = protect_math("`$x$` and\n```\n$y$\n```\n");
+        assert!(m.is_empty(), "{m:?}");
+        assert!(p.contains("$y$"));
+    }
+
+    #[test]
+    fn tags_from_frontmatter_and_body() {
+        let t = note_tags("---\ntags: [unit-1, docx]\n---\n\n# Title\nSome #idea here and `#code` and #Idea.\n");
+        assert_eq!(t, vec!["unit-1", "docx", "idea"]);
     }
 }

@@ -13,6 +13,14 @@ pub const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'se
     img-src 'self' data: https:; media-src 'self'; font-src 'self'; connect-src 'self'; \
     form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
 
+/// CSP for pages that run the editor: like PAGE_CSP, but inline `<style>` elements are allowed when they carry this
+/// response's nonce (CodeMirror injects its theme that way). Inline style attributes stay blocked.
+pub fn nonce_csp(nonce: &str) -> String {
+    format!(
+        "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{nonce}'; img-src 'self' data: https:;          media-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none';          base-uri 'none'; object-src 'none'"
+    )
+}
+
 /// CSP for the Word/PowerPoint viewer page: like PAGE_CSP, but allows the inline styles and blob: images
 /// that docx-preview / pptx-preview generate. Script sources are unchanged.
 pub const OFFICE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \

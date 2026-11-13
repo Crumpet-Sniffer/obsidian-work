@@ -16,7 +16,7 @@ use crate::{
     handlers::auth::CsrfForm,
     templates::{
         fmt_bytes, fmt_ts, render, AccessView, AdminPage, AuditView, MessagePage, PageCtx, UserView, VaultAdminPage,
-        VaultAdminView, VaultNewPage,
+        VaultAdminView, VaultNewPage, BackupView,
     },
     vault::{self, is_valid_id, ImportError, Limits},
     AppState,
@@ -503,6 +503,14 @@ pub async fn manage_vault(
         members,
         max_upload_mb: st.cfg.max_upload_bytes / 1024 / 1024,
         notice,
+        backups: {
+            let id = id.clone();
+            let dir = st.cfg.backups_dir();
+            tokio::task::spawn_blocking(move || vault::list_backups(&dir, &id)).await?
+                .into_iter()
+                .map(|(ts, name, size)| BackupView { name, when: fmt_ts(ts as i64), size: fmt_bytes(size as i64) })
+                .collect()
+        },
     }))
 }
 
@@ -516,6 +524,14 @@ pub async fn replace_vault(
     let v = admin_vault(&st, &id).await?;
     let up = read_upload(&st, &user, mp).await?;
     let zip = up.zip.ok_or_else(|| AppError::BadRequest("Choose a .zip file of your vault.".into()))?;
+    // Edits made on the site live only in the vault folder, so keep a copy before the upload replaces it.
+    {
+        let (dir, backups, vid) = (st.cfg.vaults_dir().join(&v.id), st.cfg.backups_dir(), v.id.clone());
+        tokio::task::spawn_blocking(move || vault::backup_vault(&dir, &backups, &vid)).await?.map_err(|e| {
+            tracing::error!("backup failed: {e}");
+            AppError::BadRequest("Could not back up the current version, so nothing was replaced. Check free disk space.".into())
+        })?;
+    }
     let stats = import(&st, &zip, &v.id).await?;
     st.db.update_vault_stats(v.id.clone(), stats.files as i64, stats.bytes as i64).await?;
     st.db
@@ -606,4 +622,30 @@ pub async fn delete_vault(
     .await?;
     st.db.audit(user.audit_id(), Some(ip), "vault_deleted", v.name).await;
     Ok(Redirect::to("/admin").into_response())
+}
+
+/// Download a backup zip made before a re-upload.
+pub async fn download_backup(
+    State(st): State<AppState>,
+    AdminUser(_user): AdminUser,
+    Path((id, name)): Path<(String, String)>,
+    req: axum::extract::Request,
+) -> AppResult {
+    use tower::ServiceExt;
+    if !is_valid_id(&id) || !name.ends_with(".zip") || !name[..name.len() - 4].bytes().all(|b| b.is_ascii_digit()) {
+        return Err(AppError::NotFound);
+    }
+    let path = st.cfg.backups_dir().join(&id).join(&name);
+    if !path.is_file() {
+        return Err(AppError::NotFound);
+    }
+    let res = tower_http::services::ServeFile::new(path).oneshot(req).await.map_err(|e| AppError::Internal(e.into()))?;
+    let mut res = res.map(axum::body::Body::new);
+    let h = res.headers_mut();
+    h.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/zip"));
+    h.insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
+    if let Ok(v) = axum::http::HeaderValue::from_str(&format!("attachment; filename=\"vault-backup-{name}\"")) {
+        h.insert(axum::http::header::CONTENT_DISPOSITION, v);
+    }
+    Ok(res)
 }

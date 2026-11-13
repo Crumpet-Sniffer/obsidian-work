@@ -42,6 +42,11 @@ pub fn asset_version() -> &'static str {
             include_str!("../static/app.js"),
             include_str!("../static/graph.js"),
             include_str!("../static/office.js"),
+            include_str!("../static/files.js"),
+            include_str!("../static/panels.js"),
+            include_str!("../static/render.js"),
+            include_str!("../static/mermaid.js"),
+            include_str!("../static/editor.js"),
         ] {
             h.update(f.as_bytes());
         }
@@ -125,6 +130,10 @@ pub struct NotePage {
     pub page: PageCtx,
     pub vault_id: String,
     pub vault_name: String,
+    /// Path of the note inside the vault ("" for the placeholder page of an empty vault).
+    pub path: String,
+    /// Per-response nonce that lets the editor's own `<style>` element through the CSP.
+    pub nonce: String,
     pub title: String,
     pub folder: String,
     pub tree_html: String,
@@ -254,6 +263,13 @@ pub struct VaultAdminPage {
     pub members: Vec<AccessView>,
     pub max_upload_mb: u64,
     pub notice: Option<String>,
+    pub backups: Vec<BackupView>,
+}
+
+pub struct BackupView {
+    pub name: String,
+    pub when: String,
+    pub size: String,
 }
 
 #[derive(Template)]
@@ -282,4 +298,13 @@ pub fn fmt_bytes(b: i64) -> String {
     } else {
         format!("{:.0} KB", (b / 1024.0).ceil())
     }
+}
+
+#[derive(Template)]
+#[template(path = "newtab.html")]
+pub struct NewTabPage {
+    pub page: PageCtx,
+    pub vault_id: String,
+    pub vault_name: String,
+    pub tree_html: String,
 }

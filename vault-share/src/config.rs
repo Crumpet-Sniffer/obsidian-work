@@ -98,6 +98,10 @@ impl Config {
         self.data_dir.join("vaults")
     }
 
+    pub fn backups_dir(&self) -> PathBuf {
+        self.data_dir.join("backups")
+    }
+
     pub fn tmp_dir(&self) -> PathBuf {
         self.data_dir.join("tmp")
     }

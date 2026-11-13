@@ -3,6 +3,7 @@
     <button type="button" class="icon-btn is-active" role="tab" data-rb-tab="connections" title="Connections" aria-label="Connections"><svg class="ic"><use href="#i-graph"/></svg></button>
     <button type="button" class="icon-btn" role="tab" data-rb-tab="outline" title="Outline" aria-label="Outline"><svg class="ic"><use href="#i-list"/></svg></button>
     <button type="button" class="icon-btn" role="tab" data-rb-tab="links" title="Outgoing links" aria-label="Outgoing links"><svg class="ic"><use href="#i-link"/></svg></button>
+    <button type="button" class="icon-btn" role="tab" data-rb-tab="tags" title="Tags" aria-label="Tags"><svg class="ic"><use href="#i-hash"/></svg></button>
   </div>
   <div class="rb-body" data-rb-pane="connections">
     {% if !conn_html.is_empty() %}
@@ -29,5 +30,8 @@
   </div>
   <div class="rb-body" data-rb-pane="links" hidden>
     <section class="rb-sec"><h4>Outgoing links</h4><ul class="rb-list" data-outlinks></ul></section>
+  </div>
+  <div class="rb-body" data-rb-pane="tags" hidden>
+    <section class="rb-sec"><h4>Tags</h4><ul class="tags-list" data-tags-list></ul></section>
   </div>
 </aside>

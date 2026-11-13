@@ -79,9 +79,16 @@
     const included = data.nodes.map((n) => n.kind === "note" || withFiles);
     const deg = new Array(data.nodes.length).fill(0);
     const kept = [];
-    for (const [a, b] of data.links) {
-      if (included[a] && included[b]) { deg[a]++; deg[b]++; kept.push([a, b]); }
+    // Links arrive as directed [from, to] pairs; A->B and B->A are drawn as one line (arrows show direction).
+    const pairs = new Map();
+    for (const [f, t] of data.links) {
+      if (!(included[f] && included[t])) continue;
+      const lo = Math.min(f, t), hi = Math.max(f, t), key = lo + "|" + hi;
+      let e = pairs.get(key);
+      if (!e) { e = { lo, hi, dir: 0 }; pairs.set(key, e); }
+      e.dir |= f === lo ? 1 : 2;
     }
+    for (const e of pairs.values()) { deg[e.lo]++; deg[e.hi]++; kept.push([e.lo, e.hi, e.dir]); }
     const map = new Map();
     nodes = [];
     data.nodes.forEach((n, i) => {
@@ -105,11 +112,11 @@
       });
     });
     links = [];
-    for (const [a, b] of kept) {
+    for (const [a, b, dir] of kept) {
       const ia = map.get(a), ib = map.get(b);
       if (ia === undefined || ib === undefined) continue;
       const A = nodes[ia], B = nodes[ib];
-      links.push([A, B, 0]); // third value: animated "highlighted" amount
+      links.push([A, B, 0, dir]); // [from, to, animated "highlighted" amount, direction bits]
       A.nbrs.add(B); B.nbrs.add(A);
     }
     applySearch();
@@ -143,7 +150,7 @@
   for (const k of Object.keys(FORCE_DEFAULTS)) if (Number.isFinite(savedForces[k])) forces[k] = savedForces[k];
 
   // Display options (Display panel): when labels appear, node size and link thickness.
-  const DISPLAY_DEFAULTS = { fade: 0.45, nodeSize: 1, linkWidth: 1 };
+  const DISPLAY_DEFAULTS = { fade: 0.45, nodeSize: 1, linkWidth: 1, arrows: 0 };
   const display = Object.assign({}, DISPLAY_DEFAULTS);
   const savedDisplay = readPref("display", {});
   for (const k of Object.keys(DISPLAY_DEFAULTS)) if (Number.isFinite(savedDisplay[k])) display[k] = savedDisplay[k];
@@ -314,6 +321,21 @@
   }
 
   // ---------- drawing ----------
+  function arrowhead(from, to) {
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const r = to.r * display.nodeSize + 2 / view.k;
+    const tx = to.x - ux * r, ty = to.y - uy * r;
+    const size = 7 / view.k;
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(tx - ux * size + uy * size * 0.5, ty - uy * size - ux * size * 0.5);
+    ctx.lineTo(tx - ux * size - uy * size * 0.5, ty - uy * size + ux * size * 0.5);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   function draw() {
     if (!width) return;
     const s = dpr();
@@ -336,6 +358,11 @@
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
+      if (display.arrows) {
+        ctx.fillStyle = ctx.strokeStyle;
+        if (l[3] & 1) arrowhead(a, b);
+        if (l[3] & 2) arrowhead(b, a);
+      }
     }
 
     // Nodes
@@ -618,11 +645,17 @@
       start();
     });
   });
+  const arrowsEl = wrap.querySelector("[data-display-toggle='arrows']");
+  if (arrowsEl) {
+    arrowsEl.checked = !!display.arrows;
+    arrowsEl.addEventListener("change", () => { display.arrows = arrowsEl.checked ? 1 : 0; savePref("display", display); start(); });
+  }
   const displayReset = wrap.querySelector("[data-display-reset]");
   if (displayReset) {
     displayReset.addEventListener("click", () => {
       Object.assign(display, DISPLAY_DEFAULTS);
       savePref("display", display);
+      if (arrowsEl) arrowsEl.checked = false;
       syncDisplay();
       start();
     });

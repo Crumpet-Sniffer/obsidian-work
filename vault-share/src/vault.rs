@@ -268,6 +268,8 @@ pub struct VaultIndex {
     pub root: PathBuf,
     /// Relative paths using `/`, sorted.
     pub files: Vec<String>,
+    /// Folders (relative paths), including empty ones, so they can be shown and created.
+    pub dirs: Vec<String>,
     by_lower_path: HashMap<String, String>,
     by_lower_name: HashMap<String, Vec<String>>,
     graph: OnceLock<Arc<String>>,
@@ -287,11 +289,21 @@ impl VaultIndex {
 
     pub fn build(root: &Path) -> io::Result<Self> {
         let mut files = Vec::new();
+        let mut dirs = Vec::new();
         if root.exists() {
             for entry in WalkDir::new(root).follow_links(false).max_depth(32) {
                 let entry = entry.map_err(io::Error::other)?;
+                if entry.file_type().is_dir() && entry.depth() > 0 {
+                    if let Ok(rel) = entry.path().strip_prefix(root) {
+                        let parts: Vec<&str> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
+                        if parts.len() == rel.components().count() && parts.iter().all(|c| component_ok(c)) {
+                            dirs.push(parts.join("/"));
+                        }
+                    }
+                    continue;
+                }
                 if !entry.file_type().is_file() {
-                    continue; // skips symlinks and directories
+                    continue; // skips symlinks
                 }
                 let Ok(rel) = entry.path().strip_prefix(root) else { continue };
                 let mut parts = Vec::new();
@@ -312,6 +324,7 @@ impl VaultIndex {
             }
         }
         files.sort_by_key(|f| f.to_lowercase());
+        dirs.sort_by_key(|d| d.to_lowercase());
         let mut by_lower_path = HashMap::new();
         let mut by_lower_name: HashMap<String, Vec<String>> = HashMap::new();
         for f in &files {
@@ -320,7 +333,7 @@ impl VaultIndex {
             by_lower_path.insert(lower, f.clone());
             by_lower_name.entry(name).or_default().push(f.clone());
         }
-        Ok(VaultIndex { root: root.to_path_buf(), files, by_lower_path, by_lower_name, graph: OnceLock::new(), links: OnceLock::new() })
+        Ok(VaultIndex { root: root.to_path_buf(), files, dirs, by_lower_path, by_lower_name, graph: OnceLock::new(), links: OnceLock::new() })
     }
 
     pub fn contains(&self, rel: &str) -> bool {
@@ -392,6 +405,12 @@ impl VaultIndex {
             files: Vec<(&'a str, &'a str)>,
         }
         let mut root = Dir::default();
+        for d in &self.dirs {
+            let mut node = &mut root;
+            for p in d.split('/') {
+                node = &mut node.dirs.entry(p.to_lowercase()).or_insert_with(|| (p, Dir::default())).1;
+            }
+        }
         for f in &self.files {
             let mut node = &mut root;
             let mut parts: Vec<&str> = f.split('/').collect();
@@ -406,7 +425,8 @@ impl VaultIndex {
             for (name, sub) in d.dirs.values() {
                 let path = if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") };
                 let open = current.is_some_and(|c| c.starts_with(&format!("{path}/")));
-                out.push_str(if open { "<li class=\"dir\"><details open><summary>" } else { "<li class=\"dir\"><details><summary>" });
+                out.push_str(if open { "<li class=\"dir\"><details open><summary" } else { "<li class=\"dir\"><details><summary" });
+                out.push_str(&format!(" data-path=\"{}\" data-dir=\"1\">", esc(&path)));
                 out.push_str(&esc(name));
                 out.push_str("</summary>");
                 walk(sub, &path, vault_id, current, out);
@@ -418,9 +438,10 @@ impl VaultIndex {
                 let url = if note { note_url(vault_id, path) } else { link_url(vault_id, path) };
                 let is_current = current == Some(*path);
                 out.push_str(&format!(
-                    "<li class=\"{}\"><a href=\"{}\"{}>{}</a></li>",
+                    "<li class=\"{}\"><a href=\"{}\" data-path=\"{}\"{}>{}</a></li>",
                     if note { "note" } else { "att" },
                     esc(&url),
+                    esc(path),
                     if is_current { " aria-current=\"page\"" } else { "" },
                     esc(label)
                 ));
@@ -432,6 +453,197 @@ impl VaultIndex {
         out
     }
 }
+
+// ---------------------------------------------------------------- editing: safe paths and file operations
+//
+// Everything that changes a vault on disk goes through these helpers. Paths are checked component by
+// component (no `..`, no hidden folders, no odd characters), parents may not be symlinks, writes are
+// atomic (temp file + rename) and deletes only ever move things into the hidden `.trash` folder.
+
+/// Largest note the editor will save.
+pub const MAX_EDIT_BYTES: usize = 5 * 1024 * 1024;
+
+/// Normalise a user-supplied relative path. Returns None for anything unsafe or unreasonable.
+pub fn safe_rel(path: &str) -> Option<String> {
+    let p = path.trim().trim_matches('/').replace('\\', "/");
+    if p.is_empty() || p.len() > 400 {
+        return None;
+    }
+    let parts: Vec<&str> = p.split('/').collect();
+    if parts.len() > 32 || !parts.iter().all(|c| component_ok(c)) {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+fn abs_path(root: &Path, rel: &str) -> PathBuf {
+    rel.split('/').fold(root.to_path_buf(), |acc, c| acc.join(c))
+}
+
+/// True when none of the existing ancestors of `rel` (inside `root`) is a symlink.
+fn no_symlink_ancestors(root: &Path, rel: &str) -> bool {
+    let mut cur = root.to_path_buf();
+    for c in rel.split('/') {
+        cur.push(c);
+        match fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => return false,
+            Ok(_) => {}
+            Err(_) => break, // does not exist yet: nothing further to check
+        }
+    }
+    true
+}
+
+/// On-disk path of a note that may not be indexed yet (editing reads straight from disk).
+pub fn note_disk_path(root: &Path, rel: &str) -> Option<PathBuf> {
+    let p = abs_path(root, rel);
+    fs::symlink_metadata(&p).ok().filter(|m| m.is_file() && no_symlink_ancestors(root, rel)).map(|_| p)
+}
+
+pub fn path_exists(root: &Path, rel: &str) -> bool {
+    fs::symlink_metadata(abs_path(root, rel)).is_ok()
+}
+
+/// Write a file atomically, creating parent folders.
+pub fn write_atomic(root: &Path, rel: &str, bytes: &[u8]) -> io::Result<()> {
+    if !no_symlink_ancestors(root, rel) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe path"));
+    }
+    let dest = abs_path(root, rel);
+    let parent = dest.parent().ok_or_else(|| io::Error::other("no parent"))?;
+    fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4().simple()));
+    let res = (|| {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        fs::rename(&tmp, &dest)
+    })();
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res
+}
+
+pub fn create_dir(root: &Path, rel: &str) -> io::Result<()> {
+    if !no_symlink_ancestors(root, rel) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe path"));
+    }
+    fs::create_dir_all(abs_path(root, rel))
+}
+
+/// Move a file or folder to `.trash/<timestamp>/<path>` instead of deleting it.
+pub fn move_to_trash(root: &Path, rel: &str) -> io::Result<()> {
+    if !no_symlink_ancestors(root, rel) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe path"));
+    }
+    let stamp = format!(
+        "{}-{}",
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        &uuid::Uuid::new_v4().simple().to_string()[..4]
+    );
+    let dest = abs_path(&root.join(".trash").join(stamp), rel);
+    fs::create_dir_all(dest.parent().ok_or_else(|| io::Error::other("no parent"))?)?;
+    fs::rename(abs_path(root, rel), dest)
+}
+
+/// Rename or move a file/folder. Refuses to overwrite and to move a folder into itself.
+pub fn rename_path(root: &Path, from: &str, to: &str) -> io::Result<()> {
+    if !no_symlink_ancestors(root, from) || !no_symlink_ancestors(root, to) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "unsafe path"));
+    }
+    if to == from || to.starts_with(&format!("{from}/")) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot move a folder into itself"));
+    }
+    if path_exists(root, to) {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, "target exists"));
+    }
+    let dest = abs_path(root, to);
+    fs::create_dir_all(dest.parent().ok_or_else(|| io::Error::other("no parent"))?)?;
+    fs::rename(abs_path(root, from), dest)
+}
+
+/// File count and total size of the indexed files of a vault (used to keep the vault card up to date).
+pub fn dir_stats(root: &Path) -> (i64, i64) {
+    let (mut files, mut bytes) = (0i64, 0i64);
+    for e in WalkDir::new(root).follow_links(false).max_depth(32).into_iter().flatten() {
+        if !e.file_type().is_file() {
+            continue;
+        }
+        let Ok(rel) = e.path().strip_prefix(root) else { continue };
+        let ok = rel.components().all(|c| matches!(c, Component::Normal(s) if s.to_str().is_some_and(component_ok)));
+        if ok && rel.to_str().is_some_and(|r| mime_for(r).is_some()) {
+            files += 1;
+            bytes += e.metadata().map(|m| m.len() as i64).unwrap_or(0);
+        }
+    }
+    (files, bytes)
+}
+
+
+// ---------------------------------------------------------------- backups
+
+/// Zip the current contents of a vault into `backups/<vault_id>/<unix time>.zip` and keep the newest few.
+/// Called before a re-upload replaces the vault, because the upload would otherwise wipe edits made on the site.
+pub fn backup_vault(vault_dir: &Path, backups_dir: &Path, vault_id: &str) -> io::Result<Option<PathBuf>> {
+    if !vault_dir.is_dir() {
+        return Ok(None);
+    }
+    let dir = backups_dir.join(vault_id);
+    fs::create_dir_all(&dir)?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let dest = dir.join(format!("{stamp}.zip"));
+    let tmp = dir.join(format!(".{stamp}.partial"));
+    let res = (|| -> io::Result<()> {
+        let file = fs::File::create(&tmp)?;
+        let mut zw = zip::ZipWriter::new(io::BufWriter::new(file));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for e in WalkDir::new(vault_dir).follow_links(false).max_depth(32).into_iter().flatten() {
+            let Ok(rel) = e.path().strip_prefix(vault_dir) else { continue };
+            let name = rel.to_string_lossy().replace('\\', "/");
+            if name.is_empty() || name.split('/').any(|c| c.starts_with(".tmp-")) {
+                continue;
+            }
+            if e.file_type().is_dir() {
+                zw.add_directory(format!("{name}/"), opts).map_err(io::Error::other)?;
+            } else if e.file_type().is_file() {
+                zw.start_file(name, opts).map_err(io::Error::other)?;
+                io::copy(&mut fs::File::open(e.path())?, &mut zw)?;
+            }
+        }
+        zw.finish().map_err(io::Error::other)?;
+        Ok(())
+    })();
+    if let Err(e) = res {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    fs::rename(&tmp, &dest)?;
+    // keep the newest three
+    let mut all = list_backups(backups_dir, vault_id);
+    all.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, old, _) in all.into_iter().skip(3) {
+        let _ = fs::remove_file(dir.join(old));
+    }
+    Ok(Some(dest))
+}
+
+/// `(unix time, file name, bytes)` of each backup of a vault.
+pub fn list_backups(backups_dir: &Path, vault_id: &str) -> Vec<(u64, String, u64)> {
+    let mut out = Vec::new();
+    if let Ok(rd) = fs::read_dir(backups_dir.join(vault_id)) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if let Some(ts) = name.strip_suffix(".zip").and_then(|s| s.parse::<u64>().ok()) {
+                out.push((ts, name, e.metadata().map(|m| m.len()).unwrap_or(0)));
+            }
+        }
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out
+}
+
 
 // ---------------------------------------------------------------- urls & escaping
 

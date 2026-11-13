@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
+{% block head %}{% if !nonce.is_empty() %}<meta name="csp-nonce" content="{{ nonce }}">{% endif %}<script src="/static/render.js?v={{ page.asset_v }}" defer></script>{% if !path.is_empty() %}<script src="/static/editor.js?v={{ page.asset_v }}" defer></script>{% endif %}{% endblock %}
 {% block topbar %}{% endblock %}
 {% block body_class %}workspace{% endblock %}
 {% block body %}
@@ -20,6 +21,9 @@
       <button type="button" class="icon-btn" data-history="back" title="Navigate back" aria-label="Navigate back"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
       <button type="button" class="icon-btn" data-history="forward" title="Navigate forward" aria-label="Navigate forward"><svg class="ic"><use href="#i-arrow-right"/></svg></button>
       <div class="view-title">{% if !folder.is_empty() %}<span class="crumb-folder">{{ folder }} /</span> {% endif %}{{ title }}</div>
+      {% if !path.is_empty() %}<button type="button" class="icon-btn" data-bookmark-toggle title="Bookmark this note" aria-label="Bookmark"><svg class="ic"><use href="#i-star"/></svg></button>
+      <button type="button" class="icon-btn" data-split-current title="Open a second pane" aria-label="Split"><svg class="ic"><use href="#i-split"/></svg></button>
+      <button type="button" class="icon-btn" data-edit-toggle title="Edit (Ctrl+E)" aria-label="Edit note"><svg class="ic"><use href="#i-square-pen"/></svg></button>{% endif %}
       {% if !original_url.is_empty() %}<a class="view-switch" href="{{ original_url }}">View original</a>{% endif %}
       <details class="more">
         <summary class="icon-btn" title="More options" aria-label="More options"><svg class="ic"><use href="#i-more"/></svg></summary>
@@ -31,7 +35,7 @@
       </details>
     </div>
     <div class="view-content reading">
-      <article class="note">
+      <article class="note" data-path="{{ path }}">
         <h1 class="note-title">{{ title }}</h1>
         {{ properties_html|safe }}
         <div class="prose">{{ content_html|safe }}</div>

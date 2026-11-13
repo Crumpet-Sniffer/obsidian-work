@@ -7,6 +7,7 @@ mod handlers;
 mod markdown;
 mod security;
 mod templates;
+mod search;
 mod vault;
 
 use std::{
@@ -28,7 +29,7 @@ use axum::{
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-use handlers::{admin, auth as auth_h, vaults};
+use handlers::{admin, auth as auth_h, edit, vaults};
 
 pub struct AppInner {
     pub cfg: config::Config,
@@ -124,11 +125,24 @@ fn router(state: AppState) -> Router {
 
     // Large multipart uploads: big body limit, no short timeout.
     let uploads = Router::new()
+        .route("/v/{id}/api/attach", post(edit::attach))
         .route("/admin/uploads", post(admin::upload_start))
         .route("/admin/uploads/{id}", put(admin::upload_chunk))
         .route("/admin/vaults", post(admin::create_vault))
         .route("/admin/vaults/{id}/upload", post(admin::replace_vault))
         .layer(DefaultBodyLimit::max(upload_limit));
+
+    // JSON API used by the editor and the file tree (save, create, rename, delete).
+    let api = Router::new()
+        .route("/v/{id}/api/note", get(edit::note_get).put(edit::note_put))
+        .route("/v/{id}/api/files", get(edit::files_list))
+        .route("/v/{id}/api/search", get(edit::search_json))
+        .route("/v/{id}/api/tags", get(edit::tags_json))
+        .route("/v/{id}/api/create", post(edit::create))
+        .route("/v/{id}/api/rename", post(edit::rename))
+        .route("/v/{id}/api/delete", post(edit::delete))
+        .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)));
 
     let pages = Router::new()
         .route("/", get(vaults::home))
@@ -137,6 +151,7 @@ fn router(state: AppState) -> Router {
         .route("/account/password", get(auth_h::password_form).post(auth_h::password_submit))
         .route("/v/{id}", get(vaults::vault_home))
         .route("/v/{id}/search", get(vaults::search))
+        .route("/v/{id}/new-tab", get(vaults::new_tab))
         .route("/v/{id}/graph", get(vaults::graph_page))
         .route("/v/{id}/graph.json", get(vaults::graph_json))
         .route("/v/{id}/n/{*path}", get(vaults::note))
@@ -147,6 +162,7 @@ fn router(state: AppState) -> Router {
         .route("/admin/users/{id}", post(admin::user_action))
         .route("/admin/vaults/new", get(admin::new_vault_form))
         .route("/admin/vaults/{id}", get(admin::manage_vault))
+        .route("/admin/vaults/{id}/backups/{name}", get(admin::download_backup))
         .route("/admin/vaults/{id}/settings", post(admin::vault_settings))
         .route("/admin/vaults/{id}/access", post(admin::vault_access))
         .route("/admin/vaults/{id}/delete", post(admin::delete_vault))
@@ -156,10 +172,16 @@ fn router(state: AppState) -> Router {
     Router::new()
         .merge(pages)
         .merge(uploads)
+        .merge(api)
         .route("/healthz", get(|| async { "ok" }))
         .route("/static/app.css", get(static_css))
         .route("/static/obsidian.css", get(static_obsidian_css))
         .route("/static/office.js", get(static_office_js))
+        .route("/static/files.js", get(static_files_js))
+        .route("/static/panels.js", get(static_panels_js))
+        .route("/static/render.js", get(static_render_js))
+        .route("/static/mermaid.js", get(static_mermaid_js))
+        .route("/static/editor.js", get(static_editor_js))
         .route("/static/app.js", get(static_js))
         .route("/static/graph.js", get(static_graph_js))
         .route("/favicon.svg", get(favicon))
@@ -190,6 +212,43 @@ async fn static_office_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
         include_str!("../static/office.js"),
+    )
+}
+
+async fn static_render_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
+        include_str!("../static/render.js"),
+    )
+}
+
+/// Large and only loaded when a note contains a Mermaid diagram, so it may be cached for a long time
+/// (the URL carries the version fingerprint).
+async fn static_mermaid_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=86400")],
+        include_str!("../static/mermaid.js"),
+    )
+}
+
+async fn static_panels_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
+        include_str!("../static/panels.js"),
+    )
+}
+
+async fn static_files_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
+        include_str!("../static/files.js"),
+    )
+}
+
+async fn static_editor_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
+        include_str!("../static/editor.js"),
     )
 }
 

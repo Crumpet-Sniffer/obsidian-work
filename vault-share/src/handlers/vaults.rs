@@ -73,6 +73,8 @@ pub async fn vault_home(State(st): State<AppState>, user: CurrentUser, Path(id):
             page: PageCtx::for_user(&user),
             vault_id: v.id.clone(),
             vault_name: v.name,
+            path: String::new(),
+            nonce: String::new(),
             title: "Empty vault".into(),
             folder: String::new(),
             tree_html: idx.tree_html(&v.id, None),
@@ -116,10 +118,13 @@ pub async fn note(State(st): State<AppState>, user: CurrentUser, Path((id, path)
         .unwrap_or_default();
     let backlinks = backlinks_for(&idx, &v.id, &path).await?;
     let (folder, file) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
-    Ok(render(&NotePage {
+    let nonce = crate::auth::random_token(16);
+    let mut res = render(&NotePage {
         page: PageCtx::for_user(&user),
         vault_id: v.id.clone(),
         vault_name: v.name.clone(),
+        path: path.clone(),
+        nonce: nonce.clone(),
         title: file.strip_suffix(".md").unwrap_or(file).to_string(),
         folder: folder.replace('/', " / "),
         tree_html: idx.tree_html(&v.id, Some(&path)),
@@ -130,7 +135,11 @@ pub async fn note(State(st): State<AppState>, user: CurrentUser, Path((id, path)
         original_url,
         backlinks,
         properties_html,
-    }))
+    });
+    if let Ok(v) = HeaderValue::from_str(&crate::security::nonce_csp(&nonce)) {
+        res.headers_mut().insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    Ok(res)
 }
 
 /// Notes that link to `path`, for the Connections panel.
@@ -298,69 +307,33 @@ pub async fn search(
     }))
 }
 
-fn floor_boundary(s: &str, mut i: usize) -> usize {
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn ceil_boundary(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i.min(s.len())
-}
-
 fn run_search(idx: &VaultIndex, vault_id: &str, q: &str) -> (Vec<SearchHit>, bool) {
-    const LIMIT: usize = 50;
-    let needle = q.to_lowercase();
-    let mut hits = Vec::new();
-    for rel in idx.notes() {
-        if hits.len() >= LIMIT {
-            return (hits, true);
-        }
-        let Some(disk) = idx.disk_path(rel) else { continue };
-        let Ok(meta) = std::fs::metadata(&disk) else { continue };
-        if meta.len() > MAX_NOTE_BYTES {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(&disk) else { continue };
-        let text = String::from_utf8_lossy(&bytes);
-        let body = markdown::strip_frontmatter(&text);
-        let lower = body.to_lowercase();
-        let (folder, file) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
-        let title = file.strip_suffix(".md").unwrap_or(file).to_string();
-        let title_hit = title.to_lowercase().contains(&needle);
-        let pos = lower.find(&needle);
-        if pos.is_none() && !title_hit {
-            continue;
-        }
-        // Use the original text when lowercasing kept byte offsets aligned.
-        let src: &str = if lower.len() == body.len() { body } else { &lower };
-        let (before, matched, after) = match pos {
-            Some(p) if src.is_char_boundary(p) && src.is_char_boundary(p + needle.len()) => {
-                let s = floor_boundary(src, p.saturating_sub(80));
-                let e = ceil_boundary(src, p + needle.len() + 120);
-                (
-                    format!("{}{}", if s > 0 { "…" } else { "" }, &src[s..p]),
-                    src[p..p + needle.len()].to_string(),
-                    format!("{}{}", &src[p + needle.len()..e], if e < src.len() { "…" } else { "" }),
-                )
+    let (hits, truncated) = crate::search::search(idx, q, 50);
+    let hits = hits
+        .into_iter()
+        .map(|h| {
+            let s = h.snippets.into_iter().next();
+            SearchHit {
+                url: vault::note_url(vault_id, &h.path),
+                title: h.title,
+                folder: h.folder,
+                before: s.as_ref().map(|s| s.before.clone()).unwrap_or_default(),
+                matched: s.as_ref().map(|s| s.matched.clone()).unwrap_or_default(),
+                after: s.map(|s| s.after).unwrap_or_default(),
             }
-            _ => {
-                let e = ceil_boundary(src, 160);
-                (src[..e].to_string(), String::new(), String::new())
-            }
-        };
-        hits.push(SearchHit {
-            url: vault::note_url(vault_id, rel),
-            title,
-            folder: folder.replace('/', " / "),
-            before,
-            matched,
-            after,
-        });
-    }
-    (hits, false)
+        })
+        .collect();
+    (hits, truncated)
+}
+
+/// The page a new tab opens: quick actions (create a note, go to a file, recent files).
+pub async fn new_tab(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> AppResult {
+    let v = authorize(&st, &user, &id).await?;
+    let idx = index_for(&st, &v.id).await?;
+    Ok(render(&crate::templates::NewTabPage {
+        page: PageCtx::for_user(&user),
+        vault_id: v.id.clone(),
+        vault_name: v.name,
+        tree_html: idx.tree_html(&v.id, None),
+    }))
 }
