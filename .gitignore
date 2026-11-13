@@ -1,2 +1,7 @@
 node_modules/
 .env
+deploy/credentials.py
+deploy/dist/
+deploy/build/
+deploy/*.spec
+deploy/known_hosts.txt

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Graph · {{ vault_name }}{% endblock %}
-{% block head %}<script src="/static/graph.js" defer></script>{% endblock %}
+{% block head %}<script src="/static/graph.js?v={{ page.asset_v }}" defer></script>{% endblock %}
 {% block topbar %}{% endblock %}
 {% block body_class %}workspace{% endblock %}
 {% block body %}
@@ -38,9 +38,19 @@
               <label class="toggle-row"><span>Orphans</span><input type="checkbox" class="switch" data-graph-orphans checked></label>
             </div>
           </details>
-          <details class="gc-sec"><summary>Groups</summary><div class="gc-body"><p class="muted small">Groups are not available in the web viewer.</p></div></details>
+          <details class="gc-sec"><summary>Groups</summary><div class="gc-body">
+            <div class="groups-list" data-groups-list></div>
+            <button type="button" class="mod-cta group-add" data-group-add>New group</button>
+            <p class="muted small">Colour notes by search: plain text, <code>path:Topics</code> or <code>file:lesson</code>.</p>
+          </div></details>
           <details class="gc-sec"><summary>Display</summary><div class="gc-body"><p class="graph-status muted small" data-graph-status aria-live="polite">Loading graph…</p><p class="muted small">Scroll or pinch to zoom · drag to move · click a node to open it</p></div></details>
-          <details class="gc-sec"><summary>Forces</summary><div class="gc-body"><p class="muted small">Forces are not adjustable in the web viewer.</p></div></details>
+          <details class="gc-sec"><summary>Forces</summary><div class="gc-body">
+            <label class="slider-row"><span>Center force</span><input type="range" min="0" max="1" step="0.01" data-force="center"></label>
+            <label class="slider-row"><span>Repel force</span><input type="range" min="0" max="20" step="0.1" data-force="repel"></label>
+            <label class="slider-row"><span>Link force</span><input type="range" min="0" max="1" step="0.01" data-force="link"></label>
+            <label class="slider-row"><span>Link distance</span><input type="range" min="20" max="300" step="1" data-force="dist"></label>
+            <button type="button" data-forces-reset>Reset forces</button>
+          </div></details>
         </div>
       </section>
     </div>

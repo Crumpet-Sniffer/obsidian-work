@@ -232,3 +232,14 @@ input.switch:checked::after { transform: translateX(14px); background: #fff; }
 .upload-progress progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
 .upload-stats { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
 .upload-progress button { justify-self: start; }
+
+/* ---------- graph groups and forces ---------- */
+.groups-list { display: grid; gap: 6px; }
+.group-row { display: flex; align-items: center; gap: 6px; }
+.group-row input[type="text"] { flex: 1; min-width: 0; padding: 4px 8px; font-size: 13px; }
+.group-row input[type="color"] { flex: none; width: 28px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }
+.group-row .icon-btn { width: 24px; height: 24px; font-size: 16px; line-height: 1; }
+.group-add { justify-self: stretch; }
+.slider-row { display: grid; gap: 4px; font-weight: 400; font-size: 13px; }
+.slider-row input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+.gc-body code { font-size: 12px; background: var(--code-bg); padding: 0 4px; border-radius: 3px; }

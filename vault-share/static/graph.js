@@ -27,6 +27,17 @@
   let width = 0, height = 0;
   const dpr = () => window.devicePixelRatio || 1;
 
+  // Preferences live in this browser only (localStorage may be unavailable, so every access is guarded).
+  function readPref(key, fallback) {
+    try {
+      const v = localStorage.getItem("vault-share:graph:" + key);
+      return v ? JSON.parse(v) : fallback;
+    } catch { return fallback; }
+  }
+  function savePref(key, value) {
+    try { localStorage.setItem("vault-share:graph:" + key, JSON.stringify(value)); } catch { /* ignore */ }
+  }
+
   // ---------- theme ----------
   function readColors() {
     const cs = getComputedStyle(document.documentElement);
@@ -90,6 +101,7 @@
         vx: 0, vy: 0, fx: null, fy: null,
         nbrs: new Set(),
         match: false,
+        la: 0, da: 1, gc: null, // animated label alpha, animated dimming alpha, group colour
       });
     });
     links = [];
@@ -97,10 +109,11 @@
       const ia = map.get(a), ib = map.get(b);
       if (ia === undefined || ib === undefined) continue;
       const A = nodes[ia], B = nodes[ib];
-      links.push([A, B]);
+      links.push([A, B, 0]); // third value: animated "highlighted" amount
       A.nbrs.add(B); B.nbrs.add(A);
     }
     applySearch();
+    applyGroups();
     const noteCount = nodes.filter((n) => n.kind === "note").length;
     const fileCount = nodes.length - noteCount;
     statusEl.textContent =
@@ -122,7 +135,12 @@
   }
 
   // ---------- simulation ----------
-  const LINK_DIST = 55, CHARGE = -160, GRAVITY = 0.035, DECAY = 0.4, THETA2 = 0.81, MAX_D2 = 900 * 900;
+  const DECAY = 0.4, THETA2 = 0.81, MAX_D2 = 900 * 900;
+  // Adjustable in the Forces panel. Defaults reproduce the original layout.
+  const FORCE_DEFAULTS = { center: 0.3, repel: 10, link: 1, dist: 55 };
+  const forces = Object.assign({}, FORCE_DEFAULTS);
+  const savedForces = readPref("forces", {});
+  for (const k of Object.keys(FORCE_DEFAULTS)) if (Number.isFinite(savedForces[k])) forces[k] = savedForces[k];
 
   function buildTree() {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -168,7 +186,7 @@
       if (d2 > MAX_D2) return;
       if (d2 < 1) { dx = (Math.random() - 0.5) || 0.1; dy = (Math.random() - 0.5) || 0.1; d2 = dx * dx + dy * dy + 1; }
       const m = q.body === n ? q.m - 1 : q.m;
-      const w = (CHARGE * alpha * m) / d2;
+      const w = (-forces.repel * 16 * alpha * m) / d2;
       n.vx += dx * w; n.vy += dy * w;
       return;
     }
@@ -183,7 +201,7 @@
       let dx = t.x + t.vx - s.x - s.vx, dy = t.y + t.vy - s.y - s.vy;
       let l = Math.sqrt(dx * dx + dy * dy) || 1e-6;
       const strength = 1 / Math.min(s.deg || 1, t.deg || 1);
-      l = ((l - LINK_DIST) / l) * alpha * strength * 0.7;
+      l = ((l - forces.dist) / l) * alpha * strength * 0.7 * forces.link;
       dx *= l; dy *= l;
       const bias = (s.deg || 1) / ((s.deg || 1) + (t.deg || 1));
       t.vx -= dx * bias; t.vy -= dy * bias;
@@ -194,8 +212,8 @@
     for (const n of nodes) repel(tree, n);
     // Gravity toward the origin keeps unlinked notes nearby.
     for (const n of nodes) {
-      n.vx -= n.x * GRAVITY * alpha;
-      n.vy -= n.y * GRAVITY * alpha;
+      n.vx -= n.x * forces.center * 0.12 * alpha;
+      n.vy -= n.y * forces.center * 0.12 * alpha;
     }
     for (const n of nodes) {
       if (n.fx !== null) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; continue; }
@@ -211,14 +229,49 @@
   }
 
   function frame() {
-    if (alpha > 0.003 || alphaTarget > 0) {
-      tick();
-      draw();
-      requestAnimationFrame(frame);
-    } else {
-      running = false;
-      draw();
+    const simulating = alpha > 0.003 || alphaTarget > 0;
+    if (simulating) tick();
+    const fading = stepFades();
+    draw();
+    if (simulating || fading) requestAnimationFrame(frame);
+    else running = false;
+  }
+
+  // ---------- fades ----------
+  // Labels, dimming and highlighted links ease toward their targets instead of switching instantly,
+  // so labels fade in when you hover a node and fade out when you leave it.
+  const EASE = 0.2;
+
+  function currentFocus() {
+    return hover || nodes.find((n) => n.path === focusPath) || null;
+  }
+
+  function approach(cur, target) {
+    const next = cur + (target - cur) * EASE;
+    return Math.abs(target - next) < 0.01 ? target : next;
+  }
+
+  function stepFades() {
+    const focus = currentFocus();
+    const searching = query.length > 0;
+    const zoomFade = Math.min(1, Math.max(0, (view.k - 1.3) / 0.5));
+    let moving = false;
+    for (const n of nodes) {
+      const lit = !focus || n === focus || focus.nbrs.has(n);
+      const dim = (focus && !lit) || (searching && !n.match);
+      const important = n === focus || n.match || (focus && focus.nbrs.has(n));
+      const daT = dim ? 0.2 : 1;
+      const laT = (important ? 1 : zoomFade) * (dim ? 0.25 : 1);
+      const da = approach(n.da, daT), la = approach(n.la, laT);
+      if (da !== daT || la !== laT) moving = true;
+      n.da = da; n.la = la;
     }
+    for (const l of links) {
+      const hotT = focus && (l[0] === focus || l[1] === focus) ? 1 : 0;
+      l[2] = approach(l[2], hotT);
+      if (l[2] !== hotT) moving = true;
+    }
+    return moving;
   }
 
   // ---------- view helpers ----------
@@ -261,30 +314,28 @@
     if (!nodes.length) return;
     ctx.setTransform(s * view.k, 0, 0, s * view.k, s * view.x, s * view.y);
 
-    const focusNode = hover || nodes.find((n) => n.path === focusPath) || null;
-    const searching = query.length > 0;
-    const lit = (n) => !focusNode || n === focusNode || focusNode.nbrs.has(n);
+    const focusNode = currentFocus();
 
     // Links
-    ctx.lineWidth = 1 / view.k;
-    for (const [a, b] of links) {
-      const hot = focusNode && (a === focusNode || b === focusNode);
-      ctx.strokeStyle = hot ? colors.accent : colors.line;
-      ctx.globalAlpha = hot ? 0.9 : focusNode || searching ? 0.25 : 0.8;
-      if (hot) ctx.lineWidth = 1.6 / view.k;
+    for (const l of links) {
+      const a = l[0], b = l[1], h = l[2];
+      const lit = Math.min(a.da, b.da);               // 0.2 (dimmed) .. 1
+      const base = 0.25 + 0.55 * ((lit - 0.2) / 0.8); // 0.25 .. 0.8
+      ctx.strokeStyle = h > 0.5 ? colors.accent : colors.line;
+      ctx.globalAlpha = base + (0.9 - base) * h;
+      ctx.lineWidth = (1 + 0.6 * h) / view.k;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
-      if (hot) ctx.lineWidth = 1 / view.k;
     }
 
     // Nodes
     for (const n of nodes) {
-      const dim = (focusNode && !lit(n)) || (searching && !n.match);
-      ctx.globalAlpha = dim ? 0.2 : 1;
-      ctx.fillStyle =
-        n === focusNode || n.match ? colors.accent : n.kind === "file" ? colors.file : colors.muted;
+      ctx.globalAlpha = n.da;
+      ctx.fillStyle = n.match
+        ? colors.accent
+        : n.gc || (n === focusNode ? colors.accent : n.kind === "file" ? colors.file : colors.muted);
       ctx.beginPath();
       ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
       ctx.fill();
@@ -297,26 +348,21 @@
       }
     }
 
-    // Labels: constant on-screen size; shown when zoomed in, for hubs, and for highlighted nodes.
+    // Labels: constant on-screen size, faded by the animated per-node alpha.
     const fontPx = 12 / view.k;
     ctx.font = `${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    const zoomFade = Math.min(1, Math.max(0, (view.k - 1.3) / 0.5));
     for (const n of nodes) {
-      const important = n === focusNode || n.match || (focusNode && focusNode.nbrs.has(n));
-      const hub = false;
-      let a = important ? 1 : hub ? Math.max(zoomFade, 0.75) : zoomFade;
-      if ((focusNode && !lit(n)) || (searching && !n.match)) a *= 0.25;
-      if (a <= 0.02) continue;
-      ctx.globalAlpha = a;
+      if (n.la <= 0.02) continue;
+      ctx.globalAlpha = n.la;
       const label = n.label.length > 40 ? n.label.slice(0, 38) + "…" : n.label;
       const y = n.y + n.r + 3 / view.k;
       // Halo for legibility over links.
       ctx.lineWidth = 3 / view.k;
       ctx.strokeStyle = colors.bg;
       ctx.strokeText(label, n.x, y);
-      ctx.fillStyle = important ? colors.ink : colors.muted;
+      ctx.fillStyle = n === focusNode || n.match || (focusNode && focusNode.nbrs.has(n)) ? colors.ink : colors.muted;
       ctx.fillText(label, n.x, y);
     }
     ctx.globalAlpha = 1;
@@ -365,7 +411,7 @@
       const wx = (pinch.cx - pinch.vx) / pinch.k, wy = (pinch.cy - pinch.vy) / pinch.k;
       const cx = (ax + bx) / 2, cy = (ay + by) / 2;
       view = { k, x: cx - wx * k, y: cy - wy * k };
-      draw();
+      start();
       return;
     }
     if (drag) {
@@ -386,7 +432,7 @@
         hover = n;
         canvas.style.cursor = n ? "pointer" : "grab";
         canvas.title = n ? n.path : "";
-        draw();
+        start();
       }
     }
   });
@@ -412,7 +458,7 @@
   canvas.addEventListener("pointerup", endPointer);
   canvas.addEventListener("pointercancel", endPointer);
   canvas.addEventListener("pointerleave", (e) => {
-    if (e.pointerType === "mouse" && hover && !drag) { hover = null; draw(); }
+    if (e.pointerType === "mouse" && hover && !drag) { hover = null; start(); }
   });
 
   const clampK = (k) => Math.min(8, Math.max(0.03, k));
@@ -425,7 +471,7 @@
     view.x = sx - ((sx - view.x) * k) / view.k;
     view.y = sy - ((sy - view.y) * k) / view.k;
     view.k = k;
-    draw();
+    start();
   }, { passive: false });
 
   // ---------- controls ----------
@@ -436,7 +482,7 @@
   searchEl.addEventListener("input", () => {
     query = searchEl.value.trim().toLowerCase();
     applySearch();
-    draw();
+    start();
   });
   searchEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -450,4 +496,107 @@
   filesEl.addEventListener("change", () => data && rebuild(false));
   orphansEl.addEventListener("change", () => data && rebuild(false));
   resetEl.addEventListener("click", () => { fit(); draw(); });
+
+  // ---------- groups ----------
+  // A group is a search query and a colour. Nodes take the colour of the first group they match.
+  // Queries: plain text (matches name or path), `path:Topics`, or `file:lesson`.
+  const PALETTE = ["#fb464c", "#e9973f", "#e0de71", "#44cf6e", "#53dfdd", "#027aff", "#a882ff", "#fa99cd"];
+  const groupsList = wrap.querySelector("[data-groups-list]");
+  const groupAddEl = wrap.querySelector("[data-group-add]");
+  let groups = readPref("groups", []);
+  if (!Array.isArray(groups)) groups = [];
+  groups = groups
+    .filter((g) => g && typeof g.q === "string" && /^#[0-9a-f]{6}$/i.test(g.color || ""))
+    .slice(0, 20);
+
+  function groupMatches(n, raw) {
+    const q = raw.trim().toLowerCase();
+    if (!q) return false;
+    const m = q.match(/^(path|file):\s*(.*)$/);
+    if (m) {
+      const v = m[2];
+      if (!v) return false;
+      return m[1] === "path" ? n.path.toLowerCase().includes(v) : n.label.toLowerCase().includes(v);
+    }
+    return n.label.toLowerCase().includes(q) || n.path.toLowerCase().includes(q);
+  }
+
+  function applyGroups() {
+    for (const n of nodes) {
+      n.gc = null;
+      for (const g of groups) {
+        if (groupMatches(n, g.q)) { n.gc = g.color; break; }
+      }
+    }
+  }
+
+  function renderGroups() {
+    if (!groupsList) return;
+    groupsList.textContent = "";
+    groups.forEach((g, i) => {
+      const row = document.createElement("div");
+      row.className = "group-row";
+      const q = document.createElement("input");
+      q.type = "text";
+      q.value = g.q;
+      q.placeholder = "path:Topics";
+      q.maxLength = 100;
+      q.setAttribute("aria-label", "Group query");
+      q.addEventListener("input", () => { g.q = q.value; savePref("groups", groups); applyGroups(); start(); });
+      const c = document.createElement("input");
+      c.type = "color";
+      c.value = g.color;
+      c.setAttribute("aria-label", "Group colour");
+      c.addEventListener("input", () => { g.color = c.value; savePref("groups", groups); applyGroups(); start(); });
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "icon-btn";
+      x.title = "Delete group";
+      x.setAttribute("aria-label", "Delete group");
+      x.textContent = "×";
+      x.addEventListener("click", () => { groups.splice(i, 1); savePref("groups", groups); renderGroups(); applyGroups(); start(); });
+      row.append(q, c, x);
+      groupsList.appendChild(row);
+    });
+  }
+  renderGroups();
+  if (groupAddEl) {
+    groupAddEl.addEventListener("click", () => {
+      if (groups.length >= 20) return;
+      groups.push({ q: "", color: PALETTE[groups.length % PALETTE.length] });
+      savePref("groups", groups);
+      renderGroups();
+      const inputs = groupsList.querySelectorAll('input[type="text"]');
+      if (inputs.length) inputs[inputs.length - 1].focus();
+    });
+  }
+
+  // ---------- forces ----------
+  const sliders = wrap.querySelectorAll("[data-force]");
+  function syncSliders() {
+    sliders.forEach((el) => { el.value = String(forces[el.dataset.force]); });
+  }
+  function reheat() {
+    alpha = Math.max(alpha, 0.6);
+    start();
+  }
+  sliders.forEach((el) => {
+    el.addEventListener("input", () => {
+      const v = parseFloat(el.value);
+      if (!Number.isFinite(v)) return;
+      forces[el.dataset.force] = v;
+      savePref("forces", forces);
+      reheat();
+    });
+  });
+  const forcesReset = wrap.querySelector("[data-forces-reset]");
+  if (forcesReset) {
+    forcesReset.addEventListener("click", () => {
+      Object.assign(forces, FORCE_DEFAULTS);
+      savePref("forces", forces);
+      syncSliders();
+      reheat();
+    });
+  }
+  syncSliders();
 })();
