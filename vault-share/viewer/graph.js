@@ -27,6 +27,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   let view = { x: 0, y: 0, k: 1 }; // screen = world * k + (x, y), in CSS pixels
   let sim = null;
   let zoomAnim = null;           // smooth wheel zoom: { k, sx, sy }
+  let autoFit = false;           // while true the view follows the graph (set when forces change)
   let hover = null, drag = null, pan = null;
   let query = "";
   let running = false;
@@ -124,6 +125,9 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     for (const e of pairs.values()) { deg[e.lo]++; deg[e.hi]++; kept.push([e.lo, e.hi, e.dir]); }
     const map = new Map();
     nodes = [];
+    // Like Obsidian, every open starts from a different random scatter, so the layout settles differently each time.
+    const spread = 34 * Math.sqrt(data.nodes.length);
+    const rnd = () => (Math.random() * 2 - 1) * spread;
     data.nodes.forEach((n, i) => {
       if (!included[i]) return;
       if (!withOrphans && deg[i] === 0 && n.path !== focusPath) return;
@@ -133,9 +137,9 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
         ...n,
         deg: deg[i],
         r: radiusFor(deg[i]),
-        // New nodes start undefined: d3 places them on a spiral. Existing ones keep their position.
-        x: prev ? prev.x : undefined,
-        y: prev ? prev.y : undefined,
+        // New nodes start at a random spot; existing ones keep their position.
+        x: prev ? prev.x : rnd(),
+        y: prev ? prev.y : rnd(),
         vx: 0, vy: 0, fx: null, fy: null,
         nbrs: new Set(),
         match: false,
@@ -176,13 +180,24 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   // ---------- simulation (d3-force) ----------
   const COLLIDE = 22; // every node keeps this much room, regardless of size
 
-  const linkStrength = (l) => forces.link / Math.max(1, Math.min(l.source.deg, l.target.deg));
+  // Links are weaker for well-connected nodes (so hubs do not collapse), except around a node being dragged:
+  // those get a firm pull so its neighbours follow the pointer instead of being pushed away.
+  let held = null;
+  const linkStrength = (l) =>
+    held && (l.source === held || l.target === held)
+      ? Math.min(1, 0.6 * forces.link)
+      : forces.link / Math.max(1, Math.min(l.source.deg, l.target.deg));
+  function setHeld(n) {
+    held = n;
+    if (sim) sim.force("link").strength(linkStrength);
+  }
 
   function buildSim() {
     if (sim) sim.stop();
     const simLinks = links.map((l) => ({ source: l[0], target: l[1] }));
     sim = forceSimulation(nodes)
       .stop()
+      .randomSource(Math.random)
       .alphaDecay(0.0228)
       .velocityDecay(0.4)
       .force("link", forceLink(simLinks).distance(forces.dist).strength(linkStrength))
@@ -215,11 +230,27 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   function frame() {
     const simulating = !!sim && (sim.alpha() > sim.alphaMin() || sim.alphaTarget() > 0);
     if (simulating) sim.tick();
+    const following = stepFollow(simulating);
     const zooming = stepZoom();
     const fading = stepFades();
     draw();
-    if (simulating || zooming || fading) requestAnimationFrame(frame);
+    if (simulating || following || zooming || fading) requestAnimationFrame(frame);
     else running = false;
+  }
+
+  // After a force change the graph can grow or drift past the edge of the screen. Until the layout settles
+  // (or you grab the view), ease the view so the whole graph stays in sight and centred.
+  function stepFollow(simulating) {
+    if (!autoFit || drag || pan || pinch) return false;
+    const t = fitView();
+    if (!t) { autoFit = false; return false; }
+    const e = 0.12;
+    view.k += (t.k - view.k) * e;
+    view.x += (t.x - view.x) * e;
+    view.y += (t.y - view.y) * e;
+    const close = Math.abs(t.k - view.k) < 0.002 && Math.abs(t.x - view.x) < 0.5 && Math.abs(t.y - view.y) < 0.5;
+    if (!simulating && close) { autoFit = false; return false; }
+    return true;
   }
 
   // ---------- smooth zoom ----------
@@ -276,18 +307,25 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   // ---------- view helpers ----------
   const toWorld = (sx, sy) => [(sx - view.x) / view.k, (sy - view.y) / view.k];
 
-  // Obsidian opens the graph at zoom 1 centred on the middle of the cloud; only shrink when it would not fit.
-  function fit() {
-    zoomAnim = null;
-    if (!nodes.length) { view = { x: width / 2, y: height / 2, k: 1 }; return; }
+  // The view that shows the whole graph: zoom 1 centred on the cloud, shrinking only if it would not fit.
+  // Obsidian opens the graph like this.
+  function fitView() {
+    if (!nodes.length) return null;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const n of nodes) {
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
       x0 = Math.min(x0, n.x - n.r); y0 = Math.min(y0, n.y - n.r);
       x1 = Math.max(x1, n.x + n.r); y1 = Math.max(y1, n.y + n.r);
     }
+    if (!Number.isFinite(x0)) return null;
     const pad = 40;
     const k = Math.min(1, Math.max(0.05, Math.min((width - pad * 2) / (x1 - x0 || 1), (height - pad * 2) / (y1 - y0 || 1))));
-    view = { k, x: width / 2 - ((x0 + x1) / 2) * k, y: height / 2 - ((y0 + y1) / 2) * k };
+    return { k, x: width / 2 - ((x0 + x1) / 2) * k, y: height / 2 - ((y0 + y1) / 2) * k };
+  }
+
+  function fit() {
+    zoomAnim = null;
+    view = fitView() || { x: width / 2, y: height / 2, k: 1 };
   }
 
   function centerOn(n, k) {
@@ -405,9 +443,10 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     const [sx, sy] = local(e);
     pointers.set(e.pointerId, [sx, sy]);
     zoomAnim = null;
+    autoFit = false;
     if (pointers.size === 2) {
       // Start pinch; cancel drag/pan.
-      if (drag) { drag.fx = drag.fy = null; drag = null; sim && sim.alphaTarget(0); }
+      if (drag) { drag.fx = drag.fy = null; drag = null; setHeld(null); sim && sim.alphaTarget(0); }
       pan = null;
       const [[ax, ay], [bx, by]] = [...pointers.values()];
       pinch = { d: Math.hypot(bx - ax, by - ay), k: view.k, cx: (ax + bx) / 2, cy: (ay + by) / 2, vx: view.x, vy: view.y };
@@ -418,6 +457,8 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     if (n) {
       drag = n;
       n.fx = n.x; n.fy = n.y;
+      autoFit = false;
+      setHeld(n);
       sim && sim.alphaTarget(0.3); // neighbours follow while a node is dragged
       start();
     } else {
@@ -469,6 +510,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       const n = drag;
       drag = null;
       n.fx = n.fy = null;
+      setHeld(null);
       sim && sim.alphaTarget(0);
       if (moved < 5 && e.type === "pointerup") {
         window.location.href = n.url;
@@ -490,6 +532,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     e.preventDefault();
     const [sx, sy] = local(e);
     const factor = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0018));
+    autoFit = false;
     const from = zoomAnim ? zoomAnim.k : view.k;
     zoomAnim = { k: clampK(from * factor), sx, sy };
     start();
@@ -604,6 +647,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       forces[el.dataset.force] = v;
       savePref("forces", forces);
       applyForces();
+      autoFit = true;
       reheat(0.6);
     });
   });
@@ -614,6 +658,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       savePref("forces", forces);
       syncSliders();
       applyForces();
+      autoFit = true;
       reheat(0.6);
     });
   }
@@ -652,12 +697,13 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   const animateEl = wrap.querySelector("[data-display-animate]");
   if (animateEl) {
     animateEl.addEventListener("click", () => {
-      nodes.forEach((n, j) => {
-        const rad = 10 * Math.sqrt(j + 0.5), ang = j * 2.39996323;
-        n.x = rad * Math.cos(ang); n.y = rad * Math.sin(ang); n.vx = n.vy = 0;
+      const spread = 34 * Math.sqrt(Math.max(1, nodes.length));
+      nodes.forEach((n) => {
+        n.x = (Math.random() * 2 - 1) * spread; n.y = (Math.random() * 2 - 1) * spread; n.vx = n.vy = 0;
       });
       view = { x: width / 2, y: height / 2, k: 1 };
       zoomAnim = null;
+      autoFit = true;
       if (sim) sim.alpha(1);
       start();
     });
