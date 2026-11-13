@@ -136,6 +136,8 @@ pub struct NotePage {
     /// Viewer URL of the Word/PowerPoint original this note was converted from, if any.
     pub original_url: String,
     pub backlinks: Vec<Backlink>,
+    /// Rendered frontmatter ("Properties") block, already escaped.
+    pub properties_html: String,
 }
 
 pub struct Backlink {

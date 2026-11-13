@@ -142,6 +142,14 @@
   const savedForces = readPref("forces", {});
   for (const k of Object.keys(FORCE_DEFAULTS)) if (Number.isFinite(savedForces[k])) forces[k] = savedForces[k];
 
+  // Display options (Display panel): when labels appear, node size and link thickness.
+  const DISPLAY_DEFAULTS = { fade: 0.45, nodeSize: 1, linkWidth: 1 };
+  const display = Object.assign({}, DISPLAY_DEFAULTS);
+  const savedDisplay = readPref("display", {});
+  for (const k of Object.keys(DISPLAY_DEFAULTS)) if (Number.isFinite(savedDisplay[k])) display[k] = savedDisplay[k];
+  // Zoom level at which labels start to fade in: lower threshold slider = labels only when zoomed in far.
+  const labelZoomStart = () => 2.2 - 2.0 * display.fade;
+
   function buildTree() {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const n of nodes) {
@@ -254,7 +262,7 @@
   function stepFades() {
     const focus = currentFocus();
     const searching = query.length > 0;
-    const zoomFade = Math.min(1, Math.max(0, (view.k - 1.3) / 0.5));
+    const zoomFade = Math.min(1, Math.max(0, (view.k - labelZoomStart()) / 0.5));
     let moving = false;
     for (const n of nodes) {
       const lit = !focus || n === focus || focus.nbrs.has(n);
@@ -300,7 +308,7 @@
     for (const n of nodes) {
       const dx = n.x - wx, dy = n.y - wy;
       const d = Math.sqrt(dx * dx + dy * dy);
-      if (d < n.r + slop && d < bestD) { best = n; bestD = d; }
+      if (d < n.r * display.nodeSize + slop && d < bestD) { best = n; bestD = d; }
     }
     return best;
   }
@@ -323,7 +331,7 @@
       const base = 0.25 + 0.55 * ((lit - 0.2) / 0.8); // 0.25 .. 0.8
       ctx.strokeStyle = h > 0.5 ? colors.accent : colors.line;
       ctx.globalAlpha = base + (0.9 - base) * h;
-      ctx.lineWidth = (1 + 0.6 * h) / view.k;
+      ctx.lineWidth = ((1 + 0.6 * h) * display.linkWidth) / view.k;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
@@ -337,13 +345,13 @@
         ? colors.accent
         : n.gc || (n === focusNode ? colors.accent : n.kind === "file" ? colors.file : colors.muted);
       ctx.beginPath();
-      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      ctx.arc(n.x, n.y, n.r * display.nodeSize, 0, Math.PI * 2);
       ctx.fill();
       if (n.path === focusPath) {
         ctx.strokeStyle = colors.accent;
         ctx.lineWidth = 2 / view.k;
         ctx.beginPath();
-        ctx.arc(n.x, n.y, n.r + 3 / view.k, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, n.r * display.nodeSize + 3 / view.k, 0, Math.PI * 2);
         ctx.stroke();
       }
     }
@@ -357,7 +365,7 @@
       if (n.la <= 0.02) continue;
       ctx.globalAlpha = n.la;
       const label = n.label.length > 40 ? n.label.slice(0, 38) + "…" : n.label;
-      const y = n.y + n.r + 3 / view.k;
+      const y = n.y + n.r * display.nodeSize + 3 / view.k;
       // Halo for legibility over links.
       ctx.lineWidth = 3 / view.k;
       ctx.strokeStyle = colors.bg;
@@ -595,6 +603,44 @@
       Object.assign(forces, FORCE_DEFAULTS);
       savePref("forces", forces);
       syncSliders();
+
+  // ---------- display ----------
+  const displaySliders = wrap.querySelectorAll("[data-display]");
+  function syncDisplay() {
+    displaySliders.forEach((el) => { el.value = String(display[el.dataset.display]); });
+  }
+  displaySliders.forEach((el) => {
+    el.addEventListener("input", () => {
+      const v = parseFloat(el.value);
+      if (!Number.isFinite(v)) return;
+      display[el.dataset.display] = v;
+      savePref("display", display);
+      start();
+    });
+  });
+  const displayReset = wrap.querySelector("[data-display-reset]");
+  if (displayReset) {
+    displayReset.addEventListener("click", () => {
+      Object.assign(display, DISPLAY_DEFAULTS);
+      savePref("display", display);
+      syncDisplay();
+      start();
+    });
+  }
+  // Animate: put every node back on the starting spiral and let the layout play out again.
+  const animateEl = wrap.querySelector("[data-display-animate]");
+  if (animateEl) {
+    animateEl.addEventListener("click", () => {
+      nodes.forEach((n, j) => {
+        const rad = 12 * Math.sqrt(j + 0.5), ang = j * 2.39996323;
+        n.x = rad * Math.cos(ang); n.y = rad * Math.sin(ang); n.vx = n.vy = 0;
+      });
+      view = { x: width / 2, y: height / 2, k: 1.2 };
+      alpha = 1;
+      start();
+    });
+  }
+  syncDisplay();
       reheat();
     });
   }

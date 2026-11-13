@@ -43,7 +43,11 @@
             <button type="button" class="mod-cta group-add" data-group-add>New group</button>
             <p class="muted small">Colour notes by search: plain text, <code>path:Topics</code> or <code>file:lesson</code>.</p>
           </div></details>
-          <details class="gc-sec"><summary>Display</summary><div class="gc-body"><p class="graph-status muted small" data-graph-status aria-live="polite">Loading graph…</p><p class="muted small">Scroll or pinch to zoom · drag to move · click a node to open it</p></div></details>
+          <details class="gc-sec"><summary>Display</summary><div class="gc-body">
+            <label class="slider-row"><span>Text fade threshold</span><input type="range" min="0" max="1" step="0.01" data-display="fade"></label>
+            <label class="slider-row"><span>Node size</span><input type="range" min="0.4" max="2.5" step="0.05" data-display="nodeSize"></label>
+            <label class="slider-row"><span>Link thickness</span><input type="range" min="0.4" max="4" step="0.1" data-display="linkWidth"></label>
+            <div class="btn-row"><button type="button" data-display-animate>Animate</button><button type="button" data-display-reset>Reset</button></div><p class="graph-status muted small" data-graph-status aria-live="polite">Loading graph…</p><p class="muted small">Scroll or pinch to zoom · drag to move · click a node to open it</p></div></details>
           <details class="gc-sec"><summary>Forces</summary><div class="gc-body">
             <label class="slider-row"><span>Center force</span><input type="range" min="0" max="1" step="0.01" data-force="center"></label>
             <label class="slider-row"><span>Repel force</span><input type="range" min="0" max="20" step="0.1" data-force="repel"></label>

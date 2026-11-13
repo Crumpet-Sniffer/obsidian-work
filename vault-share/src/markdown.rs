@@ -35,7 +35,218 @@ pub fn render(src: &str, ctx: &RenderCtx) -> String {
     let events = with_heading_ids(Parser::new_ext(&pre, opts).collect());
     let mut out = String::with_capacity(pre.len() * 3 / 2);
     html::push_html(&mut out, events.into_iter());
+    let out = callouts(&out);
     sanitizer().clean(&out).to_string()
+}
+
+// ---------------------------------------------------------------- properties and callouts
+
+/// Frontmatter as `(key, values)` pairs; scalars are a single value. Handles `key: value`,
+/// `key: [a, b]` and `key:` followed by `- item` lines, which is what Obsidian writes.
+pub fn frontmatter_props(src: &str) -> Vec<(String, Vec<String>)> {
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    let Some(rest) = src.strip_prefix("---\n").or_else(|| src.strip_prefix("---\r\n")) else {
+        return Vec::new();
+    };
+    let unquote = |v: &str| v.trim().trim_matches(|c| c == '"' || c == '\'').trim().to_string();
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let mut closed = false;
+    for line in rest.lines() {
+        let t = line.trim_end();
+        if t == "---" || t == "..." {
+            closed = true;
+            break;
+        }
+        if t.trim().is_empty() || t.trim_start().starts_with('#') {
+            continue;
+        }
+        let indented = t.starts_with(' ') || t.starts_with('\t');
+        let item = t.trim_start().strip_prefix("- ").or_else(|| t.trim_start().strip_prefix("-").filter(|s| s.is_empty()));
+        if let Some(item) = item {
+            if let Some(last) = out.last_mut() {
+                let v = unquote(item);
+                if !v.is_empty() {
+                    last.1.push(v);
+                }
+            }
+            continue;
+        }
+        if indented {
+            continue; // nested structures are not shown
+        }
+        let Some((key, value)) = t.split_once(':') else { continue };
+        let key = key.trim();
+        if key.is_empty() || key.len() > 60 || key.contains(['"', '\'', '{', '[']) {
+            continue;
+        }
+        let value = value.trim();
+        let values: Vec<String> = if value.is_empty() {
+            Vec::new()
+        } else if let Some(inner) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+            inner.split(',').map(unquote).filter(|v| !v.is_empty()).collect()
+        } else {
+            vec![unquote(value)]
+        };
+        out.push((key.to_string(), values));
+        if out.len() >= 50 {
+            break;
+        }
+    }
+    if !closed {
+        return Vec::new();
+    }
+    out.retain(|(_, v)| !v.is_empty());
+    out
+}
+
+fn clip(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn prop_value_html(key: &str, v: &str, ctx: &RenderCtx) -> String {
+    let v = clip(v, 500);
+    if matches!(key.to_ascii_lowercase().as_str(), "tags" | "tag") {
+        return format!("<span class=\"tag\">{}</span>", esc(v.trim_start_matches('#')));
+    }
+    let wiki = v.strip_prefix("[[").and_then(|x| x.strip_suffix("]]"));
+    let target = wiki.map(|w| w.split('|').next().unwrap_or(w).trim()).unwrap_or(v.as_str());
+    let looks_like_path = wiki.is_some()
+        || (target.contains('/') && target.rsplit('/').next().is_some_and(|f| f.contains('.')))
+        || target.to_ascii_lowercase().ends_with(".md");
+    if looks_like_path {
+        let name = target.split('#').next().unwrap_or(target);
+        if let Some(path) = ctx.index.resolve(name) {
+            let url = match mime_for(path) {
+                Some((_, Kind::Note)) => note_url(ctx.vault_id, path),
+                _ => link_url(ctx.vault_id, path),
+            };
+            let label = path.rsplit('/').next().unwrap_or(path);
+            let label = label.strip_suffix(".md").unwrap_or(label);
+            return format!("<a class=\"internal\" href=\"{}\">{}</a>", esc(&url), esc(label));
+        }
+    }
+    if v.starts_with("https://") || v.starts_with("http://") {
+        return format!("<a href=\"{}\" rel=\"noopener noreferrer nofollow\" target=\"_blank\">{}</a>", esc(&v), esc(&v));
+    }
+    esc(&v)
+}
+
+/// Obsidian-style "Properties" block for a note's frontmatter. Empty when there is none.
+pub fn render_properties(src: &str, ctx: &RenderCtx) -> String {
+    let props = frontmatter_props(src);
+    if props.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<details class=\"props\" open><summary>Properties</summary><div class=\"props-body\">");
+    for (key, values) in &props {
+        out.push_str("<div class=\"prop\"><span class=\"prop-key\">");
+        out.push_str(&esc(&clip(key, 60)));
+        out.push_str("</span><span class=\"prop-val\">");
+        for (i, v) in values.iter().take(30).enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            out.push_str(&prop_value_html(key, v, ctx));
+        }
+        out.push_str("</span></div>");
+    }
+    out.push_str("</div></details>");
+    out
+}
+
+/// Canonical callout kind (the CSS has a colour and icon for each), following Obsidian's aliases.
+fn callout_kind(ty: &str) -> &'static str {
+    match ty.to_ascii_lowercase().as_str() {
+        "info" => "info",
+        "abstract" | "summary" | "tldr" => "abstract",
+        "todo" => "todo",
+        "tip" | "hint" | "important" => "tip",
+        "success" | "check" | "done" => "success",
+        "question" | "help" | "faq" => "question",
+        "warning" | "caution" | "attention" => "warning",
+        "failure" | "fail" | "missing" => "failure",
+        "danger" | "error" => "danger",
+        "bug" => "bug",
+        "example" => "example",
+        "quote" | "cite" => "quote",
+        _ => "note",
+    }
+}
+
+/// Turn Obsidian callouts (`> [!info] Title` ...) into styled blocks. Runs on the rendered HTML,
+/// before sanitising, so every resulting tag and class has to be allowed by the sanitiser.
+pub fn callouts(html: &str) -> String {
+    const OPEN: &str = "<blockquote>\n<p>[!";
+    let mut out = String::with_capacity(html.len() + 128);
+    let mut rest = html;
+    while let Some(i) = rest.find(OPEN) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + OPEN.len()..];
+        let parsed = (|| {
+            let close = after.find(']')?;
+            let ty = &after[..close];
+            if ty.is_empty() || ty.len() > 30 || !ty.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return None;
+            }
+            let tail = &after[close + 1..];
+            let tail = tail.strip_prefix(['+', '-']).unwrap_or(tail);
+            let pend = tail.find("</p>")?;
+            let para = &tail[..pend];
+            let after_p = &tail[pend + 4..];
+            // find the matching </blockquote>, allowing nested quotes
+            let mut depth = 1usize;
+            let mut pos = 0usize;
+            let end = loop {
+                let next_open = after_p[pos..].find("<blockquote");
+                let next_close = after_p[pos..].find("</blockquote>")?;
+                match next_open {
+                    Some(o) if o < next_close => {
+                        depth += 1;
+                        pos += o + "<blockquote".len();
+                    }
+                    _ => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break pos + next_close;
+                        }
+                        pos += next_close + "</blockquote>".len();
+                    }
+                }
+            };
+            Some((ty, para, &after_p[..end], &after_p[end + "</blockquote>".len()..]))
+        })();
+        let Some((ty, para, inner, remainder)) = parsed else {
+            out.push_str(OPEN);
+            rest = after;
+            continue;
+        };
+        let (title, body) = match para.split_once('\n') {
+            Some((t, b)) => (t.trim(), Some(b)),
+            None => (para.trim(), None),
+        };
+        let kind = callout_kind(ty);
+        let default_title = {
+            let mut c = ty.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase()).unwrap_or_default()
+        };
+        out.push_str("<blockquote class=\"callout callout-");
+        out.push_str(kind);
+        out.push_str("\"><div class=\"callout-title\">");
+        out.push_str(if title.is_empty() { &default_title } else { title });
+        out.push_str("</div><div class=\"callout-content\">");
+        if let Some(b) = body {
+            if !b.trim().is_empty() {
+                out.push_str("<p>");
+                out.push_str(b);
+                out.push_str("</p>");
+            }
+        }
+        out.push_str(inner);
+        out.push_str("</div></blockquote>");
+        rest = remainder;
+    }
+    out.push_str(rest);
+    out
 }
 
 const CONN_START: &str = "%% connections:start %%";
@@ -435,11 +646,25 @@ fn sanitizer() -> &'static Builder<'static> {
         }
         b.add_allowed_classes("a", &["internal", "embed"]);
         b.add_allowed_classes("span", &["broken"]);
-        b.add_allowed_classes("div", &["footnote-definition"]);
+        b.add_allowed_classes("div", &["footnote-definition", "callout-title", "callout-content"]);
         b.add_allowed_classes("sup", &["footnote-reference", "footnote-definition-label"]);
         b.add_allowed_classes(
             "blockquote",
             &[
+                "callout",
+                "callout-info",
+                "callout-abstract",
+                "callout-todo",
+                "callout-tip",
+                "callout-success",
+                "callout-question",
+                "callout-warning",
+                "callout-failure",
+                "callout-danger",
+                "callout-bug",
+                "callout-example",
+                "callout-quote",
+                "callout-note",
                 "markdown-alert-note",
                 "markdown-alert-tip",
                 "markdown-alert-important",
@@ -539,5 +764,42 @@ mod tests {
         assert!(!html.contains("tags"), "{html}");
         assert!(html.contains("<h1 id=\"title\">"), "{html}");
         assert!(html.contains("<mark>bright</mark>"), "{html}");
+    }
+}
+
+#[cfg(test)]
+mod callout_tests {
+    use super::*;
+
+    #[test]
+    fn callout_becomes_styled_block() {
+        let html = callouts("<blockquote>\n<p>[!info] Recovered content\nSome text here</p>\n</blockquote>\n");
+        assert!(html.contains("callout callout-info"), "{html}");
+        assert!(html.contains("<div class=\"callout-title\">Recovered content</div>"), "{html}");
+        assert!(html.contains("<p>Some text here</p>"), "{html}");
+        let clean = sanitizer().clean(&html).to_string();
+        assert!(clean.contains("callout-title"), "classes survive sanitising: {clean}");
+    }
+
+    #[test]
+    fn plain_quote_is_untouched() {
+        let src = "<blockquote>\n<p>just a quote</p>\n</blockquote>\n";
+        assert_eq!(callouts(src), src);
+    }
+
+    #[test]
+    fn callout_without_title_uses_type() {
+        let html = callouts("<blockquote>\n<p>[!warning]</p>\n</blockquote>\n");
+        assert!(html.contains(">Warning</div>"), "{html}");
+    }
+
+    #[test]
+    fn frontmatter_properties_parse() {
+        let src = "---\nsource: \"_Originals/a.docx\"\ntags: [unit-1, docx]\nlist:\n  - one\n  - two\n---\n\n# T\n";
+        let p = frontmatter_props(src);
+        assert_eq!(p[0], ("source".to_string(), vec!["_Originals/a.docx".to_string()]));
+        assert_eq!(p[1].1, vec!["unit-1".to_string(), "docx".to_string()]);
+        assert_eq!(p[2].1, vec!["one".to_string(), "two".to_string()]);
+        assert!(frontmatter_props("# no frontmatter").is_empty());
     }
 }

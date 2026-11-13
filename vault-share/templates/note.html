@@ -33,10 +33,12 @@
     <div class="view-content reading">
       <article class="note">
         <h1 class="note-title">{{ title }}</h1>
+        {{ properties_html|safe }}
         <div class="prose">{{ content_html|safe }}</div>
       </article>
     </div>
   </div>
+  <div class="status-bar" data-status data-backlinks="{{ backlinks.len() }}" aria-live="polite"></div>
 </div>
 {% include "_connections.html" %}
 </div>

@@ -82,6 +82,7 @@ pub async fn vault_home(State(st): State<AppState>, user: CurrentUser, Path(id):
             conn_html: String::new(),
             original_url: String::new(),
             backlinks: Vec::new(),
+            properties_html: String::new(),
         })),
     }
 }
@@ -94,8 +95,8 @@ pub async fn note(State(st): State<AppState>, user: CurrentUser, Path((id, path)
         return Ok(Redirect::to(&vault::file_url(&v.id, &path)).into_response());
     }
     let meta = tokio::fs::metadata(&disk).await.map_err(|_| AppError::NotFound)?;
-    let (content_html, conn_html, source) = if meta.len() > MAX_NOTE_BYTES {
-        ("<p>This note is too large to display. Use “Download .md” instead.</p>".to_string(), String::new(), None)
+    let (content_html, conn_html, source, properties_html) = if meta.len() > MAX_NOTE_BYTES {
+        ("<p>This note is too large to display. Use “Download .md” instead.</p>".to_string(), String::new(), None, String::new())
     } else {
         let bytes = tokio::fs::read(&disk).await?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -106,7 +107,7 @@ pub async fn note(State(st): State<AppState>, user: CurrentUser, Path((id, path)
             // The Connections block (topics, related notes) goes to the side panel, not the page body.
             let (main, conn) = markdown::split_connections(&text);
             let conn_html = conn.map(|c| markdown::render(&c, &ctx)).unwrap_or_default();
-            (markdown::render(&main, &ctx), conn_html, source)
+            (markdown::render(&main, &ctx), conn_html, source, markdown::render_properties(&text, &ctx))
         })
         .await?
     };
@@ -128,6 +129,7 @@ pub async fn note(State(st): State<AppState>, user: CurrentUser, Path((id, path)
         conn_html,
         original_url,
         backlinks,
+        properties_html,
     }))
 }
 
