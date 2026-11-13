@@ -28,7 +28,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   let sim = null;
   let zoomAnim = null;           // smooth wheel zoom: { k, sx, sy }
   let autoFit = false;           // while true the view follows the graph (set when forces change)
-  let hover = null, drag = null, pan = null;
+  let hover = null, drag = null, pan = null, pressed = null;
   let query = "";
   let running = false;
   let colors = {};
@@ -291,7 +291,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     for (const n of nodes) {
       const lit = !focus || n === focus || focus.nbrs.has(n);
       const dim = (focus && !lit) || (searching && !n.match);
-      const important = n === focus || n.match || (focus && focus.nbrs.has(n));
+      const important = n === focus || n.match; // neighbours are highlighted but not labelled
       const daT = dim ? 0.2 : 1;
       const laT = (important ? 1 : zoomFade) * (dim ? 0.25 : 1);
       const da = approach(n.da, daT), la = approach(n.la, laT);
@@ -424,7 +424,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       ctx.lineWidth = 3 / view.k;
       ctx.strokeStyle = colors.bg;
       ctx.strokeText(label, n.x, y);
-      ctx.fillStyle = n === focusNode || n.match || (focusNode && focusNode.nbrs.has(n)) ? colors.ink : colors.muted;
+      ctx.fillStyle = n === focusNode || n.match ? colors.ink : colors.muted;
       ctx.fillText(label, n.x, y);
     }
     ctx.globalAlpha = 1;
@@ -449,6 +449,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     if (pointers.size === 2) {
       // Start pinch; cancel drag/pan.
       if (drag) { drag.fx = drag.fy = null; drag = null; setHeld(null); sim && sim.alphaTarget(0); }
+      pressed = null;
       pan = null;
       const [[ax, ay], [bx, by]] = [...pointers.values()];
       pinch = { d: Math.hypot(bx - ax, by - ay), k: view.k, cx: (ax + bx) / 2, cy: (ay + by) / 2, vx: view.x, vy: view.y };
@@ -457,11 +458,9 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     downAt = [sx, sy];
     const n = nodeAt(sx, sy);
     if (n) {
-      drag = n;
-      n.fx = n.x; n.fy = n.y;
+      pressed = n;       // a plain click or hold only highlights it; the layout is untouched until it is dragged
+      hover = n;
       autoFit = false;
-      setHeld(n);
-      sim && sim.alphaTarget(0.3); // neighbours follow while a node is dragged
       start();
     } else {
       pan = { sx, sy, x: view.x, y: view.y };
@@ -480,12 +479,19 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       start();
       return;
     }
+    if (pressed && !drag && downAt && Math.hypot(sx - downAt[0], sy - downAt[1]) > 5) {
+      drag = pressed;     // moved far enough: now it is a drag, so pin the node and let its neighbours follow
+      drag.fx = drag.x; drag.fy = drag.y;
+      setHeld(drag);
+      sim && sim.alphaTarget(0.3);
+    }
     if (drag) {
       const [wx, wy] = toWorld(sx, sy);
       drag.fx = wx; drag.fy = wy;
       start();
       return;
     }
+    if (pressed) return; // holding a node still: keep it highlighted, do nothing else
     if (pan) {
       view.x = pan.x + (sx - pan.sx);
       view.y = pan.y + (sy - pan.sy);
@@ -514,11 +520,12 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       n.fx = n.fy = null;
       setHeld(null);
       sim && sim.alphaTarget(0);
-      if (moved < 5 && e.type === "pointerup") {
-        window.location.href = n.url;
-        return;
-      }
+    } else if (pressed && moved < 5 && e.type === "pointerup") {
+      window.location.href = pressed.url; // a click opens the note
+      pressed = null;
+      return;
     }
+    pressed = null;
     pan = null;
     downAt = null;
   }
@@ -715,7 +722,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   // Read-only snapshot for debugging and measurements: positions in screen pixels.
   wrap.vsDebug = () => ({
     w: width, h: height, k: view.k,
-    nodes: nodes.map((n) => ({ x: n.x * view.k + view.x, y: n.y * view.k + view.y, r: n.r * display.nodeSize * view.k, deg: n.deg })),
+    nodes: nodes.map((n) => ({ x: n.x * view.k + view.x, y: n.y * view.k + view.y, r: n.r * display.nodeSize * view.k, deg: n.deg, la: n.la, da: n.da })),
     links: links.map((l) => [nodes.indexOf(l[0]), nodes.indexOf(l[1])]),
   });
 })();
