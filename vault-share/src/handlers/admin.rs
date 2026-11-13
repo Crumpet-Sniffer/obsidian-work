@@ -2,6 +2,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use axum::{
     extract::{Multipart, Path, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     Form,
 };
@@ -260,7 +261,148 @@ async fn read_upload(st: &AppState, user: &CurrentUser, mut mp: Multipart) -> Ap
     if !csrf_ok {
         return Err(AppError::Forbidden("Your form expired. Reload the page and try again.".into()));
     }
+    if zip.is_none() {
+        if let Some(id) = fields.get("upload_id") {
+            zip = Some(take_chunked_upload(st, id).await?);
+        }
+    }
     Ok(Upload { fields, zip })
+}
+
+// ---------------------------------------------------------------- chunked uploads
+//
+// Big vault zips can exceed what a proxy in front of the app accepts in one request (Cloudflare's
+// free plan caps request bodies at 100 MB). The browser instead sends the zip in CHUNK_BYTES
+// pieces, which are appended to a temp file, then submits the normal form with `upload_id`.
+
+/// Size of each piece the browser sends. Kept well under Cloudflare's 100 MB request limit.
+const CHUNK_BYTES: u64 = 75 * 1024 * 1024;
+/// Unfinished uploads older than this are deleted the next time someone starts one.
+const STALE_UPLOAD_SECS: u64 = 24 * 60 * 60;
+
+fn json_response(status: StatusCode, body: serde_json::Value) -> Response {
+    (status, [(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
+}
+
+fn check_header_csrf(user: &CurrentUser, headers: &HeaderMap) -> AppResult<()> {
+    let token = headers.get("x-csrf-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+    user.check_csrf(token)
+}
+
+/// Path of an upload in progress. Ids are 32 lowercase hex characters, which rules out path tricks.
+fn part_path(st: &AppState, id: &str) -> Option<PathBuf> {
+    let ok = id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    ok.then(|| st.cfg.tmp_dir().join(format!("{id}.part")))
+}
+
+async fn sweep_stale_uploads(st: &AppState) {
+    let Ok(mut rd) = tokio::fs::read_dir(st.cfg.tmp_dir()).await else { return };
+    while let Ok(Some(e)) = rd.next_entry().await {
+        let path = e.path();
+        let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
+        if ext != "part" && ext != "chunk" {
+            continue;
+        }
+        let age = e.metadata().await.ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok());
+        if age.is_some_and(|a| a.as_secs() > STALE_UPLOAD_SECS) {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+    }
+}
+
+/// Start a chunked upload: creates an empty temp file and tells the browser the chunk size.
+pub async fn upload_start(State(st): State<AppState>, AdminUser(user): AdminUser, headers: HeaderMap) -> AppResult {
+    check_header_csrf(&user, &headers)?;
+    sweep_stale_uploads(&st).await;
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let path = part_path(&st, &id).ok_or(AppError::NotFound)?;
+    tokio::fs::OpenOptions::new().write(true).create_new(true).open(&path).await?;
+    Ok(json_response(
+        StatusCode::OK,
+        serde_json::json!({ "id": id, "chunk_bytes": CHUNK_BYTES, "max_bytes": st.cfg.max_upload_bytes }),
+    ))
+}
+
+/// Append one chunk. The browser says where the chunk starts (`x-upload-offset`); if that is not where the
+/// file ends the server answers 409 with how much it really has, so the browser can resume from there.
+pub async fn upload_chunk(
+    State(st): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    mut mp: Multipart,
+) -> AppResult {
+    check_header_csrf(&user, &headers)?;
+    let bad = |m: &str| AppError::BadRequest(m.to_string());
+    let part = part_path(&st, &id).ok_or(AppError::NotFound)?;
+    let offset: u64 = headers
+        .get("x-upload-offset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| bad("Missing upload offset."))?;
+    let have = tokio::fs::metadata(&part).await.map_err(|_| AppError::NotFound)?.len();
+    if offset != have {
+        return Ok(json_response(StatusCode::CONFLICT, serde_json::json!({ "received": have })));
+    }
+
+    // Write to a side file first so a dropped connection never leaves half a chunk in the real file.
+    let side = TempFile(st.cfg.tmp_dir().join(format!("{}.chunk", uuid::Uuid::new_v4().simple())));
+    let mut size: u64 = 0;
+    let mut head: Vec<u8> = Vec::with_capacity(4);
+    {
+        let mut out = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&side.0).await?;
+        while let Some(mut field) = mp.next_field().await.map_err(|_| bad("The upload was interrupted."))? {
+            if field.name() != Some("chunk") {
+                continue;
+            }
+            while let Some(piece) = field.chunk().await.map_err(|_| bad("The upload was interrupted."))? {
+                size += piece.len() as u64;
+                if size > CHUNK_BYTES {
+                    return Err(bad("That piece is larger than the chunk size."));
+                }
+                if have + size > st.cfg.max_upload_bytes {
+                    return Err(bad(&format!(
+                        "That file is larger than the {} MB upload limit.",
+                        st.cfg.max_upload_bytes / 1024 / 1024
+                    )));
+                }
+                if head.len() < 4 {
+                    let need = 4 - head.len();
+                    head.extend(piece.iter().take(need).copied());
+                }
+                out.write_all(&piece).await?;
+            }
+            break;
+        }
+        out.flush().await?;
+    }
+    if size == 0 {
+        return Err(bad("Empty upload piece."));
+    }
+    if have == 0 && head != b"PK\x03\x04" {
+        return Err(bad("That file is not a ZIP archive. Compress your vault folder to .zip first."));
+    }
+    let mut src = tokio::fs::File::open(&side.0).await?;
+    let mut dst = tokio::fs::OpenOptions::new().append(true).open(&part).await?;
+    tokio::io::copy(&mut src, &mut dst).await?;
+    dst.flush().await?;
+    Ok(json_response(StatusCode::OK, serde_json::json!({ "received": have + size })))
+}
+
+/// Turn a finished chunked upload (`upload_id` form field) into the zip the import expects.
+async fn take_chunked_upload(st: &AppState, id: &str) -> AppResult<TempFile> {
+    let bad = |m: &str| AppError::BadRequest(m.to_string());
+    let part = part_path(st, id).ok_or_else(|| bad("The upload could not be found. Please try again."))?;
+    let mut f = tokio::fs::File::open(&part).await.map_err(|_| bad("The upload could not be found. Please try again."))?;
+    let mut head = [0u8; 4];
+    tokio::io::AsyncReadExt::read_exact(&mut f, &mut head).await.map_err(|_| bad("That file is not a ZIP archive."))?;
+    drop(f);
+    if &head != b"PK\x03\x04" {
+        return Err(bad("That file is not a ZIP archive. Compress your vault folder to .zip first."));
+    }
+    let zip_path = st.cfg.tmp_dir().join(format!("{}.zip", uuid::Uuid::new_v4().simple()));
+    tokio::fs::rename(&part, &zip_path).await?;
+    Ok(TempFile(zip_path))
 }
 
 fn clean_text(s: Option<&String>, max: usize) -> String {

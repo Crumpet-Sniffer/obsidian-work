@@ -26,8 +26,31 @@ function fmtTime(s) {
   return Math.floor(m / 60) + " h " + String(m % 60).padStart(2, "0") + " min";
 }
 
+// Files bigger than this are sent in pieces (the server says the exact piece size). Keeps every
+// request under proxy limits such as Cloudflare's 100 MB cap.
+const CHUNK_AT = 75 * 1024 * 1024;
+
+function xhrSend(track, method, url, { headers = {}, body = null, onProgress = null, onUploaded = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    track(xhr);
+    xhr.open(method, url);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+    if (onProgress) xhr.upload.onprogress = onProgress;
+    if (onUploaded) xhr.upload.onload = onUploaded;
+    xhr.onload = () => resolve(xhr);
+    xhr.onerror = () => reject(new Error("network"));
+    xhr.ontimeout = () => reject(new Error("timeout"));
+    xhr.onabort = () => reject(new Error("aborted"));
+    xhr.send(body);
+  });
+}
+
 function startUpload(form) {
   const btn = form.querySelector('button[type="submit"]');
+  const fileInput = form.querySelector('input[type="file"]');
+  const file = fileInput && fileInput.files && fileInput.files[0];
+  const csrf = (form.querySelector('input[name="csrf"]') || {}).value || "";
   const box = document.createElement("div");
   box.className = "upload-progress";
   box.setAttribute("role", "status");
@@ -45,7 +68,8 @@ function startUpload(form) {
   if (btn) btn.disabled = true;
   form.querySelectorAll("input").forEach((i) => (i.readOnly = true));
 
-  const xhr = new XMLHttpRequest();
+  let current = null;
+  let cancelled = false;
   const t0 = performance.now();
   let lastT = t0, lastLoaded = 0, speed = 0; // bytes/second, smoothed
 
@@ -56,34 +80,32 @@ function startUpload(form) {
     if (msg) window.alert(msg);
   }
 
-  xhr.upload.onprogress = (ev) => {
-    if (!ev.lengthComputable) {
-      text.textContent = "Uploading… " + fmtBytes(ev.loaded);
-      return;
-    }
+  function report(loaded, total) {
     const now = performance.now();
     if (now - lastT >= 500) {
-      const inst = ((ev.loaded - lastLoaded) * 1000) / (now - lastT);
+      const inst = ((loaded - lastLoaded) * 1000) / (now - lastT);
       speed = speed ? speed * 0.7 + inst * 0.3 : inst;
       lastT = now;
-      lastLoaded = ev.loaded;
+      lastLoaded = loaded;
     }
-    const pct = (ev.loaded / ev.total) * 100;
+    const pct = (loaded / total) * 100;
     bar.value = pct;
-    let line = Math.floor(pct) + "% · " + fmtBytes(ev.loaded) + " of " + fmtBytes(ev.total);
+    let line = Math.floor(pct) + "% · " + fmtBytes(loaded) + " of " + fmtBytes(total);
     if (speed > 0) {
-      line += " · " + fmtBytes(speed) + "/s · about " + fmtTime((ev.total - ev.loaded) / speed) + " left";
+      line += " · " + fmtBytes(speed) + "/s · about " + fmtTime((total - loaded) / speed) + " left";
     }
     text.textContent = line;
-  };
-  xhr.upload.onload = () => {
+  }
+
+  function processing() {
     bar.removeAttribute("value"); // indeterminate while the server unpacks and indexes the vault
     const secs = (performance.now() - t0) / 1000;
     text.textContent = "Upload complete (" + fmtTime(secs) + "). Processing on the server… this can take a moment.";
     cancel.remove();
-  };
-  xhr.onload = () => {
-    // Success is a redirect to the vault page. Anything else is a server-rendered error page.
+  }
+
+  // Success is a redirect to the vault page. Anything else is a server-rendered error page.
+  function finish(xhr) {
     const final = xhr.responseURL || "";
     const target = new URL(form.action, location.href).href;
     if (xhr.status >= 200 && xhr.status < 300 && final && final !== target) {
@@ -93,14 +115,95 @@ function startUpload(form) {
       document.write(xhr.responseText);
       document.close();
     }
-  };
-  xhr.onerror = () => reset("The upload failed. Check your connection and try again.");
-  xhr.ontimeout = () => reset("The upload timed out. Try again.");
-  xhr.onabort = () => reset();
-  cancel.addEventListener("click", () => xhr.abort());
+  }
 
-  xhr.open("POST", form.action);
-  xhr.send(new FormData(form));
+  cancel.addEventListener("click", () => {
+    cancelled = true;
+    if (current) current.abort();
+  });
+  const track = (xhr) => (current = xhr);
+
+  // Normal single-request upload (small files).
+  async function sendWhole() {
+    const xhr = await xhrSend(track, "POST", form.action, {
+      body: new FormData(form),
+      onProgress: (ev) => {
+        if (ev.lengthComputable) report(ev.loaded, ev.total);
+        else text.textContent = "Uploading… " + fmtBytes(ev.loaded);
+      },
+      onUploaded: processing,
+    });
+    finish(xhr);
+  }
+
+  // Large files: send pieces to /admin/uploads, then submit the form with the upload id instead of the file.
+  async function sendChunked() {
+    const start = await xhrSend(track, "POST", "/admin/uploads", { headers: { "X-CSRF-Token": csrf } });
+    let info;
+    try {
+      info = JSON.parse(start.responseText);
+    } catch {
+      // Not JSON: an error page (session expired, not an admin, ...). Show it.
+      return finish(start);
+    }
+    if (start.status !== 200 || !info.id) throw new Error("Could not start the upload.");
+    const size = file.size;
+    const piece = info.chunk_bytes || CHUNK_AT;
+    let offset = 0;
+    let failures = 0;
+    while (offset < size) {
+      const end = Math.min(offset + piece, size);
+      const body = new FormData();
+      body.append("chunk", file.slice(offset, end), "chunk");
+      let xhr;
+      try {
+        xhr = await xhrSend(track, "PUT", "/admin/uploads/" + info.id, {
+          headers: { "X-CSRF-Token": csrf, "X-Upload-Offset": String(offset) },
+          body,
+          onProgress: (ev) => report(Math.min(size, offset + ev.loaded), size),
+        });
+      } catch (err) {
+        if (cancelled || err.message === "aborted") throw err;
+        if (++failures > 5) throw new Error("The connection kept failing.");
+        text.textContent = "Connection problem, retrying…";
+        await new Promise((r) => setTimeout(r, 1000 * failures));
+        // The server may have stored the piece even though we never heard back: ask where it stands.
+        const probe = await xhrSend(track, "PUT", "/admin/uploads/" + info.id, {
+          headers: { "X-CSRF-Token": csrf, "X-Upload-Offset": "999999999999999" },
+          body: new FormData(),
+        }).catch(() => null);
+        if (probe && probe.status === 409) {
+          try { offset = JSON.parse(probe.responseText).received; } catch { /* keep offset */ }
+        }
+        continue;
+      }
+      if (xhr.status === 409) {
+        // Server and browser disagree about how much has arrived: continue from the server's number.
+        offset = JSON.parse(xhr.responseText).received;
+        continue;
+      }
+      if (xhr.status !== 200) {
+        if (xhr.status >= 500 && ++failures <= 5) continue;
+        return finish(xhr);
+      }
+      failures = 0;
+      offset = JSON.parse(xhr.responseText).received;
+    }
+    report(size, size);
+    const fd = new FormData();
+    for (const [k, v] of new FormData(form).entries()) if (!(v instanceof File)) fd.append(k, v);
+    fd.append("upload_id", info.id);
+    bar.removeAttribute("value");
+    cancel.disabled = true;
+    processing();
+    const done = await xhrSend(track, "POST", form.action, { body: fd });
+    finish(done);
+  }
+
+  (file && file.size > CHUNK_AT ? sendChunked() : sendWhole()).catch((err) => {
+    if (cancelled || (err && err.message === "aborted")) reset();
+    else reset("The upload failed (" + (err && err.message ? err.message : "unknown error") + "). Check your connection and try again.");
+  });
 }
 
 document.addEventListener("click", (e) => {

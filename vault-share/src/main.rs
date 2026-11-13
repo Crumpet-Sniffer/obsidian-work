@@ -22,7 +22,7 @@ use axum::{
     http::{header, StatusCode},
     middleware,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
@@ -124,6 +124,8 @@ fn router(state: AppState) -> Router {
 
     // Large multipart uploads: big body limit, no short timeout.
     let uploads = Router::new()
+        .route("/admin/uploads", post(admin::upload_start))
+        .route("/admin/uploads/{id}", put(admin::upload_chunk))
         .route("/admin/vaults", post(admin::create_vault))
         .route("/admin/vaults/{id}/upload", post(admin::replace_vault))
         .layer(DefaultBodyLimit::max(upload_limit));
