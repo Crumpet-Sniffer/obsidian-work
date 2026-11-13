@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Graph · {{ vault_name }}{% endblock %}
+{% block head %}<script src="/static/graph.js" defer></script>{% endblock %}
+{% block topbar %}{% endblock %}
+{% block body_class %}workspace{% endblock %}
+{% block body %}
+<div class="app" id="app">
+{% include "_sidebar.html" %}
+<div class="main">
+  <div class="tabbar">
+    <button type="button" class="icon-btn tabbar-toggle" data-toggle-sidebar aria-controls="sidebar" aria-label="Toggle sidebar" title="Toggle sidebar"><svg class="ic"><use href="#i-panel-left"/></svg></button>
+    <div class="tab is-active">
+      <svg class="ic tab-icon"><use href="#i-graph"/></svg>
+      <span class="tab-title">Graph view</span>
+      <a class="tab-close" href="/v/{{ vault_id }}" title="Close" aria-label="Close tab"><svg class="ic"><use href="#i-x"/></svg></a>
+    </div>
+    <a class="icon-btn tab-new" href="/v/{{ vault_id }}" title="New tab" aria-label="New tab"><svg class="ic"><use href="#i-plus"/></svg></a>
+  </div>
+  <div class="view">
+    <div class="navbar">
+      <button type="button" class="icon-btn" data-history="back" title="Navigate back" aria-label="Navigate back"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+      <button type="button" class="icon-btn" data-history="forward" title="Navigate forward" aria-label="Navigate forward"><svg class="ic"><use href="#i-arrow-right"/></svg></button>
+      <div class="view-title">Graph view</div>
+      <span class="icon-btn spacer"></span>
+    </div>
+    <div class="view-content graph-view">
+      <section class="graph-wrap" data-graph data-src="/v/{{ vault_id }}/graph.json" data-focus="{{ focus }}">
+        <canvas role="img" aria-label="Graph of links between notes in {{ vault_name }}. Use the file list to navigate by keyboard."></canvas>
+        <div class="graph-controls" data-graph-panel>
+          <details class="gc-sec" open>
+            <summary>Filters<span class="gc-btns">
+              <button type="button" class="icon-btn" data-graph-reset title="Reset to default" aria-label="Fit graph"><svg class="ic"><use href="#i-rotate"/></svg></button>
+              <button type="button" class="icon-btn" data-graph-close title="Close" aria-label="Close controls"><svg class="ic"><use href="#i-x"/></svg></button>
+            </span></summary>
+            <div class="gc-body">
+              <input type="search" placeholder="Search files..." aria-label="Search files" data-graph-search maxlength="100">
+              <label class="toggle-row"><span>Attachments</span><input type="checkbox" class="switch" data-graph-files></label>
+              <label class="toggle-row"><span>Orphans</span><input type="checkbox" class="switch" data-graph-orphans checked></label>
+            </div>
+          </details>
+          <details class="gc-sec"><summary>Groups</summary><div class="gc-body"><p class="muted small">Groups are not available in the web viewer.</p></div></details>
+          <details class="gc-sec"><summary>Display</summary><div class="gc-body"><p class="graph-status muted small" data-graph-status aria-live="polite">Loading graph…</p><p class="muted small">Scroll or pinch to zoom · drag to move · click a node to open it</p></div></details>
+          <details class="gc-sec"><summary>Forces</summary><div class="gc-body"><p class="muted small">Forces are not adjustable in the web viewer.</p></div></details>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+</div>
+{% endblock %}

@@ -1,0 +1,67 @@
+# TrueNAS SCALE: Apps -> Discover Apps -> (three dots) -> Install via YAML, then paste this file.
+# Edit the three places marked CHANGE ME first. See README.md for the full walkthrough.
+services:
+  vault-share:
+    image: vault-share:latest
+    pull_policy: never            # image is built locally on the NAS (see README)
+    container_name: vault-share
+    restart: unless-stopped
+    user: "568:568"               # TrueNAS "apps" user; must own the data folder
+    ports:
+      - "8080:8080"
+    environment:
+      SITE_NAME: "Class Notes"
+      # Initial admin. The password is only used if the database is empty, and must be
+      # changed at first sign-in. Leave ADMIN_PASSWORD unset to get a random one in the logs.
+      ADMIN_USERNAME: "admin"
+      # ADMIN_PASSWORD: "set-a-long-one-here"
+      # HTTPS in front of the app (Cloudflare Tunnel / reverse proxy). Keep true in production.
+      COOKIE_SECURE: "true"
+      # Set true ONLY when traffic reaches the app through your own proxy/tunnel.
+      TRUST_PROXY: "true"
+      # CHANGE ME: the exact public URL classmates use.
+      PUBLIC_ORIGIN: "https://notes.example.com"
+      MAX_UPLOAD_MB: "512"
+      MAX_EXTRACTED_MB: "2048"
+      SESSION_IDLE_HOURS: "24"
+      SESSION_MAX_DAYS: "7"
+    volumes:
+      # CHANGE ME: a dataset/folder on your pool, owned by 568:568.
+      - /mnt/tank/apps/vault-share:/data
+    # ---- container hardening ----
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---- Optional: Cloudflare Tunnel (HTTPS for classmates without opening router ports) ----
+  # 1. Cloudflare Zero Trust -> Networks -> Tunnels -> Create tunnel -> copy the token.
+  # 2. Add a Public Hostname: notes.example.com -> HTTP -> vault-share:8080
+  # 3. Uncomment below, paste the token, and remove the "ports:" section above so the app
+  #    is reachable only through the tunnel.
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: vault-share-tunnel
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: "CHANGE ME"
+  #   read_only: true
+  #   cap_drop: [ALL]
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   depends_on:
+  #     - vault-share

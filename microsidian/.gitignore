@@ -1,0 +1,10 @@
+node_modules/
+main.js
+*.log
+.parity-out/
+scripts/harness/bundle.js
+.sync-sim/
+.ingest-sim/
+__pycache__/
+.fixture/
+install-target.txt

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Admin</h1>
+  <a class="button primary" href="/admin/vaults/new">Upload a vault</a>
+</div>
+
+<section class="card" id="vaults">
+  <h2>Vaults</h2>
+  {% if vaults.is_empty() %}
+  <p class="muted">Nothing uploaded yet.</p>
+  {% else %}
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>Name</th><th>Files</th><th>Size</th><th>Sharing</th><th>Updated</th></tr></thead>
+    <tbody>
+    {% for v in vaults %}
+    <tr>
+      <td><a href="/admin/vaults/{{ v.id }}">{{ v.name }}</a></td>
+      <td>{{ v.files }}</td>
+      <td>{{ v.size }}</td>
+      <td>{% if v.shared_with_all %}<span class="pill ok">all members</span>{% else %}<span class="pill">selected</span>{% endif %}</td>
+      <td class="muted small">{{ v.updated }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card" id="users">
+  <h2>Accounts</h2>
+  <form method="post" action="/admin/users" class="row-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>New username <input name="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9._\-]+" autocomplete="off" spellcheck="false"></label>
+    <label>Role
+      <select name="role"><option value="member">Member (read only)</option><option value="admin">Admin (full control)</option></select>
+    </label>
+    <button type="submit" class="primary">Create account</button>
+  </form>
+  <p class="small muted">A one-time password is generated for each new account. Classmates must set their own password on first sign-in.</p>
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Last sign-in</th><th></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.username }}{% if u.is_me %} <span class="muted">(you)</span>{% endif %}</td>
+      <td>{% if u.is_admin %}admin{% else %}member{% endif %}</td>
+      <td>
+        {% if u.disabled %}<span class="pill bad">disabled</span>
+        {% else if u.must_change %}<span class="pill">awaiting first sign-in</span>
+        {% else %}<span class="pill ok">active</span>{% endif %}
+      </td>
+      <td class="muted small">{{ u.created }}</td>
+      <td class="muted small">{{ u.last_login }}</td>
+      <td class="actions">
+        {% if !u.is_me %}
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Reset the password for {{ u.username }}? They will be signed out.">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="reset">
+          <button type="submit">Reset password</button>
+        </form>
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          {% if u.disabled %}<input type="hidden" name="action" value="enable"><button type="submit">Enable</button>
+          {% else %}<input type="hidden" name="action" value="disable"><button type="submit">Disable</button>{% endif %}
+        </form>
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Change the role of {{ u.username }}?">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          {% if u.is_admin %}<input type="hidden" name="action" value="make_member"><button type="submit">Make member</button>
+          {% else %}<input type="hidden" name="action" value="make_admin"><button type="submit">Make admin</button>{% endif %}
+        </form>
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Delete the account {{ u.username }}? This cannot be undone.">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="delete">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card" id="audit">
+  <h2>Activity log</h2>
+  <p class="small muted">Last 100 events. Sign-ins, failed sign-ins, uploads and account changes are kept for 180 days.</p>
+  <div class="table-wrap">
+  <table class="table small">
+    <thead><tr><th>When</th><th>Who</th><th>IP</th><th>Event</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for a in audit %}
+    <tr{% if a.action.contains("failed") || a.action.contains("throttled") %} class="warn"{% endif %}>
+      <td class="nowrap">{{ a.ts }}</td><td>{{ a.username }}</td><td>{{ a.ip }}</td><td>{{ a.action }}</td><td>{{ a.detail }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

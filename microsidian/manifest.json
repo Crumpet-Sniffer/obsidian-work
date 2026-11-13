@@ -1,0 +1,9 @@
+{
+  "id": "microsidian",
+  "name": "Microsidian",
+  "version": "0.2.0",
+  "minAppVersion": "1.11.4",
+  "description": "View Word and PowerPoint files in Obsidian, keep their notes in sync, and file new documents into your vault with Claude.",
+  "author": "Microsidian",
+  "isDesktopOnly": true
+}

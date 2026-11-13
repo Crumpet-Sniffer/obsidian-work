@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Vaults{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Vaults</h1>
+  {% if let Some(u) = page.user %}{% if u.is_admin %}<a class="button primary" href="/admin/vaults/new">Upload a vault</a>{% endif %}{% endif %}
+</div>
+{% if vaults.is_empty() %}
+<div class="empty card">
+  <p>No vaults have been shared with you yet.</p>
+</div>
+{% else %}
+<ul class="vault-grid">
+  {% for v in vaults %}
+  <li>
+    <a class="card vault-card" href="/v/{{ v.id }}">
+      <h2>{{ v.name }}</h2>
+      {% if !v.description.is_empty() %}<p>{{ v.description }}</p>{% endif %}
+      <span class="meta">{{ v.files }} files · updated {{ v.updated }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

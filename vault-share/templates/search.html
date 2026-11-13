@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+{% block topbar %}{% endblock %}
+{% block body_class %}workspace{% endblock %}
+{% block body %}
+<div class="app" id="app">
+{% include "_sidebar.html" %}
+<div class="main">
+  <div class="tabbar">
+    <button type="button" class="icon-btn tabbar-toggle" data-toggle-sidebar aria-controls="sidebar" aria-label="Toggle sidebar" title="Toggle sidebar"><svg class="ic"><use href="#i-panel-left"/></svg></button>
+    <div class="tab is-active">
+      <svg class="ic tab-icon"><use href="#i-search"/></svg>
+      <span class="tab-title">Search</span>
+      <a class="tab-close" href="/v/{{ vault_id }}" title="Close" aria-label="Close tab"><svg class="ic"><use href="#i-x"/></svg></a>
+    </div>
+    <a class="icon-btn tab-new" href="/v/{{ vault_id }}" title="New tab" aria-label="New tab"><svg class="ic"><use href="#i-plus"/></svg></a>
+  </div>
+  <div class="view">
+    <div class="navbar">
+      <button type="button" class="icon-btn" data-history="back" title="Navigate back" aria-label="Navigate back"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+      <button type="button" class="icon-btn" data-history="forward" title="Navigate forward" aria-label="Navigate forward"><svg class="ic"><use href="#i-arrow-right"/></svg></button>
+      <div class="view-title">Search</div>
+      <span class="icon-btn spacer"></span>
+    </div>
+    <div class="view-content reading">
+      <article class="note">
+        <form method="get" action="/v/{{ vault_id }}/search" class="search-big" role="search">
+          <input type="search" name="q" value="{{ q }}" placeholder="Search this vault" maxlength="100" autofocus>
+          <button type="submit" class="mod-cta">Search</button>
+        </form>
+        {% if q.chars().count() >= 2 %}
+          {% if results.is_empty() %}
+          <p class="muted">No notes match “{{ q }}”.</p>
+          {% else %}
+          <ol class="results">
+            {% for r in results %}
+            <li>
+              <a href="{{ r.url }}">{{ r.title }}</a>
+              {% if !r.folder.is_empty() %}<span class="muted small"> · {{ r.folder }}</span>{% endif %}
+              <p class="snippet">{{ r.before }}<mark>{{ r.matched }}</mark>{{ r.after }}</p>
+            </li>
+            {% endfor %}
+          </ol>
+          {% if truncated %}<p class="muted small">Showing the first 50 matches. Try a more specific search.</p>{% endif %}
+          {% endif %}
+        {% else %}
+          <p class="muted">Type at least two characters.</p>
+        {% endif %}
+      </article>
+    </div>
+  </div>
+</div>
+</div>
+{% endblock %}

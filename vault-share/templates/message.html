@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>{{ title }}</h1>
+  <p>{{ message }}</p>
+  {% if let Some(s) = secret %}
+  <div class="secret">
+    <code id="secret">{{ s }}</code>
+    <button type="button" data-copy="secret">Copy</button>
+  </div>
+  {% endif %}
+  <p><a class="button" href="{{ back_href }}">{{ back_label }}</a></p>
+</section>
+{% endblock %}

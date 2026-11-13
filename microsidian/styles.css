@@ -1,0 +1,31 @@
+/* ---------- Office viewer ---------- */
+.cc-office-view { padding: 0; overflow: auto; }
+.cc-office-body { min-height: 100%; background: var(--background-secondary); padding: 16px 0 48px; }
+.cc-loading { text-align: center; color: var(--text-muted); padding: 48px 0; }
+
+/* Word */
+.cc-docx-page { display: flex; justify-content: center; }
+.cc-docx-page .docx-wrapper { background: transparent !important; padding: 0 !important; }
+.cc-docx-page .docx-wrapper > section.docx { margin-bottom: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.25); background: #fff; color: #000; }
+
+/* PowerPoint */
+.cc-pptx-host { display: flex; justify-content: center; }
+.cc-pptx-stage { position: relative; width: var(--cc-slide-w); height: var(--cc-slide-h); background: #fff; color: #000;
+  box-shadow: 0 1px 8px rgba(0,0,0,.3); overflow: hidden; }
+
+/* Fallback */
+.cc-fallback { max-width: 820px; margin: 0 auto; padding: 16px 24px; }
+.cc-fallback-msg { color: var(--text-warning); }
+
+/* ---------- Connections panel ---------- */
+.cc-panel { padding: 8px 12px 24px; }
+.cc-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.cc-panel-title { font-weight: 600; word-break: break-word; }
+.cc-panel-btns button { font-size: var(--font-ui-smaller); }
+.cc-panel-section { margin-top: 12px; }
+.cc-panel-section h4 { margin: 0 0 4px; font-size: var(--font-ui-small); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.cc-panel-md { font-size: var(--font-ui-small); }
+.cc-panel-md p { margin: 4px 0; }
+.cc-panel-md ul { margin: 2px 0 6px; padding-left: 18px; }
+.cc-panel-list { margin: 0; padding-left: 18px; font-size: var(--font-ui-small); }
+.cc-panel-empty, .cc-panel-more { color: var(--text-muted); font-size: var(--font-ui-small); }

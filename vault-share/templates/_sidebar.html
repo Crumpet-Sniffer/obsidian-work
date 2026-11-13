@@ -1,0 +1,34 @@
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-top">
+    <div class="ribbon-tabs" role="tablist" aria-label="Sidebar">
+      <a class="icon-btn is-active" href="/v/{{ vault_id }}" title="Files" aria-label="Files"><svg class="ic"><use href="#i-folder"/></svg></a>
+      <a class="icon-btn" href="/v/{{ vault_id }}/search" title="Search" aria-label="Search"><svg class="ic"><use href="#i-search"/></svg></a>
+      <a class="icon-btn" href="/v/{{ vault_id }}/graph" title="Graph view" aria-label="Graph view"><svg class="ic"><use href="#i-graph"/></svg></a>
+    </div>
+    <button type="button" class="icon-btn" data-toggle-sidebar aria-controls="sidebar" aria-label="Collapse sidebar" title="Collapse"><svg class="ic"><use href="#i-panel-left"/></svg></button>
+  </div>
+  <div class="nav-actions">
+    <button type="button" class="icon-btn" disabled title="New note (read-only)" aria-label="New note"><svg class="ic"><use href="#i-square-pen"/></svg></button>
+    <button type="button" class="icon-btn" disabled title="New folder (read-only)" aria-label="New folder"><svg class="ic"><use href="#i-folder-plus"/></svg></button>
+    <button type="button" class="icon-btn" disabled title="Change sort order" aria-label="Change sort order"><svg class="ic"><use href="#i-sort"/></svg></button>
+    <button type="button" class="icon-btn" data-tree-expand title="Expand all" aria-label="Expand all"><svg class="ic"><use href="#i-expand"/></svg></button>
+    <button type="button" class="icon-btn" data-tree-collapse title="Collapse all" aria-label="Collapse all"><svg class="ic"><use href="#i-collapse"/></svg></button>
+  </div>
+  <nav class="tree" aria-label="Files">
+    <details class="tree-root" open>
+      <summary>{{ vault_name }}</summary>
+      {{ tree_html|safe }}
+    </details>
+  </nav>
+  <div class="vault-bar">
+    <a class="vault-switch" href="/" title="All vaults"><svg class="ic"><use href="#i-updown"/></svg><span>{{ vault_name }}</span></a>
+    <a class="icon-btn" href="/" title="Vaults" aria-label="Vaults"><svg class="ic"><use href="#i-help"/></svg></a>
+    <a class="icon-btn" href="/account/password" title="Account" aria-label="Account"><svg class="ic"><use href="#i-settings"/></svg></a>
+    {% if let Some(u) = page.user %}
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{ u.csrf }}">
+      <button type="submit" class="icon-btn" title="Sign out ({{ u.username }})" aria-label="Sign out"><svg class="ic"><use href="#i-logout"/></svg></button>
+    </form>
+    {% endif %}
+  </div>
+</aside>
