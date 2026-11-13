@@ -183,13 +183,15 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   // Links are weaker for well-connected nodes (so hubs do not collapse), except around a node being dragged:
   // those get a firm pull so its neighbours follow the pointer instead of being pushed away.
   let held = null;
+  const isHeldLink = (l) => held && (l.source === held || l.target === held);
   const linkStrength = (l) =>
-    held && (l.source === held || l.target === held)
-      ? Math.min(1, 0.6 * forces.link)
-      : forces.link / Math.max(1, Math.min(l.source.deg, l.target.deg));
+    isHeldLink(l) ? Math.min(1, 0.3 * forces.link) : forces.link / Math.max(1, Math.min(l.source.deg, l.target.deg));
+  // The neighbours of a held node must also fit around it: pulling dozens of them to the normal link distance would
+  // pack them into a tight clump, so their rest distance grows with how many there are (hex packing of 44px cells).
+  const linkDistance = (l) => (isHeldLink(l) ? Math.max(forces.dist, 23 * Math.sqrt(held.deg)) : forces.dist);
   function setHeld(n) {
     held = n;
-    if (sim) sim.force("link").strength(linkStrength);
+    if (sim) sim.force("link").distance(linkDistance).strength(linkStrength);
   }
 
   function buildSim() {
@@ -200,7 +202,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       .randomSource(Math.random)
       .alphaDecay(0.0228)
       .velocityDecay(0.4)
-      .force("link", forceLink(simLinks).distance(forces.dist).strength(linkStrength))
+      .force("link", forceLink(simLinks).distance(linkDistance).strength(linkStrength))
       .force("charge", forceManyBody().strength(-forces.repel * 10))
       .force("x", forceX(0).strength(forces.center * 0.1))
       .force("y", forceY(0).strength(forces.center * 0.1))
@@ -210,7 +212,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   // Push the slider values into the running simulation.
   function applyForces() {
     if (!sim) return;
-    sim.force("link").distance(forces.dist).strength(linkStrength);
+    sim.force("link").distance(linkDistance).strength(linkStrength);
     sim.force("charge").strength(-forces.repel * 10);
     sim.force("x").strength(forces.center * 0.1);
     sim.force("y").strength(forces.center * 0.1);
@@ -714,5 +716,6 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   wrap.vsDebug = () => ({
     w: width, h: height, k: view.k,
     nodes: nodes.map((n) => ({ x: n.x * view.k + view.x, y: n.y * view.k + view.y, r: n.r * display.nodeSize * view.k, deg: n.deg })),
+    links: links.map((l) => [nodes.indexOf(l[0]), nodes.indexOf(l[1])]),
   });
 })();
