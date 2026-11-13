@@ -3,7 +3,7 @@
   "private": true,
   "description": "Browser bundle (static/office.js) that renders .docx/.pptx originals, based on Microsidian's viewer.",
   "scripts": {
-    "build": "esbuild office.js --bundle --minify --format=iife --target=es2020 --outfile=../static/office.js && esbuild editor.js --bundle --minify --format=iife --target=es2020 --outfile=../static/editor.js && esbuild render.js --bundle --minify --format=iife --target=es2020 --outfile=../static/render.js && esbuild mermaid-entry.js --bundle --minify --format=iife --target=es2020 --outfile=../static/mermaid.js"
+    "build": "esbuild office.js --bundle --minify --format=iife --target=es2020 --outfile=../static/office.js && esbuild editor.js --bundle --minify --format=iife --target=es2020 --outfile=../static/editor.js && esbuild render.js --bundle --minify --format=iife --target=es2020 --outfile=../static/render.js && esbuild mermaid-entry.js --bundle --minify --format=iife --target=es2020 --outfile=../static/mermaid.js && esbuild graph.js --bundle --minify --format=iife --target=es2020 --outfile=../static/graph.js"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",
@@ -15,6 +15,7 @@
     "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
     "@lezer/markdown": "^1.8.1",
+    "d3-force": "^3.0.1",
     "docx-preview": "0.4.1",
     "jszip": "3.10.2",
     "katex": "^0.19.1",
