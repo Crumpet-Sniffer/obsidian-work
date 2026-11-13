@@ -26,11 +26,36 @@ pub struct NavUser {
 pub struct PageCtx {
     pub site_name: String,
     pub user: Option<NavUser>,
+    /// Fingerprint of the bundled CSS/JS, added to asset URLs so browsers and CDNs fetch new files after an update.
+    pub asset_v: String,
+}
+
+/// Short hash of every bundled static file. Changes whenever any of them changes.
+pub fn asset_version() -> &'static str {
+    use sha2::{Digest, Sha256};
+    static V: OnceLock<String> = OnceLock::new();
+    V.get_or_init(|| {
+        let mut h = Sha256::new();
+        for f in [
+            include_str!("../static/app.css"),
+            include_str!("../static/obsidian.css"),
+            include_str!("../static/app.js"),
+            include_str!("../static/graph.js"),
+            include_str!("../static/office.js"),
+        ] {
+            h.update(f.as_bytes());
+        }
+        h.finalize().iter().take(5).map(|b| format!("{b:02x}")).collect()
+    })
 }
 
 impl PageCtx {
     pub fn anonymous() -> Self {
-        PageCtx { site_name: SITE_NAME.get().cloned().unwrap_or_else(|| "Vault Share".into()), user: None }
+        PageCtx {
+            site_name: SITE_NAME.get().cloned().unwrap_or_else(|| "Vault Share".into()),
+            user: None,
+            asset_v: asset_version().to_string(),
+        }
     }
 
     pub fn for_user(u: &CurrentUser) -> Self {

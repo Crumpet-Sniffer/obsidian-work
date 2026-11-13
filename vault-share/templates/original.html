@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ title }}{% endblock %}
-{% block head %}<script src="/static/office.js" defer></script>{% endblock %}
+{% block head %}<script src="/static/office.js?v={{ page.asset_v }}" defer></script>{% endblock %}
 {% block topbar %}{% endblock %}
 {% block body_class %}workspace{% endblock %}
 {% block body %}

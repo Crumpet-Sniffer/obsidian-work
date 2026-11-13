@@ -7,9 +7,9 @@
 <meta name="robots" content="noindex, nofollow">
 <title>{% block title %}{% endblock %} · {{ page.site_name }}</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/app.css">
-<link rel="stylesheet" href="/static/obsidian.css">
-<script src="/static/app.js" defer></script>
+<link rel="stylesheet" href="/static/app.css?v={{ page.asset_v }}">
+<link rel="stylesheet" href="/static/obsidian.css?v={{ page.asset_v }}">
+<script src="/static/app.js?v={{ page.asset_v }}" defer></script>
 {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
