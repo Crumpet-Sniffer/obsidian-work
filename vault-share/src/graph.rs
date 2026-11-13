@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::{
     markdown::{link_targets, LinkTarget},
-    vault::{file_url, is_note, note_url, VaultIndex},
+    vault::{is_note, link_url, note_url, VaultIndex},
 };
 
 const MAX_NOTE_BYTES: u64 = 5 * 1024 * 1024;
@@ -80,7 +80,7 @@ pub fn build(idx: &VaultIndex, vault_id: &str) -> String {
                     let i = nodes.len();
                     ids.insert(path, i);
                     let kind = if is_note(path) { "note" } else { "file" };
-                    nodes.push(Node { label: label(path), path, url: file_url(vault_id, path), kind });
+                    nodes.push(Node { label: label(path), path, url: link_url(vault_id, path), kind });
                     i
                 }
             };
@@ -92,4 +92,44 @@ pub fn build(idx: &VaultIndex, vault_id: &str) -> String {
     let mut links: Vec<[usize; 2]> = edges.into_iter().map(|(a, b)| [a, b]).collect();
     links.sort_unstable();
     serde_json::to_string(&Graph { nodes, links }).unwrap_or_else(|_| "{\"nodes\":[],\"links\":[]}".into())
+}
+
+/// Reverse links (who links to a note) and the original/note pairing from `source:` frontmatter.
+#[derive(Default)]
+pub struct Links {
+    pub backlinks: HashMap<String, Vec<String>>,
+    /// original path -> note path
+    pub note_for_original: HashMap<String, String>,
+}
+
+impl Links {
+    pub fn build(idx: &VaultIndex) -> Links {
+        let mut out = Links::default();
+        for note in idx.notes() {
+            let Some(disk) = idx.disk_path(note) else { continue };
+            if std::fs::metadata(&disk).map(|m| m.len() > MAX_NOTE_BYTES).unwrap_or(true) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&disk) else { continue };
+            let text = String::from_utf8_lossy(&bytes);
+            if let Some(src) = crate::markdown::frontmatter_source(&text) {
+                if let Some(orig) = idx.resolve(&src).filter(|o| crate::vault::is_office(o)) {
+                    out.note_for_original.entry(orig.to_string()).or_insert_with(|| note.clone());
+                }
+            }
+            let mut seen: HashSet<&str> = HashSet::new();
+            // Links in the note body and in its Connections block both count as links from this note.
+            for target in link_targets(&text) {
+                let resolved = match &target {
+                    LinkTarget::Wiki(w) => idx.resolve(w),
+                    LinkTarget::Relative(r) => resolve_relative(idx, note, r),
+                };
+                let Some(path) = resolved else { continue };
+                if path != note.as_str() && seen.insert(path) {
+                    out.backlinks.entry(path.to_string()).or_default().push(note.clone());
+                }
+            }
+        }
+        out
+    }
 }

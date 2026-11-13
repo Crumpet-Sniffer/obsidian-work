@@ -13,6 +13,12 @@ pub const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'se
     img-src 'self' data: https:; media-src 'self'; font-src 'self'; connect-src 'self'; \
     form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
 
+/// CSP for the Word/PowerPoint viewer page: like PAGE_CSP, but allows the inline styles and blob: images
+/// that docx-preview / pptx-preview generate. Script sources are unchanged.
+pub const OFFICE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data: blob: https:; media-src 'self'; font-src 'self' data: blob:; connect-src 'self'; \
+    form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
+
 /// CSP for user-uploaded files: even if an SVG/HTML-ish file is opened directly it runs
 /// in a sandboxed, script-less opaque origin.
 pub const FILE_CSP: &str =

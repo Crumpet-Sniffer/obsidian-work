@@ -54,6 +54,10 @@ pub fn mime_for(path: &str) -> Option<(&'static str, Kind)> {
     })
 }
 
+pub fn is_office(path: &str) -> bool {
+    path.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case("docx") || e.eq_ignore_ascii_case("pptx"))
+}
+
 pub fn is_note(path: &str) -> bool {
     matches!(mime_for(path), Some((_, Kind::Note)))
 }
@@ -267,12 +271,18 @@ pub struct VaultIndex {
     by_lower_path: HashMap<String, String>,
     by_lower_name: HashMap<String, Vec<String>>,
     graph: OnceLock<Arc<String>>,
+    links: OnceLock<Arc<crate::graph::Links>>,
 }
 
 impl VaultIndex {
     /// Link graph as JSON, computed on first request and cached until the vault changes.
     pub fn graph_json(&self, vault_id: &str) -> Arc<String> {
         self.graph.get_or_init(|| Arc::new(crate::graph::build(self, vault_id))).clone()
+    }
+
+    /// Backlinks and original<->note pairing, computed on first use and cached until the vault changes.
+    pub fn links(&self) -> Arc<crate::graph::Links> {
+        self.links.get_or_init(|| Arc::new(crate::graph::Links::build(self))).clone()
     }
 
     pub fn build(root: &Path) -> io::Result<Self> {
@@ -310,7 +320,7 @@ impl VaultIndex {
             by_lower_path.insert(lower, f.clone());
             by_lower_name.entry(name).or_default().push(f.clone());
         }
-        Ok(VaultIndex { root: root.to_path_buf(), files, by_lower_path, by_lower_name, graph: OnceLock::new() })
+        Ok(VaultIndex { root: root.to_path_buf(), files, by_lower_path, by_lower_name, graph: OnceLock::new(), links: OnceLock::new() })
     }
 
     pub fn contains(&self, rel: &str) -> bool {
@@ -405,7 +415,7 @@ impl VaultIndex {
             for (name, path) in &d.files {
                 let note = is_note(name);
                 let label = if note { name.strip_suffix(".md").or(name.strip_suffix(".MD")).unwrap_or(name) } else { name };
-                let url = if note { note_url(vault_id, path) } else { file_url(vault_id, path) };
+                let url = if note { note_url(vault_id, path) } else { link_url(vault_id, path) };
                 let is_current = current == Some(*path);
                 out.push_str(&format!(
                     "<li class=\"{}\"><a href=\"{}\"{}>{}</a></li>",
@@ -437,6 +447,16 @@ pub fn note_url(vault_id: &str, rel: &str) -> String {
 
 pub fn file_url(vault_id: &str, rel: &str) -> String {
     format!("/v/{vault_id}/f/{}", encode_path(rel))
+}
+
+/// Viewer page for a Word/PowerPoint original.
+pub fn office_url(vault_id: &str, rel: &str) -> String {
+    format!("/v/{vault_id}/o/{}", encode_path(rel))
+}
+
+/// Where a link to an attachment should go: Office documents open in the viewer, the rest are served directly.
+pub fn link_url(vault_id: &str, rel: &str) -> String {
+    if is_office(rel) { office_url(vault_id, rel) } else { file_url(vault_id, rel) }
 }
 
 pub fn esc(s: &str) -> String {

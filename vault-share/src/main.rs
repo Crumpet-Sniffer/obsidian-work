@@ -139,6 +139,7 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/graph.json", get(vaults::graph_json))
         .route("/v/{id}/n/{*path}", get(vaults::note))
         .route("/v/{id}/f/{*path}", get(vaults::file))
+        .route("/v/{id}/o/{*path}", get(vaults::original))
         .route("/admin", get(admin::dashboard))
         .route("/admin/users", post(admin::create_user))
         .route("/admin/users/{id}", post(admin::user_action))
@@ -156,6 +157,7 @@ fn router(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/static/app.css", get(static_css))
         .route("/static/obsidian.css", get(static_obsidian_css))
+        .route("/static/office.js", get(static_office_js))
         .route("/static/app.js", get(static_js))
         .route("/static/graph.js", get(static_graph_js))
         .route("/favicon.svg", get(favicon))
@@ -179,6 +181,13 @@ async fn static_obsidian_css() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/css; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
         include_str!("../static/obsidian.css"),
+    )
+}
+
+async fn static_office_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
+        include_str!("../static/office.js"),
     )
 }
 

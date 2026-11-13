@@ -1,0 +1,26 @@
+<aside class="rightbar" id="rightbar">
+  <div class="rb-head">
+    <svg class="ic"><use href="#i-graph"/></svg>
+    <span>Connections</span>
+  </div>
+  <div class="rb-body">
+    {% if !conn_html.is_empty() %}
+    <section class="rb-sec">
+      <h4>Topics &amp; related</h4>
+      <div class="prose rb-prose">{{ conn_html|safe }}</div>
+    </section>
+    {% else %}
+    <p class="muted rb-empty">This note has no Connections block yet.</p>
+    {% endif %}
+    {% if !backlinks.is_empty() %}
+    <section class="rb-sec">
+      <h4>Linked from ({{ backlinks.len() }})</h4>
+      <ul class="rb-list">
+        {% for b in backlinks %}
+        <li><a href="{{ b.url }}">{{ b.title }}</a>{% if !b.folder.is_empty() %}<span class="muted"> · {{ b.folder }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+  </div>
+</aside>

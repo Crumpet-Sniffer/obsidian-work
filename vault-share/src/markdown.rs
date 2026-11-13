@@ -14,7 +14,7 @@ use std::{
 use ammonia::Builder;
 use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
 
-use crate::vault::{esc, file_url, mime_for, note_url, Kind, VaultIndex};
+use crate::vault::{esc, file_url, link_url, mime_for, note_url, Kind, VaultIndex};
 
 pub struct RenderCtx<'a> {
     pub vault_id: &'a str,
@@ -36,6 +36,43 @@ pub fn render(src: &str, ctx: &RenderCtx) -> String {
     let mut out = String::with_capacity(pre.len() * 3 / 2);
     html::push_html(&mut out, events.into_iter());
     sanitizer().clean(&out).to_string()
+}
+
+const CONN_START: &str = "%% connections:start %%";
+const CONN_END: &str = "%% connections:end %%";
+
+/// Split a note into its main text and the auto-generated Connections block (topics, related notes).
+/// The block is returned without its markers, `---` rule and `## Connections` heading.
+pub fn split_connections(src: &str) -> (String, Option<String>) {
+    let (Some(a), Some(b)) = (src.find(CONN_START), src.find(CONN_END)) else {
+        return (src.to_string(), None);
+    };
+    if b < a {
+        return (src.to_string(), None);
+    }
+    let inner = src[a + CONN_START.len()..b].trim();
+    let inner = inner.strip_prefix("---").map(str::trim_start).unwrap_or(inner);
+    let inner = inner.strip_prefix("## Connections").map(str::trim_start).unwrap_or(inner).trim();
+    let main = format!("{}\n{}", src[..a].trim_end(), src[b + CONN_END.len()..].trim_start());
+    (main.trim_end().to_string() + "\n", (!inner.is_empty()).then(|| inner.to_string()))
+}
+
+/// The `source:` frontmatter value (path of the original document), without quotes or `[[ ]]`.
+pub fn frontmatter_source(src: &str) -> Option<String> {
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
+    let rest = src.strip_prefix("---\n").or_else(|| src.strip_prefix("---\r\n"))?;
+    for line in rest.lines() {
+        let t = line.trim_end();
+        if t == "---" || t == "..." {
+            break;
+        }
+        if let Some(v) = t.strip_prefix("source:") {
+            let v = v.trim().trim_matches(|c| c == '"' || c == '\'').trim_start_matches("[[").trim_end_matches("]]");
+            let v = v.split('|').next().unwrap_or(v).trim();
+            return (!v.is_empty()).then(|| v.to_string());
+        }
+    }
+    None
 }
 
 pub fn strip_frontmatter(src: &str) -> &str {
@@ -342,7 +379,7 @@ fn wikilink(inner: &str, ctx: &RenderCtx) -> String {
         Some(path) => {
             let url = match mime_for(path) {
                 Some((_, Kind::Note)) => note_url(ctx.vault_id, path) + &heading_fragment(p.heading),
-                _ => file_url(ctx.vault_id, path),
+                _ => link_url(ctx.vault_id, path),
             };
             format!("<a class=\"internal\" href=\"{}\">{}</a>", esc(&url), esc(&label))
         }

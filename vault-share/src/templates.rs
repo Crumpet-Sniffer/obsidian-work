@@ -106,6 +106,32 @@ pub struct NotePage {
     pub content_html: String,
     pub raw_url: String,
     pub graph_url: String,
+    /// Rendered Connections block (topics, related notes) of a converted document.
+    pub conn_html: String,
+    /// Viewer URL of the Word/PowerPoint original this note was converted from, if any.
+    pub original_url: String,
+    pub backlinks: Vec<Backlink>,
+}
+
+pub struct Backlink {
+    pub url: String,
+    pub title: String,
+    pub folder: String,
+}
+
+#[derive(Template)]
+#[template(path = "original.html")]
+pub struct OriginalPage {
+    pub page: PageCtx,
+    pub vault_id: String,
+    pub vault_name: String,
+    pub title: String,
+    pub kind: String,
+    pub tree_html: String,
+    pub file_url: String,
+    pub note_url: String,
+    pub conn_html: String,
+    pub backlinks: Vec<Backlink>,
 }
 
 #[derive(Template)]

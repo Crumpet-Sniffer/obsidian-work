@@ -20,9 +20,11 @@
       <button type="button" class="icon-btn" data-history="back" title="Navigate back" aria-label="Navigate back"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
       <button type="button" class="icon-btn" data-history="forward" title="Navigate forward" aria-label="Navigate forward"><svg class="ic"><use href="#i-arrow-right"/></svg></button>
       <div class="view-title">{% if !folder.is_empty() %}<span class="crumb-folder">{{ folder }} /</span> {% endif %}{{ title }}</div>
+      {% if !original_url.is_empty() %}<a class="view-switch" href="{{ original_url }}">View original</a>{% endif %}
       <details class="more">
         <summary class="icon-btn" title="More options" aria-label="More options"><svg class="ic"><use href="#i-more"/></svg></summary>
         <div class="menu">
+          {% if !original_url.is_empty() %}<a href="{{ original_url }}">Open original</a>{% endif %}
           {% if !graph_url.is_empty() %}<a href="{{ graph_url }}">Open linked graph</a>{% endif %}
           {% if !raw_url.is_empty() %}<a href="{{ raw_url }}" download>Download .md</a>{% endif %}
         </div>
@@ -36,5 +38,6 @@
     </div>
   </div>
 </div>
+{% include "_connections.html" %}
 </div>
 {% endblock %}

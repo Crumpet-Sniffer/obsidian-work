@@ -17,7 +17,7 @@ use crate::{
     errors::{AppError, AppResult},
     markdown::{self, RenderCtx},
     security::FILE_CSP,
-    templates::{fmt_ts, render, GraphPage, HomePage, NotePage, PageCtx, SearchHit, SearchPage, VaultCard},
+    templates::{fmt_ts, render, Backlink, GraphPage, OriginalPage, HomePage, NotePage, PageCtx, SearchHit, SearchPage, VaultCard},
     vault::{self, is_valid_id, Kind, VaultIndex},
     AppState,
 };
@@ -79,6 +79,9 @@ pub async fn vault_home(State(st): State<AppState>, user: CurrentUser, Path(id):
             content_html: "<p>This vault has no notes yet.</p>".into(),
             raw_url: String::new(),
             graph_url: String::new(),
+            conn_html: String::new(),
+            original_url: String::new(),
+            backlinks: Vec::new(),
         })),
     }
 }
@@ -91,14 +94,26 @@ pub async fn note(State(st): State<AppState>, user: CurrentUser, Path((id, path)
         return Ok(Redirect::to(&vault::file_url(&v.id, &path)).into_response());
     }
     let meta = tokio::fs::metadata(&disk).await.map_err(|_| AppError::NotFound)?;
-    let content_html = if meta.len() > MAX_NOTE_BYTES {
-        "<p>This note is too large to display. Use “Download .md” instead.</p>".to_string()
+    let (content_html, conn_html, source) = if meta.len() > MAX_NOTE_BYTES {
+        ("<p>This note is too large to display. Use “Download .md” instead.</p>".to_string(), String::new(), None)
     } else {
         let bytes = tokio::fs::read(&disk).await?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let (vid, idx2) = (v.id.clone(), idx.clone());
-        tokio::task::spawn_blocking(move || markdown::render(&text, &RenderCtx { vault_id: &vid, index: &idx2 })).await?
+        tokio::task::spawn_blocking(move || {
+            let ctx = RenderCtx { vault_id: &vid, index: &idx2 };
+            let source = markdown::frontmatter_source(&text);
+            // The Connections block (topics, related notes) goes to the side panel, not the page body.
+            let (main, conn) = markdown::split_connections(&text);
+            let conn_html = conn.map(|c| markdown::render(&c, &ctx)).unwrap_or_default();
+            (markdown::render(&main, &ctx), conn_html, source)
+        })
+        .await?
     };
+    let original_url = source
+        .and_then(|s| idx.resolve(&s).filter(|o| vault::is_office(o)).map(|o| vault::office_url(&v.id, o)))
+        .unwrap_or_default();
+    let backlinks = backlinks_for(&idx, &v.id, &path).await?;
     let (folder, file) = path.rsplit_once('/').unwrap_or(("", path.as_str()));
     Ok(render(&NotePage {
         page: PageCtx::for_user(&user),
@@ -110,7 +125,78 @@ pub async fn note(State(st): State<AppState>, user: CurrentUser, Path((id, path)
         content_html,
         raw_url: vault::file_url(&v.id, &path),
         graph_url: format!("/v/{}/graph?focus={}", v.id, utf8_percent_encode(&path, NON_ALPHANUMERIC)),
+        conn_html,
+        original_url,
+        backlinks,
     }))
+}
+
+/// Notes that link to `path`, for the Connections panel.
+async fn backlinks_for(idx: &Arc<VaultIndex>, vault_id: &str, path: &str) -> Result<Vec<Backlink>, AppError> {
+    let idx2 = idx.clone();
+    let links = tokio::task::spawn_blocking(move || idx2.links()).await?;
+    let mut out: Vec<Backlink> = links
+        .backlinks
+        .get(path)
+        .map(|v| v.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(|n| {
+            let (folder, file) = n.rsplit_once('/').unwrap_or(("", n.as_str()));
+            Backlink {
+                url: vault::note_url(vault_id, n),
+                title: file.strip_suffix(".md").unwrap_or(file).to_string(),
+                folder: folder.replace('/', " / "),
+            }
+        })
+        .collect();
+    out.sort_by_key(|b| b.title.to_lowercase());
+    out.truncate(100);
+    Ok(out)
+}
+
+/// Viewer for a Word/PowerPoint original. The document itself is rendered in the browser by /static/office.js.
+pub async fn original(State(st): State<AppState>, user: CurrentUser, Path((id, path)): Path<(String, String)>) -> AppResult {
+    let v = authorize(&st, &user, &id).await?;
+    let idx = index_for(&st, &v.id).await?;
+    if !vault::is_office(&path) || !idx.contains(&path) {
+        return Err(AppError::NotFound);
+    }
+    let idx2 = idx.clone();
+    let links = tokio::task::spawn_blocking(move || idx2.links()).await?;
+    let note = links.note_for_original.get(&path).cloned();
+    let (conn_html, backlinks, note_url) = match &note {
+        Some(n) => {
+            let bytes = tokio::fs::read(idx.disk_path(n).ok_or(AppError::NotFound)?).await?;
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let (vid, idx2) = (v.id.clone(), idx.clone());
+            let conn = tokio::task::spawn_blocking(move || {
+                markdown::split_connections(&text)
+                    .1
+                    .map(|c| markdown::render(&c, &RenderCtx { vault_id: &vid, index: &idx2 }))
+                    .unwrap_or_default()
+            })
+            .await?;
+            (conn, backlinks_for(&idx, &v.id, n).await?, vault::note_url(&v.id, n))
+        }
+        None => (String::new(), Vec::new(), String::new()),
+    };
+    let file_name = path.rsplit('/').next().unwrap_or(&path);
+    let mut res = render(&OriginalPage {
+        page: PageCtx::for_user(&user),
+        vault_id: v.id.clone(),
+        vault_name: v.name.clone(),
+        title: file_name.to_string(),
+        kind: if path.to_ascii_lowercase().ends_with(".pptx") { "pptx" } else { "docx" }.to_string(),
+        tree_html: idx.tree_html(&v.id, Some(&path)),
+        file_url: vault::file_url(&v.id, &path),
+        note_url,
+        conn_html,
+        backlinks,
+    });
+    // The document renderer injects style rules and blob: images; scripts stay limited to this origin.
+    res.headers_mut().insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(crate::security::OFFICE_CSP));
+    Ok(res)
 }
 
 pub async fn file(

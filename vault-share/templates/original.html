@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block head %}<script src="/static/office.js" defer></script>{% endblock %}
+{% block topbar %}{% endblock %}
+{% block body_class %}workspace{% endblock %}
+{% block body %}
+<div class="app" id="app">
+{% include "_sidebar.html" %}
+<div class="main">
+  <div class="tabbar">
+    <button type="button" class="icon-btn tabbar-toggle" data-toggle-sidebar aria-controls="sidebar" aria-label="Toggle sidebar" title="Toggle sidebar"><svg class="ic"><use href="#i-panel-left"/></svg></button>
+    <div class="tab is-active">
+      <svg class="ic tab-icon"><use href="#i-file"/></svg>
+      <span class="tab-title">{{ title }}</span>
+      <a class="tab-close" href="/v/{{ vault_id }}" title="Close" aria-label="Close tab"><svg class="ic"><use href="#i-x"/></svg></a>
+    </div>
+    <a class="icon-btn tab-new" href="/v/{{ vault_id }}" title="New tab" aria-label="New tab"><svg class="ic"><use href="#i-plus"/></svg></a>
+  </div>
+  <div class="view">
+    <div class="navbar">
+      <button type="button" class="icon-btn" data-history="back" title="Navigate back" aria-label="Navigate back"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+      <button type="button" class="icon-btn" data-history="forward" title="Navigate forward" aria-label="Navigate forward"><svg class="ic"><use href="#i-arrow-right"/></svg></button>
+      <div class="view-title">{{ title }}</div>
+      <a class="view-switch" href="{{ file_url }}" download>Download</a>
+      {% if !note_url.is_empty() %}<a class="view-switch" href="{{ note_url }}">Open note</a>{% endif %}
+    </div>
+    <div class="view-content office-view">
+      <div class="office-host" data-office data-kind="{{ kind }}" data-src="{{ file_url }}"><div class="office-status">Loading…</div></div>
+    </div>
+  </div>
+</div>
+{% include "_connections.html" %}
+</div>
+{% endblock %}

@@ -1,0 +1,8 @@
+{
+  "name": "vault-share-office-viewer",
+  "private": true,
+  "description": "Browser bundle (static/office.js) that renders .docx/.pptx originals, based on Microsidian's viewer.",
+  "scripts": { "build": "esbuild office.js --bundle --minify --format=iife --target=es2020 --outfile=../static/office.js" },
+  "dependencies": { "docx-preview": "0.4.1", "jszip": "3.10.2", "pptx-preview": "1.0.7" },
+  "devDependencies": { "esbuild": "^0.25.0" }
+}
