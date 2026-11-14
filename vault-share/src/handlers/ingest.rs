@@ -43,8 +43,8 @@ pub const MODELS: &[(&str, &str)] = &[
 pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 const GUIDANCE_MAX: usize = 4000;
-/// Calls to Claude one account may make per hour.
-const CALLS_PER_HOUR: usize = 60;
+/// Calls to Claude one account may make per hour. High enough for a zip of a whole course's files.
+const CALLS_PER_HOUR: usize = 500;
 /// Room for the reply. The browser's own figure is replaced with this.
 const MAX_TOKENS: u64 = 16_000;
 /// Most text the corpus endpoint returns in one go.
@@ -191,6 +191,130 @@ pub async fn save_settings(
         )
         .await;
     Ok(Redirect::to("/admin?saved=microsidian#microsidian").into_response())
+}
+
+// ---------------------------------------------------------------- exchange rate
+
+/// Pounds per US dollar used until a rate has been fetched or typed in. Anthropic charges in dollars.
+pub const DEFAULT_USD_GBP: f64 = 0.76;
+/// Daily reference rates from the European Central Bank, served free and without a key by Frankfurter.
+const RATE_URL: &str = "https://api.frankfurter.dev/v1/latest?base=USD&symbols=GBP";
+/// Reference rates change once a working day, so there is no point asking more often than this.
+const RATE_MAX_AGE_SECS: i64 = 12 * 3600;
+
+/// The rate in use and where it came from.
+pub struct Rate {
+    pub value: f64,
+    /// True when an admin typed the rate in, false when it is looked up.
+    pub manual: bool,
+    /// One line for the admin page saying where the figure came from.
+    pub note: String,
+}
+
+fn valid_rate(r: &f64) -> bool {
+    r.is_finite() && *r >= 0.1 && *r <= 10.0
+}
+
+pub async fn usd_gbp(db: &Db) -> anyhow::Result<Rate> {
+    let s = db.settings_with_prefix("spend.").await?;
+    let num = |k: &str| s.get(k).and_then(|v| v.parse::<f64>().ok()).filter(valid_rate);
+    if s.get("spend.rate_mode").map(String::as_str) == Some("manual") {
+        if let Some(value) = num("spend.usd_gbp") {
+            return Ok(Rate { value, manual: true, note: "Set by hand.".into() });
+        }
+    }
+    Ok(match num("spend.auto_rate") {
+        Some(value) => Rate {
+            value,
+            manual: false,
+            note: format!(
+                "European Central Bank reference rate for {}, looked up automatically.",
+                s.get("spend.auto_date").map(String::as_str).unwrap_or("an unknown date")
+            ),
+        },
+        None => Rate {
+            value: DEFAULT_USD_GBP,
+            manual: false,
+            note: "The current rate could not be looked up yet, so a stand-in figure is used until it can.".into(),
+        },
+    })
+}
+
+/// Look the rate up if it is being looked up automatically and the stored one is old (or `force`).
+/// Failing is fine: the last rate that was fetched stays in use.
+pub async fn refresh_rate(st: &AppState, force: bool) {
+    let Ok(s) = st.db.settings_with_prefix("spend.").await else { return };
+    if s.get("spend.rate_mode").map(String::as_str) == Some("manual") {
+        return;
+    }
+    let fetched_at = s.get("spend.auto_ts").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    if !force && crate::db::now() - fetched_at < RATE_MAX_AGE_SECS {
+        return;
+    }
+    let reply = async {
+        let res = st.http.get(RATE_URL).timeout(Duration::from_secs(10)).send().await?.error_for_status()?;
+        res.json::<Value>().await
+    }
+    .await;
+    let body = match reply {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("exchange rate lookup failed: {}", e.without_url());
+            return;
+        }
+    };
+    let Some(rate) = body.pointer("/rates/GBP").and_then(Value::as_f64).filter(valid_rate) else {
+        tracing::warn!("exchange rate lookup returned no usable rate");
+        return;
+    };
+    let date: String = body
+        .get("date")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .take(10)
+        .collect();
+    for (k, v) in [("spend.auto_rate", rate.to_string()), ("spend.auto_date", date), ("spend.auto_ts", crate::db::now().to_string())] {
+        if let Err(e) = st.db.set_setting(k.to_string(), v).await {
+            tracing::error!("could not store the exchange rate: {e:#}");
+            return;
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RateForm {
+    csrf: String,
+    #[serde(default)]
+    rate: String,
+    manual: Option<String>,
+}
+
+pub async fn save_rate(
+    State(st): State<AppState>,
+    ClientIp(ip): ClientIp,
+    AdminUser(user): AdminUser,
+    Form(f): Form<RateForm>,
+) -> AppResult {
+    user.check_csrf(&f.csrf)?;
+    if f.manual.is_some() {
+        let rate: f64 = f
+            .rate
+            .trim()
+            .parse()
+            .ok()
+            .filter(valid_rate)
+            .ok_or_else(|| AppError::BadRequest("The exchange rate must be a number such as 0.76.".into()))?;
+        st.db.set_setting("spend.usd_gbp".to_string(), rate.to_string()).await?;
+        st.db.set_setting("spend.rate_mode".to_string(), "manual".to_string()).await?;
+        st.db.audit(user.audit_id(), Some(ip), "spend_rate", format!("set by hand: 1 USD = {rate} GBP")).await;
+    } else {
+        st.db.set_setting("spend.rate_mode".to_string(), "auto".to_string()).await?;
+        refresh_rate(&st, true).await;
+        st.db.audit(user.audit_id(), Some(ip), "spend_rate", "looked up automatically".to_string()).await;
+    }
+    Ok(Redirect::to("/admin#spend").into_response())
 }
 
 // ---------------------------------------------------------------- sources page
@@ -401,12 +525,41 @@ pub async fn claude(
         .collect();
     let bytes = res.bytes().await.map_err(|e| ApiErr::Internal(anyhow::anyhow!("anthropic reply: {}", e.without_url())))?;
 
-    let usage: HashMap<String, u64> = serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .and_then(|v| v.get("usage").cloned())
-        .and_then(|u| u.as_object().cloned())
-        .map(|u| u.into_iter().filter_map(|(k, v)| Some((k, v.as_u64()?))).collect())
+    let reply = serde_json::from_slice::<Value>(&bytes).ok();
+    let usage: HashMap<String, u64> = reply
+        .as_ref()
+        .and_then(|v| v.get("usage"))
+        .and_then(Value::as_object)
+        .map(|u| u.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect())
         .unwrap_or_default();
+    if status.is_success() {
+        // Keep what this call cost, for the spend chart on the admin page.
+        let n = |k: &str| usage.get(k).copied().unwrap_or(0);
+        let tokens = crate::spend::Tokens {
+            input: n("input_tokens"),
+            output: n("output_tokens"),
+            cache_read: n("cache_read_input_tokens"),
+            cache_write: n("cache_creation_input_tokens"),
+        };
+        let answered_by = reply.as_ref().and_then(|v| v.get("model")).and_then(Value::as_str).unwrap_or(&s.model).to_string();
+        let cost = crate::spend::cost_micro_usd(&answered_by, &s.model, tokens);
+        if let Err(e) = st
+            .db
+            .record_usage(
+                user.audit_id(),
+                v.id.clone(),
+                answered_by,
+                tokens.input as i64,
+                tokens.output as i64,
+                tokens.cache_read as i64,
+                tokens.cache_write as i64,
+                cost,
+            )
+            .await
+        {
+            tracing::error!("could not record API usage: {e:#}");
+        }
+    }
     let detail = if status.is_success() {
         format!(
             "{}: {} ({} in, {} out)",

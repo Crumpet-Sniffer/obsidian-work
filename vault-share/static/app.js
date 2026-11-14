@@ -504,3 +504,25 @@ if (current) current.scrollIntoView({ block: "center" });
   const norm = (el) => el.textContent.trim().replace(/\s+/g, " ").toLowerCase();
   if (title && first && norm(title) === norm(first)) first.classList.add("is-title-echo");
 })();
+
+// Charts drawn by the server: show what a column stands for while the pointer (or keyboard focus) is on it.
+(() => {
+  document.querySelectorAll("[data-chart]").forEach((wrap) => {
+    const tip = wrap.querySelector("[data-chart-tip]");
+    if (!tip) return;
+    const hide = () => { tip.hidden = true; };
+    wrap.addEventListener("pointermove", (e) => {
+      const day = e.target.closest && e.target.closest("[data-tip]");
+      if (!day) return hide();
+      const box = wrap.getBoundingClientRect();
+      const col = day.getBoundingClientRect();
+      tip.textContent = day.dataset.tip;
+      tip.hidden = false;
+      const half = tip.offsetWidth / 2;
+      const x = Math.min(box.width - half - 4, Math.max(half + 4, col.left + col.width / 2 - box.left));
+      tip.style.left = x + "px";
+      tip.style.top = Math.max(tip.offsetHeight + 2, e.clientY - box.top - 12) + "px";
+    });
+    wrap.addEventListener("pointerleave", hide);
+  });
+})();

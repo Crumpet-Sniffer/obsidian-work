@@ -11,6 +11,7 @@ import { validate } from "../../microsidian/src/ingest/proposal";
 import { applyIngest } from "../../microsidian/src/vault/apply";
 import { under } from "../../microsidian/src/config";
 import { parseFrontmatter } from "../../microsidian/src/vault/vaultio";
+import JSZip from "jszip";
 
 // Files chosen on the New vault page wait here (in this browser only) until the new vault's Sources page picks
 // them up. A page cannot hand files to the next page any other way.
@@ -55,7 +56,7 @@ const handoff = {
   const dropText = form.querySelector("[data-drop-text]");
   const emptyText = dropText ? dropText.innerHTML : "";
   const mode = () => (form.querySelector('input[name="mode"]:checked') || {}).value;
-  const isSource = (f) => /\.(docx|pptx)$/i.test(f.name) && !f.name.startsWith("~$");
+  const isSource = (f) => /\.(docx|pptx|zip)$/i.test(f.name) && !f.name.startsWith("~$");
   let chosen = [];
 
   function show() {
@@ -67,7 +68,7 @@ const handoff = {
   }
   function choose(files) {
     const ok = files.filter(isSource);
-    if (ok.length < files.length) window.alert("Only .docx and .pptx files can be added. The others were left out.");
+    if (ok.length < files.length) window.alert("Only .docx, .pptx and .zip files can be added. The others were left out.");
     chosen = ok;
     show();
   }
@@ -293,15 +294,61 @@ const handoff = {
     };
   }
 
-  function enqueue(files) {
-    for (const file of files) {
-      const row = jobRow(file.name);
-      if (!OFFICE.includes(extOf(file.name)) || file.name.startsWith("~$")) {
-        row.set("failed", "Not added: only .docx and .pptx files can be sources.");
-        continue;
-      }
-      queue.push({ file, row });
+  // Running totals for this visit, shown above the list while a batch is going through.
+  const progressEl = host.querySelector("[data-progress]");
+  const tally = { total: 0, filed: 0, left: 0 };
+  function showTally() {
+    if (!progressEl) return;
+    progressEl.hidden = tally.total < 2;
+    const settled = tally.filed + tally.left;
+    progressEl.textContent =
+      (settled < tally.total ? `Filing ${Math.min(settled + 1, tally.total)} of ${tally.total}` : `Finished ${tally.total}`) +
+      ` · ${tally.filed} filed` + (tally.left ? ` · ${tally.left} not added` : "");
+  }
+  function addJob(name, title, get) {
+    tally.total++;
+    queue.push({ name, row: jobRow(title), get });
+  }
+
+  const isOffice = (name) => OFFICE.includes(extOf(name)) && !basename(name).startsWith("~$");
+
+  // Every Word and PowerPoint file inside a zip, in any subfolder, becomes a source. Each one is unpacked only
+  // when its turn comes, so a big zip is never held in memory twice over.
+  async function openZip(file) {
+    const row = jobRow(file.name);
+    row.set("working", "Opening the zip…");
+    let zip;
+    try {
+      zip = await JSZip.loadAsync(file);
+    } catch {
+      row.set("failed", "Not added: this zip could not be opened.");
+      return;
     }
+    const entries = Object.values(zip.files)
+      .filter((e) => !e.dir && isOffice(e.name) && !e.name.split("/").some((seg) => seg.startsWith(".") || seg === "__MACOSX"))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (!entries.length) {
+      row.set("failed", "Not added: no .docx or .pptx files were found in this zip.");
+      return;
+    }
+    row.set("done", `${entries.length} file${entries.length === 1 ? "" : "s"} found`);
+    for (const entry of entries) {
+      const name = basename(entry.name);
+      addJob(name, entry.name, async () => new File([await entry.async("uint8array")], name));
+    }
+  }
+
+  async function enqueue(files) {
+    for (const file of files) {
+      if (extOf(file.name) === "zip") {
+        await openZip(file);
+      } else if (isOffice(file.name)) {
+        addJob(file.name, file.name, async () => file);
+      } else {
+        jobRow(file.name).set("failed", "Not added: only .docx, .pptx and .zip files can be added.");
+      }
+    }
+    showTally();
     void pump();
   }
 
@@ -312,11 +359,14 @@ const handoff = {
       while (queue.length) {
         const job = queue.shift();
         try {
-          await addSource(job.file, job.row);
+          const filed = await addSource(await job.get(), job.row);
+          if (filed) tally.filed++; else tally.left++;
         } catch (e) {
-          console.error("[sources] could not add", job.file.name, e);
+          console.error("[sources] could not add", job.name, e);
           job.row.set("failed", `Not added: ${explain(e)}`);
+          tally.left++;
         }
+        showTally();
       }
     } finally {
       busy = false;
@@ -354,7 +404,7 @@ const handoff = {
     const proposal = validate(outcome.analysis, cat, res.body, layout);
     if (!proposal.suitable) {
       row.set("skipped", `Not added: ${proposal.reason || "the filing guidance says not to file this kind of document."}`);
-      return;
+      return false;
     }
 
     row.set("working", "Filing it…");
@@ -392,6 +442,7 @@ const handoff = {
     if (cat.omitted) notes.push(`This vault is large: ${cat.omitted} notes were not shown to Claude.`);
     row.set("done", "Filed");
     row.detail([link, document.createTextNode(` · ${bits.join(" · ")}${notes.length ? ". " + notes.join(" ") : ""}`)]);
+    return true;
   }
 
   if (pickEl) {

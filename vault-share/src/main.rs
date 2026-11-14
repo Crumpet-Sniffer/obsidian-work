@@ -6,6 +6,7 @@ mod graph;
 mod handlers;
 mod markdown;
 mod security;
+mod spend;
 mod templates;
 mod search;
 mod vault;
@@ -117,6 +118,8 @@ async fn run() -> anyhow::Result<()> {
                 tracing::error!("session cleanup failed: {e:#}");
             }
             let _ = bg.db.prune_audit(180 * 86_400).await;
+            // Keep the dollar-to-pound rate for the spend chart fresh (asks at most twice a day).
+            ingest::refresh_rate(&bg, false).await;
             bg.limiter.prune();
         }
     });
@@ -177,6 +180,7 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/sources", get(ingest::sources_page))
         .route("/vaults/new", get(admin::new_vault_form))
         .route("/admin/microsidian", post(ingest::save_settings))
+        .route("/admin/spend-rate", post(ingest::save_rate))
         .route("/v/{id}/graph", get(vaults::graph_page))
         .route("/v/{id}/graph.json", get(vaults::graph_json))
         .route("/v/{id}/n/{*path}", get(vaults::note))

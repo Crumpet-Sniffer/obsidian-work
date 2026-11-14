@@ -238,6 +238,7 @@ pub struct AdminPage {
     pub vaults: Vec<VaultAdminView>,
     pub audit: Vec<AuditView>,
     pub ms: MsView,
+    pub spend: crate::spend::SpendView,
 }
 
 /// One choice in a drop-down.

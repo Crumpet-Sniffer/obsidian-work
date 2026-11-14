@@ -71,6 +71,46 @@
   </form>
 </section>
 
+<section class="card" id="spend">
+  <h2>API spend</h2>
+  <p class="small muted">Estimated cost of filing sources, from the token counts of each call and Anthropic's list prices. Anthropic charges in US dollars; the invoice is the true figure.</p>
+  <dl class="tiles">
+    <div><dt>Today</dt><dd>{{ spend.today }}</dd></div>
+    <div><dt>Last 7 days</dt><dd>{{ spend.week }}</dd></div>
+    <div><dt>Last 30 days</dt><dd>{{ spend.month }}</dd><span class="small muted">{{ spend.calls_month }} call{% if spend.calls_month != 1 %}s{% endif %}</span></div>
+    <div><dt>All time</dt><dd>{{ spend.all_time }}</dd></div>
+  </dl>
+  <h3 class="chart-title">Spend per day, last 30 days (£)</h3>
+  <div class="chart-wrap" data-chart>
+    {{ spend.chart_svg|safe }}
+    <div class="chart-tip" data-chart-tip hidden></div>
+  </div>
+  {% if !spend.any %}<p class="small muted">Nothing recorded yet. Calls are counted from now on; earlier ones are not included.</p>{% endif %}
+  {% if !spend.days.is_empty() %}
+  <details class="ms-more">
+    <summary>Show as a table</summary>
+    <div class="grid-2">
+      <div class="table-wrap"><table class="table small">
+        <thead><tr><th>Day (UTC)</th><th>Calls</th><th>Spend</th></tr></thead>
+        <tbody>{% for d in spend.days %}<tr><td>{{ d.label }}</td><td>{{ d.calls }}</td><td>{{ d.amount }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+      <div class="table-wrap"><table class="table small">
+        <thead><tr><th>Model, last 30 days</th><th>Calls</th><th>Spend</th></tr></thead>
+        <tbody>{% for m in spend.models %}<tr><td>{{ m.model }}</td><td>{{ m.calls }}</td><td>{{ m.amount }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+    </div>
+  </details>
+  {% endif %}
+  <p class="rate-line"><strong>$1 = £{{ spend.rate }}</strong> <span class="small muted">{{ spend.rate_note }}</span></p>
+  <form method="post" action="/admin/spend-rate" class="row-form rate-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="check"><input type="checkbox" name="manual" value="1"{% if spend.rate_manual %} checked{% endif %}> Set the rate myself</label>
+    <label class="rate-input">Pounds per US dollar <input name="rate" value="{{ spend.rate }}" inputmode="decimal" pattern="[0-9]*[.]?[0-9]+" maxlength="10"></label>
+    <button type="submit">Save</button>
+  </form>
+  <p class="small muted">Left unticked, the rate is looked up from the European Central Bank's daily reference rates (through the free Frankfurter service) about twice a day. Costs are stored in dollars, so a new rate re-prices every day shown here. Days are in UTC.</p>
+</section>
+
 <section class="card" id="users">
   <h2>Accounts</h2>
   <form method="post" action="/admin/users" class="row-form">

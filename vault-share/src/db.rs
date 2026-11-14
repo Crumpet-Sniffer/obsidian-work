@@ -159,6 +159,27 @@ impl Db {
                  PRAGMA user_version = 2; COMMIT;",
             )?;
         }
+        if version < 3 {
+            // One row per call to Claude, for the spend chart. Costs are in millionths of a US dollar.
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE api_usage (
+                     id                 INTEGER PRIMARY KEY,
+                     ts                 INTEGER NOT NULL,
+                     user_id            INTEGER,
+                     username           TEXT,
+                     vault_id           TEXT,
+                     model              TEXT NOT NULL,
+                     input_tokens       INTEGER NOT NULL DEFAULT 0,
+                     output_tokens      INTEGER NOT NULL DEFAULT 0,
+                     cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+                     cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                     cost_micro_usd     INTEGER NOT NULL DEFAULT 0
+                 );
+                 CREATE INDEX api_usage_ts ON api_usage(ts);
+                 PRAGMA user_version = 3; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -454,6 +475,69 @@ impl Db {
 
     pub async fn delete_vault(&self, id: String) -> Result<()> {
         self.call(move |c| c.execute("DELETE FROM vaults WHERE id = ?1", [id]).map(|_| ())).await
+    }
+
+    // ---------- API usage ----------
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_usage(
+        &self,
+        who: Option<(i64, String)>,
+        vault_id: String,
+        model: String,
+        input: i64,
+        output: i64,
+        cache_read: i64,
+        cache_write: i64,
+        cost_micro_usd: i64,
+    ) -> Result<()> {
+        self.call(move |c| {
+            let (uid, name) = match who {
+                Some((id, n)) => (Some(id), Some(n)),
+                None => (None, None),
+            };
+            c.execute(
+                "INSERT INTO api_usage (ts, user_id, username, vault_id, model, input_tokens, output_tokens,
+                                        cache_read_tokens, cache_write_tokens, cost_micro_usd)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![now(), uid, name, vault_id, model, input, output, cache_read, cache_write, cost_micro_usd],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    /// `(day number in UTC, cost in millionths of a dollar, calls)` for each day with calls since `since`.
+    pub async fn usage_by_day(&self, since: i64) -> Result<Vec<(i64, i64, i64)>> {
+        self.call(move |c| {
+            let mut st = c.prepare(
+                "SELECT ts / 86400, SUM(cost_micro_usd), COUNT(*) FROM api_usage WHERE ts >= ?1 GROUP BY ts / 86400",
+            )?;
+            let rows = st.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect();
+            rows
+        })
+        .await
+    }
+
+    /// `(model, cost, calls)` since `since`, dearest first.
+    pub async fn usage_by_model(&self, since: i64) -> Result<Vec<(String, i64, i64)>> {
+        self.call(move |c| {
+            let mut st = c.prepare(
+                "SELECT model, SUM(cost_micro_usd), COUNT(*) FROM api_usage WHERE ts >= ?1
+                 GROUP BY model ORDER BY SUM(cost_micro_usd) DESC",
+            )?;
+            let rows = st.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect();
+            rows
+        })
+        .await
+    }
+
+    /// `(cost, calls)` over all time.
+    pub async fn usage_total(&self) -> Result<(i64, i64)> {
+        self.call(|c| {
+            c.query_row("SELECT COALESCE(SUM(cost_micro_usd), 0), COUNT(*) FROM api_usage", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        })
+        .await
     }
 
     // ---------- settings ----------

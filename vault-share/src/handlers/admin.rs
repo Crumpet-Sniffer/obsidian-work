@@ -107,7 +107,8 @@ pub async fn dashboard(
         folder_indexes: s.folder_indexes,
         saved: q.saved.as_deref() == Some("microsidian"),
     };
-    Ok(render(&AdminPage { page: PageCtx::for_user(&user), csrf: user.csrf.clone(), users, vaults, audit, ms }))
+    let spend = crate::spend::view(&st.db, ingest::usd_gbp(&st.db).await?).await?;
+    Ok(render(&AdminPage { page: PageCtx::for_user(&user), csrf: user.csrf.clone(), users, vaults, audit, ms, spend }))
 }
 
 // ---------------------------------------------------------------- users

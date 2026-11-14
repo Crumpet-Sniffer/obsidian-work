@@ -149,15 +149,16 @@ Every account can edit every vault (create, edit, rename, move, delete notes and
 
 ## Sources (Microsidian on the site)
 
-Open a vault and press **+** in the sidebar (or go to **Admin → Vaults → Sources**) to add `.docx` and `.pptx` files. For each file the site does what the Microsidian Obsidian plugin does: converts it to a note, asks Claude where it belongs, checks the answer against what really exists in the vault, then files the original under the originals folder, writes the note, links it to topics and related notes, and updates topic and index pages. Filing is automatic; there is no review step. **Remove** moves the original and its note to the vault's trash and takes the note out of topic and index pages.
+Open a vault and press **+** in the sidebar (or go to **Admin → Vaults → Sources**) to add `.docx` and `.pptx` files, or a `.zip` of them (every Word and PowerPoint file in the zip is added, whatever subfolder it is in; the zip is unpacked in the browser). For each file the site does what the Microsidian Obsidian plugin does: converts it to a note, asks Claude where it belongs, checks the answer against what really exists in the vault, then files the original under the originals folder, writes the note, links it to topics and related notes, and updates topic and index pages. Filing is automatic; there is no review step. **Remove** moves the original and its note to the vault's trash and takes the note out of topic and index pages.
 
 An admin sets this up under **Admin → Microsidian**: the Anthropic API key, the model, the effort, free-text filing guidance, the folder names and the smallest image to keep.
 
 - The conversion and filing run in the browser, using the plugin's own code from `../microsidian` (bundled into `static/ingest.js`).
 - The call to Claude is made by the server, so **the API key never reaches a browser**. The server sets the model and effort from the admin's settings whatever the browser sent. The key is stored in the database in the data folder and is never shown again after saving. If none is saved, the `ANTHROPIC_API_KEY` environment variable is used.
 - What is sent to Anthropic for each source: the converted text of that file, the filing guidance, and a catalogue of the vault (folder names, note titles, topic names and definitions; at most 500 notes).
-- Each account can file at most 60 sources an hour, and every call is written to the audit log with its token counts.
-- The container needs outbound HTTPS to `api.anthropic.com` for this. Nothing else on the site makes outbound requests.
+- Each account can file at most 500 sources an hour, and every call is written to the audit log with its token counts.
+- **Admin → API spend** shows a line graph of estimated spend per day for the last 30 days, with totals, in pounds. Costs are worked out from each call's token counts and Anthropic's list prices in US dollars (see `src/spend.rs`; update the prices there if they change) and converted at the dollar-to-pound rate. By default the server looks that rate up about twice a day from `api.frankfurter.dev` (European Central Bank reference rates; free, no key, and nothing about the site is sent); an admin can tick "Set the rate myself" to stop the lookups and type a rate instead. If a lookup fails, the last rate fetched stays in use. It is an estimate; the Anthropic invoice is the true figure.
+- The container needs outbound HTTPS to `api.anthropic.com` for this. The only other outbound request the site makes is the exchange-rate lookup below.
 - Not carried over from the plugin: skipping template logos that repeat across many files (repeated logos are saved as images), and re-syncing a note when its original changes.
 
 ## Features beyond reading
