@@ -24,17 +24,13 @@ use crate::{
 
 const MAX_NOTE_BYTES: u64 = 5 * 1024 * 1024;
 
-/// Load a vault the user may read. Returns 404 (not 403) so vault ids cannot be probed.
-pub async fn authorize(st: &AppState, user: &CurrentUser, id: &str) -> AppResult<VaultRow> {
+/// Load a vault for a signed-in user. Every account can open and edit every vault; only administrators
+/// can delete one.
+pub async fn authorize(st: &AppState, _user: &CurrentUser, id: &str) -> AppResult<VaultRow> {
     if !is_valid_id(id) {
         return Err(AppError::NotFound);
     }
-    let v = st.db.get_vault(id.to_string()).await?.ok_or(AppError::NotFound)?;
-    if user.is_admin || v.shared_with_all || st.db.user_has_access(v.id.clone(), user.id).await? {
-        Ok(v)
-    } else {
-        Err(AppError::NotFound)
-    }
+    st.db.get_vault(id.to_string()).await?.ok_or(AppError::NotFound)
 }
 
 pub async fn index_for(st: &AppState, id: &str) -> AppResult<Arc<VaultIndex>> {
@@ -48,7 +44,7 @@ pub async fn index_for(st: &AppState, id: &str) -> AppResult<Arc<VaultIndex>> {
 }
 
 pub async fn home(State(st): State<AppState>, user: CurrentUser) -> AppResult {
-    let vaults = if user.is_admin { st.db.list_vaults().await? } else { st.db.list_vaults_for_user(user.id).await? };
+    let vaults = st.db.list_vaults().await?;
     Ok(render(&HomePage {
         page: PageCtx::for_user(&user),
         vaults: vaults

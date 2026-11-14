@@ -152,6 +152,13 @@ impl Db {
         if version < 1 {
             conn.execute_batch(&format!("BEGIN; {SCHEMA_V1} PRAGMA user_version = 1; COMMIT;"))?;
         }
+        if version < 2 {
+            // Site-wide settings chosen on the admin page (key/value).
+            conn.execute_batch(
+                "BEGIN; CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+                 PRAGMA user_version = 2; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -417,20 +424,6 @@ impl Db {
         .await
     }
 
-    pub async fn list_vaults_for_user(&self, user_id: i64) -> Result<Vec<VaultRow>> {
-        self.call(move |c| {
-            let mut st = c.prepare(&format!(
-                "SELECT {VAULT_COLS} FROM vaults
-                 WHERE shared_with_all = 1
-                    OR id IN (SELECT vault_id FROM vault_access WHERE user_id = ?1)
-                 ORDER BY name COLLATE NOCASE"
-            ))?;
-            let rows = st.query_map([user_id], vault_from_row)?.collect();
-            rows
-        })
-        .await
-    }
-
     pub async fn update_vault_meta(
         &self,
         id: String,
@@ -463,45 +456,23 @@ impl Db {
         self.call(move |c| c.execute("DELETE FROM vaults WHERE id = ?1", [id]).map(|_| ())).await
     }
 
-    pub async fn user_has_access(&self, vault_id: String, user_id: i64) -> Result<bool> {
-        self.call(move |c| {
-            c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM vault_access WHERE vault_id = ?1 AND user_id = ?2)",
-                params![vault_id, user_id],
-                |r| r.get(0),
-            )
-        })
-        .await
-    }
+    // ---------- settings ----------
 
-    /// Every non-admin user plus whether they were explicitly granted this vault.
-    pub async fn access_list(&self, vault_id: String) -> Result<Vec<(i64, String, bool)>> {
+    pub async fn settings_with_prefix(&self, prefix: &'static str) -> Result<std::collections::HashMap<String, String>> {
         self.call(move |c| {
-            let mut st = c.prepare(
-                "SELECT u.id, u.username,
-                        EXISTS (SELECT 1 FROM vault_access a WHERE a.vault_id = ?1 AND a.user_id = u.id)
-                 FROM users u WHERE u.role = 'member'
-                 ORDER BY u.username COLLATE NOCASE",
-            )?;
-            let rows = st.query_map([vault_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect();
+            let mut st = c.prepare("SELECT key, value FROM settings WHERE key LIKE ?1 || '%'")?;
+            let rows = st.query_map([prefix], |r| Ok((r.get(0)?, r.get(1)?)))?.collect();
             rows
         })
         .await
     }
 
-    pub async fn set_access(&self, vault_id: String, user_id: i64, granted: bool) -> Result<()> {
+    pub async fn set_setting(&self, key: String, value: String) -> Result<()> {
         self.call(move |c| {
-            if granted {
-                c.execute(
-                    "INSERT OR IGNORE INTO vault_access (vault_id, user_id) VALUES (?1, ?2)",
-                    params![vault_id, user_id],
-                )
-            } else {
-                c.execute(
-                    "DELETE FROM vault_access WHERE vault_id = ?1 AND user_id = ?2",
-                    params![vault_id, user_id],
-                )
-            }
+            c.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
             .map(|_| ())
         })
         .await

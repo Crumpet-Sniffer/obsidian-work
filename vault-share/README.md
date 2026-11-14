@@ -1,9 +1,9 @@
 # Vault Share
 
-A small, self-hosted Rust web app for sharing Obsidian vaults with classmates. You upload a
-vault as a `.zip`, create accounts for classmates, and they read the notes in the browser
-behind a login. Wikilinks, embeds, the folder tree and search all work. Nothing is editable
-by readers, and nothing is public.
+A small, self-hosted Rust web app for sharing Obsidian vaults with classmates. You create
+accounts, and everyone reads and edits the vaults in the browser behind a login: upload a vault
+as a `.zip` or start an empty one, and add Word and PowerPoint files that are turned into linked
+notes. Wikilinks, embeds, the folder tree, search and the graph all work. Nothing is public.
 
 - **Rust**: axum + tokio, SQLite (bundled), Askama templates. No JavaScript framework.
 - **Single container**: distroless, non-root, read-only filesystem, roughly 30 MB.
@@ -13,11 +13,12 @@ by readers, and nothing is public.
 
 | | |
 |---|---|
-| Upload | Zip your vault folder and upload it. Re-upload to update it; links and access stay the same. |
+| Vaults | Any account can create a vault: empty, or from a .zip of an Obsidian vault. An admin can re-upload a zip to update it; links stay the same. |
+| Sources | Add Word and PowerPoint files to a vault. Each is converted to a note and filed by Claude (see "Sources" below). |
 | Reading | Obsidian-style `[[wikilinks]]`, `[[Note#Heading\|alias]]`, `![[image.png\|300]]` embeds, audio/video/PDF, `==highlights==`, callouts (`> [!NOTE]`), task lists, tables, footnotes, frontmatter hidden |
 | Navigation | Collapsible file tree, full-text search, mobile layout, dark mode |
 | Accounts | Admin creates accounts with a one-time password; classmates must set their own at first sign-in |
-| Sharing | Per vault: "everyone with an account" or specific people only |
+| Roles | **Users** can open and edit every vault, create vaults, and add and remove sources. **Admins** can also create accounts, delete or replace vaults, and change the Microsidian settings. |
 | Admin | Reset passwords, disable or delete accounts, promote/demote, activity log |
 
 ## Security controls
@@ -50,7 +51,7 @@ by readers, and nothing is public.
 - Upload size is capped at 512 MB by default, and uploads are streamed to disk, never held in memory. Only one extraction runs at a time.
 
 **Authorization**
-- Every vault page and file checks the user's access. Vaults you can't read return **404, not 403**, so their IDs can't be probed.
+- Every vault page and file needs a signed-in account. Every account can open every vault; deleting or replacing a vault, creating accounts and changing settings need the admin role.
 - File access is only possible for paths in the vault's index, which excludes traversal, hidden files and symlinks.
 
 **Operations**
@@ -121,6 +122,8 @@ Your classmates are outside your home network, so they need HTTPS. **Don't port-
 | `SESSION_IDLE_HOURS` | `24` | Sign out after this long without activity |
 | `SESSION_MAX_DAYS` | `7` | Sign out after this long regardless |
 | `RUST_LOG` | `info` | Log level |
+| `ANTHROPIC_API_KEY` | unset | API key for filing sources, used when no key is saved on the Admin page |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Where the Anthropic API is (an HTTPS gateway, or a local mock for testing) |
 
 ## Backups
 
@@ -136,7 +139,7 @@ Then open http://127.0.0.1:8080. The initial admin password is printed in the lo
 
 ## Editing
 
-Anyone who can read a vault can also edit it (create, edit, rename, move, delete notes and folders, paste images). Think about that before sharing a vault with everyone.
+Every account can edit every vault (create, edit, rename, move, delete notes and folders, paste images). Only give accounts to people you trust with that.
 
 - **Editor:** open a note and press **Ctrl+E** (or the pencil). It autosaves, completes `[[links]]`, and pastes or drops images as attachments. A save is refused (and you are asked what to do) if the note changed on the server since you opened it.
 - **Files:** use the buttons above the file list, or right-click an item. Renaming a note can update links in other notes. Items can be dragged onto folders.
@@ -144,13 +147,26 @@ Anyone who can read a vault can also edit it (create, edit, rename, move, delete
 - **Re-uploading replaces everything**, including edits made on the site. The previous version is saved first as a zip (the last three are kept, under **Admin → the vault → Backups**).
 - Every create, rename, delete and upload is recorded in the audit log.
 
+## Sources (Microsidian on the site)
+
+Open a vault and press **+** in the sidebar (or go to **Admin → Vaults → Sources**) to add `.docx` and `.pptx` files. For each file the site does what the Microsidian Obsidian plugin does: converts it to a note, asks Claude where it belongs, checks the answer against what really exists in the vault, then files the original under the originals folder, writes the note, links it to topics and related notes, and updates topic and index pages. Filing is automatic; there is no review step. **Remove** moves the original and its note to the vault's trash and takes the note out of topic and index pages.
+
+An admin sets this up under **Admin → Microsidian**: the Anthropic API key, the model, the effort, free-text filing guidance, the folder names and the smallest image to keep.
+
+- The conversion and filing run in the browser, using the plugin's own code from `../microsidian` (bundled into `static/ingest.js`).
+- The call to Claude is made by the server, so **the API key never reaches a browser**. The server sets the model and effort from the admin's settings whatever the browser sent. The key is stored in the database in the data folder and is never shown again after saving. If none is saved, the `ANTHROPIC_API_KEY` environment variable is used.
+- What is sent to Anthropic for each source: the converted text of that file, the filing guidance, and a catalogue of the vault (folder names, note titles, topic names and definitions; at most 500 notes).
+- Each account can file at most 60 sources an hour, and every call is written to the audit log with its token counts.
+- The container needs outbound HTTPS to `api.anthropic.com` for this. Nothing else on the site makes outbound requests.
+- Not carried over from the plugin: skipping template logos that repeat across many files (repeated logos are saved as images), and re-syncing a note when its original changes.
+
 ## Features beyond reading
 
 Tabs, split view (Alt+click a link, or right-click a note), hover previews, bookmarks, search with operators (`file:`, `path:`, `tag:`, `content:`, `-word`, `"phrase"`), a tags list, outline and links panels, properties, callouts, math (KaTeX), Mermaid diagrams, graph view with groups, forces, display options and arrows, a quick switcher (Ctrl+O) and Word/PowerPoint viewers.
 
 ## Building the browser bundles
 
-`static/office.js`, `editor.js`, `render.js` and `mermaid.js` are built from `viewer/` and committed:
+`static/office.js`, `editor.js`, `render.js`, `mermaid.js`, `graph.js` and `ingest.js` are built from `viewer/` and committed (`ingest.js` also bundles source from `../microsidian`):
 
 ```bash
 cd viewer && npm install && npm run build

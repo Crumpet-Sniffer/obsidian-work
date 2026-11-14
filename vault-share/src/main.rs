@@ -29,7 +29,7 @@ use axum::{
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-use handlers::{admin, auth as auth_h, edit, vaults};
+use handlers::{admin, auth as auth_h, edit, ingest, vaults};
 
 pub struct AppInner {
     pub cfg: config::Config,
@@ -37,6 +37,10 @@ pub struct AppInner {
     pub limiter: auth::LoginLimiter,
     pub indexes: RwLock<HashMap<String, Arc<vault::VaultIndex>>>,
     pub upload_lock: tokio::sync::Mutex<()>,
+    /// Outbound HTTPS client (only used to call the Anthropic API when filing a source).
+    pub http: reqwest::Client,
+    /// When each account last called Claude, for the hourly cap.
+    pub ingest_calls: std::sync::Mutex<HashMap<i64, Vec<std::time::Instant>>>,
 }
 
 pub type AppState = Arc<AppInner>;
@@ -95,6 +99,12 @@ async fn run() -> anyhow::Result<()> {
         limiter: auth::LoginLimiter::default(),
         indexes: RwLock::new(HashMap::new()),
         upload_lock: tokio::sync::Mutex::new(()),
+        http: reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(600))
+            .user_agent(concat!("vault-share/", env!("CARGO_PKG_VERSION")))
+            .build()?,
+        ingest_calls: std::sync::Mutex::new(HashMap::new()),
     });
 
     // Housekeeping: expire sessions, prune audit log (180 days) and throttle state.
@@ -128,9 +138,20 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/attach", post(edit::attach))
         .route("/admin/uploads", post(admin::upload_start))
         .route("/admin/uploads/{id}", put(admin::upload_chunk))
-        .route("/admin/vaults", post(admin::create_vault))
+        .route("/vaults", post(admin::create_vault))
         .route("/admin/vaults/{id}/upload", post(admin::replace_vault))
+        .route("/v/{id}/api/ingest/file", put(ingest::put_file))
         .layer(DefaultBodyLimit::max(upload_limit));
+
+    // The call to Claude can take minutes at high effort, so it has no short timeout.
+    let claude = Router::new()
+        .route("/v/{id}/api/ingest/claude", post(ingest::claude))
+        .layer(DefaultBodyLimit::max(8 * 1024 * 1024));
+
+    // Reads every note in a vault; can be slow on a big one.
+    let corpus = Router::new()
+        .route("/v/{id}/api/ingest/corpus", get(ingest::corpus))
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(300)));
 
     // JSON API used by the editor and the file tree (save, create, rename, delete).
     let api = Router::new()
@@ -141,6 +162,7 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/create", post(edit::create))
         .route("/v/{id}/api/rename", post(edit::rename))
         .route("/v/{id}/api/delete", post(edit::delete))
+        .route("/v/{id}/api/ingest/config", get(ingest::config))
         .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)));
 
@@ -152,6 +174,9 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}", get(vaults::vault_home))
         .route("/v/{id}/search", get(vaults::search))
         .route("/v/{id}/new-tab", get(vaults::new_tab))
+        .route("/v/{id}/sources", get(ingest::sources_page))
+        .route("/vaults/new", get(admin::new_vault_form))
+        .route("/admin/microsidian", post(ingest::save_settings))
         .route("/v/{id}/graph", get(vaults::graph_page))
         .route("/v/{id}/graph.json", get(vaults::graph_json))
         .route("/v/{id}/n/{*path}", get(vaults::note))
@@ -160,11 +185,9 @@ fn router(state: AppState) -> Router {
         .route("/admin", get(admin::dashboard))
         .route("/admin/users", post(admin::create_user))
         .route("/admin/users/{id}", post(admin::user_action))
-        .route("/admin/vaults/new", get(admin::new_vault_form))
         .route("/admin/vaults/{id}", get(admin::manage_vault))
         .route("/admin/vaults/{id}/backups/{name}", get(admin::download_backup))
         .route("/admin/vaults/{id}/settings", post(admin::vault_settings))
-        .route("/admin/vaults/{id}/access", post(admin::vault_access))
         .route("/admin/vaults/{id}/delete", post(admin::delete_vault))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)));
@@ -173,6 +196,8 @@ fn router(state: AppState) -> Router {
         .merge(pages)
         .merge(uploads)
         .merge(api)
+        .merge(claude)
+        .merge(corpus)
         .route("/healthz", get(|| async { "ok" }))
         .route("/static/app.css", get(static_css))
         .route("/static/obsidian.css", get(static_obsidian_css))
@@ -184,6 +209,7 @@ fn router(state: AppState) -> Router {
         .route("/static/editor.js", get(static_editor_js))
         .route("/static/app.js", get(static_js))
         .route("/static/graph.js", get(static_graph_js))
+        .route("/static/ingest.js", get(static_ingest_js))
         .route("/favicon.svg", get(favicon))
         .route("/robots.txt", get(|| async { "User-agent: *\nDisallow: /\n" }))
         .fallback(|| async { errors::AppError::NotFound })
@@ -256,6 +282,13 @@ async fn static_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
         include_str!("../static/app.js"),
+    )
+}
+
+async fn static_ingest_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
+        include_str!("../static/ingest.js"),
     )
 }
 

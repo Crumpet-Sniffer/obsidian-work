@@ -216,7 +216,6 @@ pub struct VaultAdminView {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub shared_with_all: bool,
     pub files: i64,
     pub size: String,
     pub updated: String,
@@ -238,6 +237,44 @@ pub struct AdminPage {
     pub users: Vec<UserView>,
     pub vaults: Vec<VaultAdminView>,
     pub audit: Vec<AuditView>,
+    pub ms: MsView,
+}
+
+/// One choice in a drop-down.
+pub struct Opt {
+    pub value: String,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// The Microsidian settings as shown on the admin page. The API key itself is never sent to the browser.
+pub struct MsView {
+    pub key_set: bool,
+    pub key_from_env: bool,
+    pub key_hint: String,
+    pub models: Vec<Opt>,
+    pub efforts: Vec<Opt>,
+    pub guidance: String,
+    pub ingest: String,
+    pub originals: String,
+    pub attachments: String,
+    pub topics: String,
+    pub topics_index: String,
+    pub image_min_kb: u32,
+    pub folder_indexes: bool,
+    pub saved: bool,
+}
+
+#[derive(Template)]
+#[template(path = "sources.html")]
+pub struct SourcesPage {
+    pub page: PageCtx,
+    pub csrf: String,
+    pub vault_id: String,
+    pub vault_name: String,
+    pub configured: bool,
+    pub is_admin: bool,
+    pub max_file_mb: u64,
 }
 
 #[derive(Template)]
@@ -248,19 +285,12 @@ pub struct VaultNewPage {
     pub max_upload_mb: u64,
 }
 
-pub struct AccessView {
-    pub user_id: i64,
-    pub username: String,
-    pub granted: bool,
-}
-
 #[derive(Template)]
 #[template(path = "vault_admin.html")]
 pub struct VaultAdminPage {
     pub page: PageCtx,
     pub csrf: String,
     pub vault: VaultAdminView,
-    pub members: Vec<AccessView>,
     pub max_upload_mb: u64,
     pub notice: Option<String>,
     pub backups: Vec<BackupView>,

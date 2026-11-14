@@ -3,11 +3,11 @@
 {% block content %}
 <div class="page-head">
   <h1>Vaults</h1>
-  {% if let Some(u) = page.user %}{% if u.is_admin %}<a class="button primary" href="/admin/vaults/new">Upload a vault</a>{% endif %}{% endif %}
+  <a class="button primary" href="/vaults/new">New vault</a>
 </div>
 {% if vaults.is_empty() %}
 <div class="empty card">
-  <p>No vaults have been shared with you yet.</p>
+  <p>No vaults yet. Create one to start adding notes and sources.</p>
 </div>
 {% else %}
 <ul class="vault-grid">

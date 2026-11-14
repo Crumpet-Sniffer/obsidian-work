@@ -13,10 +13,10 @@ use crate::{
     auth::{self, AdminUser, ClientIp, CurrentUser},
     db::VaultRow,
     errors::{AppError, AppResult},
-    handlers::auth::CsrfForm,
+    handlers::{auth::CsrfForm, ingest},
     templates::{
-        fmt_bytes, fmt_ts, render, AccessView, AdminPage, AuditView, MessagePage, PageCtx, UserView, VaultAdminPage,
-        VaultAdminView, VaultNewPage, BackupView,
+        fmt_bytes, fmt_ts, render, AdminPage, AuditView, BackupView, MessagePage, MsView, Opt, PageCtx, UserView,
+        VaultAdminPage, VaultAdminView, VaultNewPage,
     },
     vault::{self, is_valid_id, ImportError, Limits},
     AppState,
@@ -27,7 +27,6 @@ fn vault_view(v: VaultRow) -> VaultAdminView {
         id: v.id,
         name: v.name,
         description: v.description,
-        shared_with_all: v.shared_with_all,
         files: v.file_count,
         size: fmt_bytes(v.total_bytes),
         updated: fmt_ts(v.updated_at),
@@ -45,7 +44,16 @@ fn message(user: &CurrentUser, title: &str, msg: String, secret: Option<String>)
     })
 }
 
-pub async fn dashboard(State(st): State<AppState>, AdminUser(user): AdminUser) -> AppResult {
+#[derive(Deserialize)]
+pub struct DashboardQuery {
+    saved: Option<String>,
+}
+
+pub async fn dashboard(
+    State(st): State<AppState>,
+    AdminUser(user): AdminUser,
+    axum::extract::Query(q): axum::extract::Query<DashboardQuery>,
+) -> AppResult {
     let users = st
         .db
         .list_users()
@@ -76,7 +84,30 @@ pub async fn dashboard(State(st): State<AppState>, AdminUser(user): AdminUser) -
             detail: a.detail,
         })
         .collect();
-    Ok(render(&AdminPage { page: PageCtx::for_user(&user), csrf: user.csrf.clone(), users, vaults, audit }))
+    let s = ingest::Settings::load(&st.db).await?;
+    let ms = MsView {
+        key_set: s.api_key.is_some(),
+        key_from_env: s.api_key.is_some() && !s.key_saved,
+        key_hint: s.key_hint(),
+        models: ingest::MODELS
+            .iter()
+            .map(|(id, label)| Opt { value: id.to_string(), label: label.to_string(), selected: *id == s.model })
+            .collect(),
+        efforts: ingest::EFFORTS
+            .iter()
+            .map(|e| Opt { value: e.to_string(), label: e.to_string(), selected: *e == s.effort })
+            .collect(),
+        guidance: s.guidance,
+        ingest: s.ingest,
+        originals: s.originals,
+        attachments: s.attachments,
+        topics: s.topics,
+        topics_index: s.topics_index,
+        image_min_kb: s.image_min_kb,
+        folder_indexes: s.folder_indexes,
+        saved: q.saved.as_deref() == Some("microsidian"),
+    };
+    Ok(render(&AdminPage { page: PageCtx::for_user(&user), csrf: user.csrf.clone(), users, vaults, audit, ms }))
 }
 
 // ---------------------------------------------------------------- users
@@ -166,7 +197,7 @@ pub async fn user_action(
             st.db.delete_user_sessions(target.id, None).await?;
             st.db.audit(user.audit_id(), Some(ip), "user_promoted", name).await;
         }
-        "make_member" => {
+        "make_user" | "make_member" => {
             if last_admin {
                 return Err(AppError::BadRequest("You cannot demote the last administrator.".into()));
             }
@@ -311,7 +342,7 @@ async fn sweep_stale_uploads(st: &AppState) {
 }
 
 /// Start a chunked upload: creates an empty temp file and tells the browser the chunk size.
-pub async fn upload_start(State(st): State<AppState>, AdminUser(user): AdminUser, headers: HeaderMap) -> AppResult {
+pub async fn upload_start(State(st): State<AppState>, user: CurrentUser, headers: HeaderMap) -> AppResult {
     check_header_csrf(&user, &headers)?;
     sweep_stale_uploads(&st).await;
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -327,7 +358,7 @@ pub async fn upload_start(State(st): State<AppState>, AdminUser(user): AdminUser
 /// file ends the server answers 409 with how much it really has, so the browser can resume from there.
 pub async fn upload_chunk(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    user: CurrentUser,
     Path(id): Path<String>,
     headers: HeaderMap,
     mut mp: Multipart,
@@ -427,7 +458,8 @@ async fn import(st: &AppState, zip: &TempFile, vault_id: &str) -> AppResult<vaul
     }
 }
 
-pub async fn new_vault_form(State(st): State<AppState>, AdminUser(user): AdminUser) -> Response {
+/// Any account can create a vault: empty, or from a zip of an existing one.
+pub async fn new_vault_form(State(st): State<AppState>, user: CurrentUser) -> Response {
     render(&VaultNewPage {
         page: PageCtx::for_user(&user),
         csrf: user.csrf.clone(),
@@ -438,7 +470,7 @@ pub async fn new_vault_form(State(st): State<AppState>, AdminUser(user): AdminUs
 pub async fn create_vault(
     State(st): State<AppState>,
     ClientIp(ip): ClientIp,
-    AdminUser(user): AdminUser,
+    user: CurrentUser,
     mp: Multipart,
 ) -> AppResult {
     let up = read_upload(&st, &user, mp).await?;
@@ -447,18 +479,29 @@ pub async fn create_vault(
         return Err(AppError::BadRequest("Give the vault a name.".into()));
     }
     let description = clean_text(up.fields.get("description"), 500);
-    let shared = up.fields.contains_key("shared_with_all");
-    let zip = up.zip.ok_or_else(|| AppError::BadRequest("Choose a .zip file of your vault.".into()))?;
-
     let id = uuid::Uuid::new_v4().simple().to_string();
-    let stats = import(&st, &zip, &id).await?;
+    let (files, bytes, skipped) = match &up.zip {
+        Some(zip) => {
+            let stats = import(&st, zip, &id).await?;
+            (stats.files as i64, stats.bytes as i64, stats.skipped)
+        }
+        None => {
+            // No zip: start with an empty vault to add notes and sources to.
+            tokio::fs::create_dir_all(st.cfg.vaults_dir().join(&id)).await?;
+            (0, 0, 0)
+        }
+    };
+    st.db.create_vault(id.clone(), name.clone(), description, true, files, bytes).await?;
     st.db
-        .create_vault(id.clone(), name.clone(), description, shared, stats.files as i64, stats.bytes as i64)
-        .await?;
-    st.db
-        .audit(user.audit_id(), Some(ip), "vault_created", format!("{name}: {} files, {} skipped", stats.files, stats.skipped))
+        .audit(user.audit_id(), Some(ip), "vault_created", format!("{name}: {files} files, {skipped} skipped"))
         .await;
-    Ok(Redirect::to(&format!("/admin/vaults/{id}?imported={}&skipped={}", stats.files, stats.skipped)).into_response())
+    if up.zip.is_none() {
+        return Ok(Redirect::to(&format!("/v/{id}/sources")).into_response());
+    }
+    if user.is_admin {
+        return Ok(Redirect::to(&format!("/admin/vaults/{id}?imported={files}&skipped={skipped}")).into_response());
+    }
+    Ok(Redirect::to(&format!("/v/{id}")).into_response())
 }
 
 async fn admin_vault(st: &AppState, id: &str) -> AppResult<VaultRow> {
@@ -481,13 +524,6 @@ pub async fn manage_vault(
     axum::extract::Query(n): axum::extract::Query<ImportNotice>,
 ) -> AppResult {
     let v = admin_vault(&st, &id).await?;
-    let members = st
-        .db
-        .access_list(v.id.clone())
-        .await?
-        .into_iter()
-        .map(|(user_id, username, granted)| AccessView { user_id, username, granted })
-        .collect();
     let notice = n.imported.map(|i| {
         let s = n.skipped.unwrap_or(0);
         if s > 0 {
@@ -500,7 +536,6 @@ pub async fn manage_vault(
         page: PageCtx::for_user(&user),
         csrf: user.csrf.clone(),
         vault: vault_view(v),
-        members,
         max_upload_mb: st.cfg.max_upload_bytes / 1024 / 1024,
         notice,
         backups: {
@@ -546,7 +581,6 @@ pub struct VaultSettingsForm {
     name: String,
     #[serde(default)]
     description: String,
-    shared_with_all: Option<String>,
 }
 
 pub async fn vault_settings(
@@ -562,42 +596,9 @@ pub async fn vault_settings(
     if name.is_empty() {
         return Err(AppError::BadRequest("Give the vault a name.".into()));
     }
-    let shared = f.shared_with_all.is_some();
-    st.db.update_vault_meta(v.id.clone(), name.clone(), clean_text(Some(&f.description), 500), shared).await?;
-    st.db
-        .audit(user.audit_id(), Some(ip), "vault_settings", format!("{name}: shared_with_all={shared}"))
-        .await;
+    st.db.update_vault_meta(v.id.clone(), name.clone(), clean_text(Some(&f.description), 500), true).await?;
+    st.db.audit(user.audit_id(), Some(ip), "vault_settings", name).await;
     Ok(Redirect::to(&format!("/admin/vaults/{}", v.id)).into_response())
-}
-
-#[derive(Deserialize)]
-pub struct AccessForm {
-    csrf: String,
-    user_id: i64,
-    grant: String,
-}
-
-pub async fn vault_access(
-    State(st): State<AppState>,
-    ClientIp(ip): ClientIp,
-    AdminUser(user): AdminUser,
-    Path(id): Path<String>,
-    Form(f): Form<AccessForm>,
-) -> AppResult {
-    user.check_csrf(&f.csrf)?;
-    let v = admin_vault(&st, &id).await?;
-    let target = st.db.get_user(f.user_id).await?.ok_or(AppError::NotFound)?;
-    let grant = f.grant == "1";
-    st.db.set_access(v.id.clone(), target.id, grant).await?;
-    st.db
-        .audit(
-            user.audit_id(),
-            Some(ip),
-            if grant { "vault_access_granted" } else { "vault_access_revoked" },
-            format!("{} -> {}", v.name, target.username),
-        )
-        .await;
-    Ok(Redirect::to(&format!("/admin/vaults/{}#access", v.id)).into_response())
 }
 
 pub async fn delete_vault(

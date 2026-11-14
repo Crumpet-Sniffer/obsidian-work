@@ -1,6 +1,6 @@
 //! JSON API for changing a vault: save/create/rename/delete notes and folders, upload attachments.
 //!
-//! Anyone who can read a vault can edit it. Every request needs the session's CSRF token in the
+//! Every account can read and edit every vault. Every request needs the session's CSRF token in the
 //! `X-CSRF-Token` header (plus the global same-origin check). Deletes move files to a hidden `.trash`
 //! folder inside the vault, so nothing is lost by a mistaken click.
 
@@ -69,13 +69,13 @@ impl IntoResponse for ApiErr {
     }
 }
 
-type ApiResult = Result<Response, ApiErr>;
+pub(crate) type ApiResult = Result<Response, ApiErr>;
 
-fn ok(body: serde_json::Value) -> ApiResult {
+pub(crate) fn ok(body: serde_json::Value) -> ApiResult {
     Ok((StatusCode::OK, [(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response())
 }
 
-fn check_csrf(user: &CurrentUser, headers: &HeaderMap) -> Result<(), ApiErr> {
+pub(crate) fn check_csrf(user: &CurrentUser, headers: &HeaderMap) -> Result<(), ApiErr> {
     let token = headers.get("x-csrf-token").and_then(|v| v.to_str().ok()).unwrap_or("");
     Ok(user.check_csrf(token)?)
 }
@@ -84,12 +84,12 @@ fn etag(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-fn bad_path() -> ApiErr {
+pub(crate) fn bad_path() -> ApiErr {
     ApiErr::Bad("That name is not allowed. Avoid \\ : * ? \" < > | and names starting with a dot.".into())
 }
 
 /// Drop the cached index and refresh the vault card's file count and size.
-async fn changed(st: &AppState, vault_id: &str, structure: bool) {
+pub(crate) async fn changed(st: &AppState, vault_id: &str, structure: bool) {
     st.indexes.write().unwrap_or_else(|e| e.into_inner()).remove(vault_id);
     if structure {
         let root = st.cfg.vaults_dir().join(vault_id);
@@ -99,7 +99,7 @@ async fn changed(st: &AppState, vault_id: &str, structure: bool) {
     }
 }
 
-fn root_of(st: &AppState, vault_id: &str) -> PathBuf {
+pub(crate) fn root_of(st: &AppState, vault_id: &str) -> PathBuf {
     st.cfg.vaults_dir().join(vault_id)
 }
 

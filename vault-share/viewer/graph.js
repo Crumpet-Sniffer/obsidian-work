@@ -29,6 +29,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   let zoomAnim = null;           // smooth wheel zoom: { k, sx, sy }
   let autoFit = false;           // while true the view follows the graph (set when forces change)
   let hover = null, drag = null, pan = null, pressed = null;
+  let dragVel = null;            // pointer velocity while dragging a node (world px per ms), for the throw on release
   let query = "";
   let running = false;
   let colors = {};
@@ -140,10 +141,11 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
         // New nodes start at a random spot; existing ones keep their position.
         x: prev ? prev.x : rnd(),
         y: prev ? prev.y : rnd(),
+        px: 0, py: 0, dx: 0, dy: 0, // position before the latest tick, and the position drawn this frame
         vx: 0, vy: 0, fx: null, fy: null,
         nbrs: new Set(),
         match: false,
-        la: 0, da: 1, gc: null, // animated label alpha, animated dimming alpha, group colour
+        la: 0, da: 1, ha: 0, gc: null, // animated label alpha, dimming alpha and hover amount; group colour
       });
     });
     links = [];
@@ -169,9 +171,11 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       // Run the first part of the layout off-screen, then let the rest play out on screen like Obsidian does.
       const warm = Math.min(120, Math.max(20, Math.floor(30000 / Math.max(1, nodes.length))));
       for (let i = 0; i < warm; i++) sim.tick();
+      syncPrev();
       const f = nodes.find((n) => n.path === focusPath);
       if (f) centerOn(f, 1.6); else fit();
     } else {
+      syncPrev();
       reheat(0.6);
     }
     start();
@@ -179,19 +183,39 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
 
   // ---------- simulation (d3-force) ----------
   const COLLIDE = 22; // every node keeps this much room, regardless of size
+  // How hard the centre slider pulls. The repel force reaches right across the graph, and when it outweighs the pull to
+  // the centre the cloud stretches into a slab (about 1.6 times longer than wide at 0.1). At 0.6 it stays close to round
+  // (about 1.2, less with attachments shown) and the spacing between nodes is unchanged.
+  const CENTER_PULL = 0.6;
 
   // Links are weaker for well-connected nodes (so hubs do not collapse), except around a node being dragged:
   // those get a firm pull so its neighbours follow the pointer instead of being pushed away.
-  let held = null;
+  // The switch between the two is eased (`grip` runs 0..1), so grabbing and letting go never jolts the layout.
+  let held = null, grip = 0, gripTarget = 0;
+  const GRIP_IN = 0.12, GRIP_OUT = 0.035; // per tick: takes hold in roughly 0.2s, lets go over roughly 0.7s
   const isHeldLink = (l) => held && (l.source === held || l.target === held);
-  const linkStrength = (l) =>
-    isHeldLink(l) ? Math.min(1, 0.3 * forces.link) : forces.link / Math.max(1, Math.min(l.source.deg, l.target.deg));
+  const restStrength = (l) => forces.link / Math.max(1, Math.min(l.source.deg, l.target.deg));
+  const linkStrength = (l) => {
+    const s = restStrength(l);
+    return isHeldLink(l) ? s + (Math.min(1, 0.3 * forces.link) - s) * grip : s;
+  };
   // The neighbours of a held node must also fit around it: pulling dozens of them to the normal link distance would
   // pack them into a tight clump, so their rest distance grows with how many there are (hex packing of 44px cells).
-  const linkDistance = (l) => (isHeldLink(l) ? Math.max(forces.dist, 23 * Math.sqrt(held.deg)) : forces.dist);
+  const linkDistance = (l) =>
+    isHeldLink(l) ? forces.dist + (Math.max(forces.dist, 23 * Math.sqrt(held.deg)) - forces.dist) * grip : forces.dist;
   function setHeld(n) {
-    held = n;
-    if (sim) sim.force("link").distance(linkDistance).strength(linkStrength);
+    if (n) {
+      if (held && held !== n) grip = 0;
+      held = n; gripTarget = 1;
+    } else gripTarget = 0;
+  }
+  // Runs once per simulation tick.
+  function stepGrip() {
+    if (!held || grip === gripTarget) return;
+    grip += (gripTarget - grip) * (gripTarget ? GRIP_IN : GRIP_OUT);
+    if (Math.abs(gripTarget - grip) < 0.01) grip = gripTarget;
+    if (grip === 0) held = null;
+    sim.force("link").distance(linkDistance).strength(linkStrength);
   }
 
   function buildSim() {
@@ -204,8 +228,8 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       .velocityDecay(0.4)
       .force("link", forceLink(simLinks).distance(linkDistance).strength(linkStrength))
       .force("charge", forceManyBody().strength(-forces.repel * 10))
-      .force("x", forceX(0).strength(forces.center * 0.1))
-      .force("y", forceY(0).strength(forces.center * 0.1))
+      .force("x", forceX(0).strength(forces.center * CENTER_PULL))
+      .force("y", forceY(0).strength(forces.center * CENTER_PULL))
       .force("collide", forceCollide(COLLIDE).iterations(2));
   }
 
@@ -214,8 +238,8 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     if (!sim) return;
     sim.force("link").distance(linkDistance).strength(linkStrength);
     sim.force("charge").strength(-forces.repel * 10);
-    sim.force("x").strength(forces.center * 0.1);
-    sim.force("y").strength(forces.center * 0.1);
+    sim.force("x").strength(forces.center * CENTER_PULL);
+    sim.force("y").strength(forces.center * CENTER_PULL);
   }
 
   function reheat(a = 0.6) {
@@ -226,15 +250,58 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   function start() {
     if (running) return;
     running = true;
+    lastFrame = 0;
     requestAnimationFrame(frame);
   }
 
-  function frame() {
-    const simulating = !!sim && (sim.alpha() > sim.alphaMin() || sim.alphaTarget() > 0);
-    if (simulating) sim.tick();
-    const following = stepFollow(simulating);
-    const zooming = stepZoom();
-    const fading = stepFades();
+  // The simulation advances at a fixed rate whatever the display's refresh rate (one tick per frame would run the
+  // layout six times faster on a 360Hz screen than on a 60Hz one). Frames that fall between two ticks draw the nodes
+  // part-way between them, so motion stays smooth at any refresh rate.
+  const TICK_MS = 1000 / 120;
+  let lastFrame = 0, tickDebt = 0, blend = 1;
+
+  function syncPrev() {
+    for (const n of nodes) { n.px = n.x; n.py = n.y; }
+    blend = 1; tickDebt = 0;
+  }
+
+  function stepSim(dt) {
+    const simulating = !!sim && (sim.alpha() > sim.alphaMin() || sim.alphaTarget() > 0 || (!!held && grip !== gripTarget));
+    if (!simulating) { blend = 1; tickDebt = 0; return false; }
+    tickDebt += dt;
+    const began = performance.now();
+    let n = 0;
+    while (tickDebt >= TICK_MS) {
+      // A layout too heavy to keep up drops time instead of freezing the page.
+      if (n++ >= 6 || performance.now() - began > 12) { tickDebt = 0; break; }
+      for (const m of nodes) { m.px = m.x; m.py = m.y; }
+      stepGrip();
+      sim.tick();
+      tickDebt -= TICK_MS;
+    }
+    blend = Math.min(1, tickDebt / TICK_MS);
+    return true;
+  }
+
+  // Where each node is drawn this frame. A dragged node sits exactly under the pointer.
+  function place() {
+    for (const n of nodes) {
+      if (n === drag) { n.dx = n.fx; n.dy = n.fy; continue; }
+      n.dx = n.px + (n.x - n.px) * blend;
+      n.dy = n.py + (n.y - n.py) * blend;
+    }
+  }
+
+  // Fraction of the way to a target to move this frame, for an ease with the given time constant.
+  const easeBy = (dt, tau) => 1 - Math.exp(-dt / tau);
+
+  function frame(now) {
+    const dt = lastFrame ? Math.min(100, now - lastFrame) : TICK_MS;
+    lastFrame = now;
+    const simulating = stepSim(dt);
+    const following = stepFollow(simulating, dt);
+    const zooming = stepZoom(dt);
+    const fading = stepFades(dt);
     draw();
     if (simulating || following || zooming || fading) requestAnimationFrame(frame);
     else running = false;
@@ -242,11 +309,11 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
 
   // After a force change the graph can grow or drift past the edge of the screen. Until the layout settles
   // (or you grab the view), ease the view so the whole graph stays in sight and centred.
-  function stepFollow(simulating) {
+  function stepFollow(simulating, dt) {
     if (!autoFit || drag || pan || pinch) return false;
     const t = fitView();
     if (!t) { autoFit = false; return false; }
-    const e = 0.12;
+    const e = easeBy(dt, 130);
     view.k += (t.k - view.k) * e;
     view.x += (t.x - view.x) * e;
     view.y += (t.y - view.y) * e;
@@ -256,9 +323,9 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   }
 
   // ---------- smooth zoom ----------
-  function stepZoom() {
+  function stepZoom(dt) {
     if (!zoomAnim) return false;
-    const k = view.k + (zoomAnim.k - view.k) * 0.25;
+    const k = view.k + (zoomAnim.k - view.k) * easeBy(dt, 60);
     const done = Math.abs(zoomAnim.k - k) < 0.0005 * zoomAnim.k;
     const nk = done ? zoomAnim.k : k;
     // keep the world point under the cursor fixed
@@ -272,18 +339,19 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   // ---------- fades ----------
   // Labels, dimming and highlighted links ease toward their targets instead of switching instantly,
   // so labels fade in when you hover a node and fade out when you leave it.
-  const EASE = 0.2;
+  const FADE_MS = 75;
 
   function currentFocus() {
     return hover || nodes.find((n) => n.path === focusPath) || null;
   }
 
-  function approach(cur, target) {
-    const next = cur + (target - cur) * EASE;
+  function approach(cur, target, e) {
+    const next = cur + (target - cur) * e;
     return Math.abs(target - next) < 0.01 ? target : next;
   }
 
-  function stepFades() {
+  function stepFades(dt) {
+    const e = easeBy(dt, FADE_MS);
     const focus = currentFocus();
     const searching = query.length > 0;
     const zoomFade = Math.min(1, Math.max(0, (view.k - labelZoomStart()) / 0.5));
@@ -294,13 +362,14 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       const important = n === focus || n.match; // neighbours are highlighted but not labelled
       const daT = dim ? 0.2 : 1;
       const laT = (important ? 1 : zoomFade) * (dim ? 0.25 : 1);
-      const da = approach(n.da, daT), la = approach(n.la, laT);
-      if (da !== daT || la !== laT) moving = true;
-      n.da = da; n.la = la;
+      const haT = n === hover || n === drag ? 1 : 0;
+      const da = approach(n.da, daT, e), la = approach(n.la, laT, e), ha = approach(n.ha, haT, e);
+      if (da !== daT || la !== laT || ha !== haT) moving = true;
+      n.da = da; n.la = la; n.ha = ha;
     }
     for (const l of links) {
       const hotT = focus && (l[0] === focus || l[1] === focus) ? 1 : 0;
-      l[2] = approach(l[2], hotT);
+      l[2] = approach(l[2], hotT, e);
       if (l[2] !== hotT) moving = true;
     }
     return moving;
@@ -340,7 +409,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     const slop = 6 / view.k;
     let best = null, bestD = Infinity;
     for (const n of nodes) {
-      const dx = n.x - wx, dy = n.y - wy;
+      const dx = n.dx - wx, dy = n.dy - wy;
       const d = Math.sqrt(dx * dx + dy * dy);
       if (d < n.r * display.nodeSize + slop && d < bestD) { best = n; bestD = d; }
     }
@@ -348,12 +417,15 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   }
 
   // ---------- drawing ----------
+  // Drawn radius: a node swells slightly while the pointer is on it.
+  const drawnR = (n) => n.r * display.nodeSize * (1 + 0.12 * n.ha);
+
   function arrowhead(from, to) {
-    const dx = to.x - from.x, dy = to.y - from.y;
+    const dx = to.dx - from.dx, dy = to.dy - from.dy;
     const len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len;
-    const r = to.r * display.nodeSize + 2 / view.k;
-    const tx = to.x - ux * r, ty = to.y - uy * r;
+    const r = drawnR(to) + 2 / view.k;
+    const tx = to.dx - ux * r, ty = to.dy - uy * r;
     const size = 7 / view.k;
     ctx.beginPath();
     ctx.moveTo(tx, ty);
@@ -371,19 +443,47 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     if (!nodes.length) return;
     ctx.setTransform(s * view.k, 0, 0, s * view.k, s * view.x, s * view.y);
 
+    place();
     const focusNode = currentFocus();
 
     // Links: one world unit thick at zoom 1, scaling with zoom like Obsidian's.
+    // Brightness runs 0.3 (dimmed) .. 0.9, matching Obsidian's links. Links at either end of that range and not
+    // highlighted (nearly all of them, nearly all the time) are stroked together as one path each; the few that are
+    // mid-fade or highlighted are drawn one by one afterwards, on top.
+    const rest = [], dimmed = [], special = [];
     for (const l of links) {
+      const lit = Math.min(l[0].da, l[1].da);
+      if (l[2] === 0 && lit === 1) rest.push(l);
+      else if (l[2] === 0 && lit === 0.2) dimmed.push(l);
+      else special.push(l);
+    }
+    const strokeTogether = (list, alpha) => {
+      if (!list.length) return;
+      ctx.strokeStyle = ctx.fillStyle = colors.line;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = display.linkWidth;
+      ctx.beginPath();
+      for (const l of list) { ctx.moveTo(l[0].dx, l[0].dy); ctx.lineTo(l[1].dx, l[1].dy); }
+      ctx.stroke();
+      if (display.arrows) {
+        for (const l of list) {
+          if (l[3] & 1) arrowhead(l[0], l[1]);
+          if (l[3] & 2) arrowhead(l[1], l[0]);
+        }
+      }
+    };
+    strokeTogether(dimmed, 0.3);
+    strokeTogether(rest, 0.9);
+    for (const l of special) {
       const a = l[0], b = l[1], h = l[2];
       const lit = Math.min(a.da, b.da);               // 0.2 (dimmed) .. 1
-      const base = 0.3 + 0.6 * ((lit - 0.2) / 0.8);   // 0.3 .. 0.9 (matches Obsidian's link brightness)
+      const base = 0.3 + 0.6 * ((lit - 0.2) / 0.8);
       ctx.strokeStyle = h > 0.5 ? colors.accent : colors.line;
       ctx.globalAlpha = base + (1 - base) * h;
       ctx.lineWidth = (1 + 0.6 * h) * display.linkWidth;
       ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
+      ctx.moveTo(a.dx, a.dy);
+      ctx.lineTo(b.dx, b.dy);
       ctx.stroke();
       if (display.arrows) {
         ctx.fillStyle = ctx.strokeStyle;
@@ -399,13 +499,13 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
         ? colors.accent
         : n.gc || (n === focusNode ? colors.accent : n.kind === "file" ? colors.file : colors.muted);
       ctx.beginPath();
-      ctx.arc(n.x, n.y, n.r * display.nodeSize, 0, Math.PI * 2);
+      ctx.arc(n.dx, n.dy, drawnR(n), 0, Math.PI * 2);
       ctx.fill();
       if (n.path === focusPath) {
         ctx.strokeStyle = colors.accent;
         ctx.lineWidth = 2 / view.k;
         ctx.beginPath();
-        ctx.arc(n.x, n.y, n.r * display.nodeSize + 3 / view.k, 0, Math.PI * 2);
+        ctx.arc(n.dx, n.dy, drawnR(n) + 3 / view.k, 0, Math.PI * 2);
         ctx.stroke();
       }
     }
@@ -419,13 +519,14 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       if (n.la <= 0.02) continue;
       ctx.globalAlpha = n.la;
       const label = n.label.length > 40 ? n.label.slice(0, 38) + "…" : n.label;
-      const y = n.y + n.r * display.nodeSize + 3 / view.k;
+      const y = n.dy + drawnR(n) + 3 / view.k;
       // Halo for legibility over links.
       ctx.lineWidth = 3 / view.k;
+      ctx.lineJoin = "round";
       ctx.strokeStyle = colors.bg;
-      ctx.strokeText(label, n.x, y);
+      ctx.strokeText(label, n.dx, y);
       ctx.fillStyle = n === focusNode || n.match ? colors.ink : colors.muted;
-      ctx.fillText(label, n.x, y);
+      ctx.fillText(label, n.dx, y);
     }
     ctx.globalAlpha = 1;
   }
@@ -448,7 +549,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     autoFit = false;
     if (pointers.size === 2) {
       // Start pinch; cancel drag/pan.
-      if (drag) { drag.fx = drag.fy = null; drag = null; setHeld(null); sim && sim.alphaTarget(0); }
+      if (drag) { drag.fx = drag.fy = null; drag = null; dragVel = null; setHeld(null); sim && sim.alphaTarget(0); }
       pressed = null;
       pan = null;
       const [[ax, ay], [bx, by]] = [...pointers.values()];
@@ -464,6 +565,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       start();
     } else {
       pan = { sx, sy, x: view.x, y: view.y };
+      canvas.style.cursor = "grabbing";
     }
   });
 
@@ -482,11 +584,21 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     if (pressed && !drag && downAt && Math.hypot(sx - downAt[0], sy - downAt[1]) > 5) {
       drag = pressed;     // moved far enough: now it is a drag, so pin the node and let its neighbours follow
       drag.fx = drag.x; drag.fy = drag.y;
+      dragVel = { x: 0, y: 0, t: e.timeStamp };
+      canvas.style.cursor = "grabbing";
       setHeld(drag);
       sim && sim.alphaTarget(0.3);
     }
     if (drag) {
       const [wx, wy] = toWorld(sx, sy);
+      // Smoothed pointer velocity, so a node let go mid-swing carries on a little instead of stopping dead.
+      const dt = e.timeStamp - dragVel.t;
+      if (dt > 0) {
+        const w = Math.min(1, dt / 50);
+        dragVel.x += ((wx - drag.fx) / dt - dragVel.x) * w;
+        dragVel.y += ((wy - drag.fy) / dt - dragVel.y) * w;
+        dragVel.t = e.timeStamp;
+      }
       drag.fx = wx; drag.fy = wy;
       start();
       return;
@@ -517,9 +629,19 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     if (drag) {
       const n = drag;
       drag = null;
+      // Let go where the pointer is. If it was still moving, the node keeps some of that speed (none if the
+      // pointer had already come to rest), capped so a hard flick cannot fling it across the graph.
+      n.x = n.px = n.fx; n.y = n.py = n.fy;
       n.fx = n.fy = null;
+      if (dragVel && e.type === "pointerup" && e.timeStamp - dragVel.t < 80) {
+        const cap = 14, vx = dragVel.x * TICK_MS, vy = dragVel.y * TICK_MS, v = Math.hypot(vx, vy);
+        const s = v > cap ? cap / v : 1;
+        n.vx = vx * s; n.vy = vy * s;
+      }
+      dragVel = null;
       setHeld(null);
       sim && sim.alphaTarget(0);
+      start();
     } else if (pressed && moved < 5 && e.type === "pointerup") {
       window.location.href = pressed.url; // a click opens the note
       pressed = null;
@@ -528,6 +650,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     pressed = null;
     pan = null;
     downAt = null;
+    canvas.style.cursor = e.pointerType === "mouse" && nodeAt(sx, sy) ? "pointer" : "grab";
   }
   canvas.addEventListener("pointerup", endPointer);
   canvas.addEventListener("pointercancel", endPointer);
@@ -710,6 +833,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       nodes.forEach((n) => {
         n.x = (Math.random() * 2 - 1) * spread; n.y = (Math.random() * 2 - 1) * spread; n.vx = n.vy = 0;
       });
+      syncPrev();
       view = { x: width / 2, y: height / 2, k: 1 };
       zoomAnim = null;
       autoFit = true;
@@ -722,7 +846,7 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   // Read-only snapshot for debugging and measurements: positions in screen pixels.
   wrap.vsDebug = () => ({
     w: width, h: height, k: view.k,
-    nodes: nodes.map((n) => ({ x: n.x * view.k + view.x, y: n.y * view.k + view.y, r: n.r * display.nodeSize * view.k, deg: n.deg, la: n.la, da: n.da })),
+    nodes: nodes.map((n) => ({ x: n.dx * view.k + view.x, y: n.dy * view.k + view.y, r: drawnR(n) * view.k, deg: n.deg, la: n.la, da: n.da })),
     links: links.map((l) => [nodes.indexOf(l[0]), nodes.indexOf(l[1])]),
   });
 })();

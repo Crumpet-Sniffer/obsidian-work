@@ -6,7 +6,10 @@ document.addEventListener("submit", (e) => {
     e.preventDefault();
     return;
   }
-  if (form.hasAttribute("data-upload") && window.XMLHttpRequest && window.FormData) {
+  // With no file chosen (a new, empty vault) there is nothing to show progress for: submit normally.
+  const picked = form.querySelector('input[type="file"]');
+  const hasFile = !!(picked && picked.files && picked.files.length);
+  if (form.hasAttribute("data-upload") && hasFile && window.XMLHttpRequest && window.FormData) {
     e.preventDefault();
     startUpload(form);
   }
@@ -492,4 +495,12 @@ if (current) current.scrollIntoView({ block: "center" });
   });
   const search = document.querySelector('.ribbon-tabs a[title="Search"]');
   if (search) search.title = "Search (Ctrl+O to jump to a note)";
+})();
+
+// A note that opens with its own name as a heading would show the title twice: keep the page title only.
+(() => {
+  const title = document.querySelector("article.note > .note-title");
+  const first = document.querySelector("article.note > .prose > h1:first-child");
+  const norm = (el) => el.textContent.trim().replace(/\s+/g, " ").toLowerCase();
+  if (title && first && norm(title) === norm(first)) first.classList.add("is-title-echo");
 })();

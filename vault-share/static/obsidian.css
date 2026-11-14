@@ -413,3 +413,84 @@ a.tag:hover { background: rgba(138, 108, 239, .28); }
 .prose math { font-size: 1.1em; }
 .mermaid-diagram { display: block; max-width: 100%; margin: 1em auto; background: transparent; }
 .prose pre.mermaid-error { border-left: 3px solid var(--bad); }
+
+/* ---------- finish: scrollbars, selection, motion, depth ---------- */
+:root {
+  --shadow: 0 1px 2px rgba(0, 0, 0, .28), 0 8px 24px rgba(0, 0, 0, .36);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, .3), 0 24px 64px rgba(0, 0, 0, .55);
+  --ease: cubic-bezier(.2, .7, .2, 1);
+}
+* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .14) transparent; }
+*:hover { scrollbar-color: rgba(255, 255, 255, .24) transparent; }
+::selection { background: rgba(138, 108, 239, .38); color: inherit; }
+body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+/* Hover and active states ease in instead of snapping. */
+.icon-btn, .tree a, .tree summary, .tab, .tab-close, button, .button, .rb-outline a, .bm-item, .qs li,
+.ctx-menu button, .more .menu a, .sr-snip, .sr-title, .vault-switch, .view-switch, a.tag, .prose a, .rb-list a {
+  transition: background-color .12s var(--ease), color .12s var(--ease), border-color .12s var(--ease);
+}
+button:active:not([disabled]):not(.linklike), .button:active { transform: translateY(.5px); }
+.icon-btn:active:not([disabled]) { background: var(--active); }
+
+/* Text fields: a soft ring instead of a hard outline. */
+input[type="text"]:focus, input[type="password"]:focus, input[type="search"]:focus, input:not([type]):focus, select:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+input[type="text"], input[type="password"], input[type="search"], input:not([type]), select { transition: border-color .12s var(--ease), box-shadow .12s var(--ease); }
+.qs input:focus, input.inline-title:focus { box-shadow: none; border-color: var(--line); }
+input.inline-title:focus { border-color: transparent; }
+
+/* Menus, previews and dialogs arrive with a short fade and settle. */
+@keyframes vs-pop { from { opacity: 0; transform: translateY(-4px) scale(.985); } }
+@keyframes vs-fade { from { opacity: 0; } }
+@keyframes vs-rise { from { opacity: 0; transform: translateY(6px); } }
+.ctx-menu, .more[open] .menu, .hover-preview { animation: vs-pop .14s var(--ease); transform-origin: top left; }
+.more[open] .menu { transform-origin: top right; }
+.qs-overlay { animation: vs-fade .12s ease-out; background: rgba(0, 0, 0, .45); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
+.qs { animation: vs-pop .16s var(--ease); transform-origin: top center; border-radius: 12px; box-shadow: var(--shadow-lg); }
+.toast { animation: vs-rise .18s var(--ease); }
+.ctx-menu, .more .menu, .hover-preview { box-shadow: var(--shadow-lg); }
+.hover-preview { border-radius: 10px; }
+
+/* Quick switcher: the note name keeps its room; the folder path gives way first. */
+.qs li .qs-name { flex: 0 1 auto; max-width: 72%; }
+.qs li .qs-path { flex: 1 1 0; min-width: 0; text-align: right; }
+.qs li:hover:not(.is-selected) { background: var(--hover); }
+
+/* Graph controls float over the graph. */
+.graph-controls {
+  background: rgba(38, 38, 38, .78); backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  border-color: rgba(255, 255, 255, .08); border-radius: 10px; box-shadow: var(--shadow);
+  max-height: calc(100% - 24px); overflow-y: auto;
+}
+.gc-sec + .gc-sec { border-top-color: rgba(255, 255, 255, .07); }
+.gc-sec > summary { transition: color .12s var(--ease); user-select: none; }
+.gc-sec:not([open]) > summary { color: var(--muted); }
+.gc-sec > summary:hover { color: var(--ink); }
+.gc-sec > summary::before { transition: transform .16s var(--ease); }
+.tree summary::before, .props > summary::before { transition: transform .16s var(--ease); }
+.graph-wrap canvas:active { cursor: grabbing; }
+
+/* Sliders: a thin track and a round thumb in place of the browser default. */
+.slider-row input[type="range"] { appearance: none; -webkit-appearance: none; height: 18px; background: transparent; cursor: pointer; }
+.slider-row input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: rgba(255, 255, 255, .12); }
+.slider-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 0; border-radius: 50%;
+  background: var(--ink); box-shadow: 0 1px 3px rgba(0, 0, 0, .5); transition: transform .12s var(--ease), background-color .12s var(--ease);
+}
+.slider-row input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.12); }
+.slider-row input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-hover); transform: scale(1.2); }
+.slider-row input[type="range"]::-moz-range-track { height: 4px; border-radius: 999px; background: rgba(255, 255, 255, .12); }
+.slider-row input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: var(--ink); box-shadow: 0 1px 3px rgba(0, 0, 0, .5); }
+.slider-row input[type="range"]:focus-visible { outline: none; }
+.slider-row input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--accent-soft), 0 1px 3px rgba(0, 0, 0, .5); }
+input.switch { transition: background-color .18s var(--ease); }
+input.switch::after { transition: transform .18s var(--ease), background-color .18s var(--ease); box-shadow: 0 1px 2px rgba(0, 0, 0, .4); }
+
+/* A note that opens with its own name as a heading would show the title twice. */
+.prose > h1.is-title-echo { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

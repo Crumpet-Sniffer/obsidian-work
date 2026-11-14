@@ -1,28 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Upload a vault{% endblock %}
+{% block title %}New vault{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/admin">Admin</a></p>
+<p class="crumbs"><a href="/">Vaults</a></p>
 <section class="card narrow">
-  <h1>Upload a vault</h1>
-  <ol class="steps">
-    <li>Find your vault folder (the one containing <code>.obsidian</code>).</li>
-    <li>Right-click it and choose <strong>Compress to ZIP file</strong> (Windows) or <strong>Compress</strong> (macOS).</li>
-    <li>Upload the .zip here. Up to {{ max_upload_mb }} MB.</li>
-  </ol>
-  <p class="small muted">Only notes and common attachments (images, PDFs, audio, video, Office files) are kept. The <code>.obsidian</code> settings/plugins folder and other hidden files are dropped.</p>
-  <form method="post" action="/admin/vaults" enctype="multipart/form-data" class="stack" data-upload>
+  <h1>New vault</h1>
+  <p class="small muted">Start empty and add sources and notes on the site, or bring an existing Obsidian vault as a .zip.</p>
+  <form method="post" action="/vaults" enctype="multipart/form-data" class="stack" data-upload>
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>Name
       <input name="name" maxlength="100" required placeholder="e.g. BIO 201 notes">
     </label>
-    <label>Description <span class="muted">(optional)</span>
+    <label><span>Description <span class="muted">(optional)</span></span>
       <input name="description" maxlength="500">
     </label>
-    <label class="check"><input type="checkbox" name="shared_with_all" value="1"> Share with every member account</label>
-    <label>Vault .zip
-      <input type="file" name="vault_zip" accept=".zip,application/zip" required>
+    <label><span>Existing vault .zip <span class="muted">(optional, up to {{ max_upload_mb }} MB)</span></span>
+      <input type="file" name="vault_zip" accept=".zip,application/zip">
     </label>
-    <button type="submit" class="primary">Upload</button>
+    <p class="small muted">To zip a vault, right-click its folder (the one containing <code>.obsidian</code>) and choose <strong>Compress to ZIP file</strong> (Windows) or <strong>Compress</strong> (macOS). Only notes and common attachments (images, PDFs, audio, video, Office files) are kept; <code>.obsidian</code> and other hidden files are dropped.</p>
+    <button type="submit" class="primary">Create vault</button>
   </form>
 </section>
 {% endblock %}

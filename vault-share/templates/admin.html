@@ -3,25 +3,25 @@
 {% block content %}
 <div class="page-head">
   <h1>Admin</h1>
-  <a class="button primary" href="/admin/vaults/new">Upload a vault</a>
+  <a class="button primary" href="/vaults/new">New vault</a>
 </div>
 
 <section class="card" id="vaults">
   <h2>Vaults</h2>
   {% if vaults.is_empty() %}
-  <p class="muted">Nothing uploaded yet.</p>
+  <p class="muted">No vaults yet.</p>
   {% else %}
   <div class="table-wrap">
   <table class="table">
-    <thead><tr><th>Name</th><th>Files</th><th>Size</th><th>Sharing</th><th>Updated</th></tr></thead>
+    <thead><tr><th>Name</th><th>Files</th><th>Size</th><th>Updated</th><th></th></tr></thead>
     <tbody>
     {% for v in vaults %}
     <tr>
       <td><a href="/admin/vaults/{{ v.id }}">{{ v.name }}</a></td>
       <td>{{ v.files }}</td>
       <td>{{ v.size }}</td>
-      <td>{% if v.shared_with_all %}<span class="pill ok">all members</span>{% else %}<span class="pill">selected</span>{% endif %}</td>
       <td class="muted small">{{ v.updated }}</td>
+      <td class="actions"><a class="button" href="/v/{{ v.id }}/sources">Sources</a> <a class="button" href="/admin/vaults/{{ v.id }}">Manage</a></td>
     </tr>
     {% endfor %}
     </tbody>
@@ -30,17 +30,58 @@
   {% endif %}
 </section>
 
+<section class="card" id="microsidian">
+  <h2>Microsidian</h2>
+  <p class="small muted">Settings for adding Word and PowerPoint files to a vault as sources. Each source is converted to a note and filed by Claude, using the key, model and effort chosen here.</p>
+  {% if ms.saved %}<p class="alert ok">Microsidian settings saved.</p>{% endif %}
+  <form method="post" action="/admin/microsidian" class="stack" autocomplete="off">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="grid-2">
+      <label>Anthropic API key
+        <input type="password" name="api_key" autocomplete="new-password" spellcheck="false" maxlength="400" placeholder="{% if ms.key_set && !ms.key_from_env %}Saved ({{ ms.key_hint }}). Leave blank to keep it{% else %}sk-ant-…{% endif %}">
+        <span class="small muted">{% if ms.key_from_env %}Using the server's ANTHROPIC_API_KEY ({{ ms.key_hint }}). A key saved here takes its place.{% else if ms.key_set %}A key is saved. It is never shown again; type a new one to replace it.{% else %}No key yet, so sources cannot be filed. The key stays on the server and is never sent to a browser.{% endif %}</span>
+      </label>
+      <div class="stack">
+        <label>Model
+          <select name="model">{% for m in ms.models %}<option value="{{ m.value }}"{% if m.selected %} selected{% endif %}>{{ m.label }}</option>{% endfor %}</select>
+        </label>
+        <label>Effort
+          <select name="effort">{% for e in ms.efforts %}<option value="{{ e.value }}"{% if e.selected %} selected{% endif %}>{{ e.label }}</option>{% endfor %}</select>
+        </label>
+      </div>
+    </div>
+    {% if ms.key_set && !ms.key_from_env %}<label class="check"><input type="checkbox" name="clear_key" value="1"> Remove the saved API key</label>{% endif %}
+    <label><span>Filing guidance <span class="muted">(optional)</span></span>
+      <textarea name="guidance" rows="4" maxlength="4000" placeholder="Your own rules for filing, in plain words. For example: Do not file worksheets or answer sheets.">{{ ms.guidance }}</textarea>
+    </label>
+    <details class="ms-more">
+      <summary>Folders and images</summary>
+      <div class="grid-2">
+        <label>Originals folder <input name="originals" value="{{ ms.originals }}" maxlength="200" required></label>
+        <label>Images folder <input name="attachments" value="{{ ms.attachments }}" maxlength="200" required></label>
+        <label>Topics folder <input name="topics" value="{{ ms.topics }}" maxlength="200" required></label>
+        <label>Topics index note <input name="topics_index" value="{{ ms.topics_index }}" maxlength="100"></label>
+        <label>Ingest folder <input name="ingest" value="{{ ms.ingest }}" maxlength="200" required></label>
+        <label>Smallest image to keep (KB) <input name="image_min_kb" value="{{ ms.image_min_kb }}" inputmode="numeric" pattern="[0-9]+" maxlength="6" required></label>
+      </div>
+      <label class="check"><input type="checkbox" name="folder_indexes" value="1"{% if ms.folder_indexes %} checked{% endif %}> Add each filed note to its folder's index note, when one exists</label>
+      <p class="small muted">Changing a folder name does not move files that are already there.</p>
+    </details>
+    <div><button type="submit" class="primary">Save Microsidian settings</button></div>
+  </form>
+</section>
+
 <section class="card" id="users">
   <h2>Accounts</h2>
   <form method="post" action="/admin/users" class="row-form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>New username <input name="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9._\-]+" autocomplete="off" spellcheck="false"></label>
     <label>Role
-      <select name="role"><option value="member">Member (read only)</option><option value="admin">Admin (full control)</option></select>
+      <select name="role"><option value="member">User</option><option value="admin">Admin</option></select>
     </label>
     <button type="submit" class="primary">Create account</button>
   </form>
-  <p class="small muted">A one-time password is generated for each new account. Classmates must set their own password on first sign-in.</p>
+  <p class="small muted">A one-time password is generated for each new account, and its owner must set their own on first sign-in. Users can open and edit every vault, create vaults, and add and remove sources. Admins can also create accounts, delete vaults and change these settings.</p>
   <div class="table-wrap">
   <table class="table">
     <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Last sign-in</th><th></th></tr></thead>
@@ -48,7 +89,7 @@
     {% for u in users %}
     <tr>
       <td>{{ u.username }}{% if u.is_me %} <span class="muted">(you)</span>{% endif %}</td>
-      <td>{% if u.is_admin %}admin{% else %}member{% endif %}</td>
+      <td>{% if u.is_admin %}admin{% else %}user{% endif %}</td>
       <td>
         {% if u.disabled %}<span class="pill bad">disabled</span>
         {% else if u.must_change %}<span class="pill">awaiting first sign-in</span>
@@ -69,7 +110,7 @@
         </form>
         <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Change the role of {{ u.username }}?">
           <input type="hidden" name="csrf" value="{{ csrf }}">
-          {% if u.is_admin %}<input type="hidden" name="action" value="make_member"><button type="submit">Make member</button>
+          {% if u.is_admin %}<input type="hidden" name="action" value="make_user"><button type="submit">Make user</button>
           {% else %}<input type="hidden" name="action" value="make_admin"><button type="submit">Make admin</button>{% endif %}
         </form>
         <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Delete the account {{ u.username }}? This cannot be undone.">
