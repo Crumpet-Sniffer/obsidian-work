@@ -283,6 +283,9 @@ pub struct VaultNewPage {
     pub page: PageCtx,
     pub csrf: String,
     pub max_upload_mb: u64,
+    /// Whether an API key is set, so files chosen here can be filed.
+    pub configured: bool,
+    pub is_admin: bool,
 }
 
 #[derive(Template)]

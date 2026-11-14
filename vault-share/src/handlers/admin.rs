@@ -459,12 +459,15 @@ async fn import(st: &AppState, zip: &TempFile, vault_id: &str) -> AppResult<vaul
 }
 
 /// Any account can create a vault: empty, or from a zip of an existing one.
-pub async fn new_vault_form(State(st): State<AppState>, user: CurrentUser) -> Response {
-    render(&VaultNewPage {
+pub async fn new_vault_form(State(st): State<AppState>, user: CurrentUser) -> AppResult {
+    let configured = ingest::Settings::load(&st.db).await?.api_key.is_some();
+    Ok(render(&VaultNewPage {
         page: PageCtx::for_user(&user),
         csrf: user.csrf.clone(),
         max_upload_mb: st.cfg.max_upload_bytes / 1024 / 1024,
-    })
+        configured,
+        is_admin: user.is_admin,
+    }))
 }
 
 pub async fn create_vault(
@@ -479,6 +482,10 @@ pub async fn create_vault(
         return Err(AppError::BadRequest("Give the vault a name.".into()));
     }
     let description = clean_text(up.fields.get("description"), 500);
+    // "Import" was chosen but no zip came with it: say so instead of quietly making an empty vault.
+    if up.fields.get("mode").map(String::as_str) == Some("zip") && up.zip.is_none() {
+        return Err(AppError::BadRequest("Choose a .zip file of your vault, or pick Start from scratch.".into()));
+    }
     let id = uuid::Uuid::new_v4().simple().to_string();
     let (files, bytes, skipped) = match &up.zip {
         Some(zip) => {

@@ -1,22 +1,51 @@
 {% extends "base.html" %}
 {% block title %}New vault{% endblock %}
+{% block head %}<script src="/static/ingest.js?v={{ page.asset_v }}" defer></script>{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/">Vaults</a></p>
 <section class="card narrow">
   <h1>New vault</h1>
-  <p class="small muted">Start empty and add sources and notes on the site, or bring an existing Obsidian vault as a .zip.</p>
-  <form method="post" action="/vaults" enctype="multipart/form-data" class="stack" data-upload>
+  <form method="post" action="/vaults" enctype="multipart/form-data" class="stack" data-upload data-new-vault>
     <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="choice" role="radiogroup" aria-label="How to start">
+      <label class="choice-card">
+        <input type="radio" name="mode" value="scratch" checked>
+        <span><strong>Start from scratch</strong><span class="small muted">An empty vault. Add Word and PowerPoint files and they become linked notes.</span></span>
+      </label>
+      <label class="choice-card">
+        <input type="radio" name="mode" value="zip">
+        <span><strong>Import an Obsidian vault</strong><span class="small muted">Upload a .zip of a vault you already have.</span></span>
+      </label>
+    </div>
     <label>Name
       <input name="name" maxlength="100" required placeholder="e.g. BIO 201 notes">
     </label>
     <label><span>Description <span class="muted">(optional)</span></span>
       <input name="description" maxlength="500">
     </label>
-    <label><span>Existing vault .zip <span class="muted">(optional, up to {{ max_upload_mb }} MB)</span></span>
-      <input type="file" name="vault_zip" accept=".zip,application/zip">
-    </label>
-    <p class="small muted">To zip a vault, right-click its folder (the one containing <code>.obsidian</code>) and choose <strong>Compress to ZIP file</strong> (Windows) or <strong>Compress</strong> (macOS). Only notes and common attachments (images, PDFs, audio, video, Office files) are kept; <code>.obsidian</code> and other hidden files are dropped.</p>
+
+    <div class="mode-zip stack">
+      <label><span>Vault .zip <span class="muted">(up to {{ max_upload_mb }} MB)</span></span>
+        <input type="file" name="vault_zip" accept=".zip,application/zip">
+      </label>
+      <p class="small muted">To zip a vault, right-click its folder (the one containing <code>.obsidian</code>) and choose <strong>Compress to ZIP file</strong> (Windows) or <strong>Compress</strong> (macOS). Only notes and common attachments (images, PDFs, audio, video, Office files) are kept; <code>.obsidian</code> and other hidden files are dropped.</p>
+    </div>
+
+    <div class="mode-scratch stack">
+      <div>
+        <span class="field-label">Files to start with <span class="muted">(optional)</span></span>
+        <label class="drop" data-drop>
+          <input type="file" accept=".docx,.pptx" multiple data-first-sources{% if !configured %} disabled{% endif %}>
+          <span data-drop-text><strong>Choose Word or PowerPoint files</strong> or drop them here</span>
+        </label>
+      </div>
+      {% if configured %}
+      <p class="small muted">Each file is converted to a note and filed by Claude once the vault is created. The text of each file is sent to Anthropic to decide where it goes. You can add more at any time from the vault's Sources page.</p>
+      {% else %}
+      <p class="alert error small">Files cannot be filed yet: no Anthropic API key is set. {% if is_admin %}Add one under <a href="/admin#microsidian">Admin → Microsidian</a>.{% else %}Ask an admin to add one.{% endif %} You can still create the vault and write notes in it.</p>
+      {% endif %}
+    </div>
+
     <button type="submit" class="primary">Create vault</button>
   </form>
 </section>

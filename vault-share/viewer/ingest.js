@@ -12,6 +12,112 @@ import { applyIngest } from "../../microsidian/src/vault/apply";
 import { under } from "../../microsidian/src/config";
 import { parseFrontmatter } from "../../microsidian/src/vault/vaultio";
 
+// Files chosen on the New vault page wait here (in this browser only) until the new vault's Sources page picks
+// them up. A page cannot hand files to the next page any other way.
+const handoff = {
+  open() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open("vault-share", 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("first-sources");
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  },
+  async run(mode, fn) {
+    const db = await this.open();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction("first-sources", mode);
+        const req = fn(tx.objectStore("first-sources"));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = tx.onabort = () => reject(tx.error);
+      });
+    } finally {
+      db.close();
+    }
+  },
+  put(vault, files) { return this.run("readwrite", (s) => s.put(files, vault)); },
+  async take(vault) {
+    const files = await this.run("readonly", (s) => s.get(vault));
+    if (files) await this.run("readwrite", (s) => s.delete(vault));
+    return Array.isArray(files) ? files : [];
+  },
+};
+
+// ---------- New vault page ----------
+(() => {
+  "use strict";
+  const form = document.querySelector("form[data-new-vault]");
+  if (!form) return;
+  const zipEl = form.querySelector('input[name="vault_zip"]');
+  const srcEl = form.querySelector("[data-first-sources]");
+  const dropEl = form.querySelector("[data-drop]");
+  const dropText = form.querySelector("[data-drop-text]");
+  const emptyText = dropText ? dropText.innerHTML : "";
+  const mode = () => (form.querySelector('input[name="mode"]:checked') || {}).value;
+  const isSource = (f) => /\.(docx|pptx)$/i.test(f.name) && !f.name.startsWith("~$");
+  let chosen = [];
+
+  function show() {
+    if (!dropText) return;
+    if (!chosen.length) { dropText.innerHTML = emptyText; dropEl.classList.remove("has-files"); return; }
+    dropEl.classList.add("has-files");
+    const names = chosen.slice(0, 3).map((f) => f.name).join(", ");
+    dropText.textContent = `${chosen.length} file${chosen.length === 1 ? "" : "s"}: ${names}${chosen.length > 3 ? ", …" : ""}`;
+  }
+  function choose(files) {
+    const ok = files.filter(isSource);
+    if (ok.length < files.length) window.alert("Only .docx and .pptx files can be added. The others were left out.");
+    chosen = ok;
+    show();
+  }
+
+  if (srcEl) srcEl.addEventListener("change", () => choose([...srcEl.files]));
+  if (dropEl && srcEl && !srcEl.disabled) {
+    const over = (on) => dropEl.classList.toggle("is-over", on);
+    dropEl.addEventListener("dragover", (e) => { e.preventDefault(); over(true); });
+    dropEl.addEventListener("dragleave", () => over(false));
+    dropEl.addEventListener("drop", (e) => {
+      e.preventDefault();
+      over(false);
+      if (e.dataTransfer && e.dataTransfer.files.length) choose([...e.dataTransfer.files]);
+    });
+  }
+  // Whatever was picked for the other way of starting is dropped, so it cannot be sent by mistake.
+  form.querySelectorAll('input[name="mode"]').forEach((r) =>
+    r.addEventListener("change", () => {
+      if (mode() === "zip") { chosen = []; if (srcEl) srcEl.value = ""; show(); }
+      else if (zipEl) zipEl.value = "";
+      if (zipEl) zipEl.required = mode() === "zip";
+    }),
+  );
+
+  form.addEventListener("submit", async (e) => {
+    if (mode() !== "scratch" || !chosen.length) return; // an ordinary form post
+    e.preventDefault();
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+    try {
+      const res = await fetch(form.action, { method: "POST", credentials: "same-origin", body: new FormData(form) });
+      const m = new URL(res.url).pathname.match(/^\/v\/([0-9a-f]{32})\/sources$/);
+      if (!res.ok || !m) throw new Error("not created");
+      try {
+        await handoff.put(m[1], chosen);
+      } catch (err) {
+        console.error("[new vault] could not keep the files for the next page", err);
+        window.alert("The vault was created, but this browser could not carry the files over. Add them on the next page.");
+      }
+      window.location.href = res.url;
+    } catch {
+      btn.disabled = false;
+      btn.textContent = "Create vault";
+      window.alert("The vault could not be created. Check the name and try again.");
+    }
+  });
+})();
+
+// ---------- Sources page ----------
 (() => {
   "use strict";
   const host = document.querySelector("[data-sources]");
@@ -404,4 +510,9 @@ import { parseFrontmatter } from "../../microsidian/src/vault/vaultio";
   }
 
   void refreshList();
+
+  // Files chosen while creating this vault: start on them straight away.
+  if (configured) {
+    handoff.take(vault).then((files) => { if (files.length) enqueue(files); }).catch(() => { /* nothing waiting */ });
+  }
 })();

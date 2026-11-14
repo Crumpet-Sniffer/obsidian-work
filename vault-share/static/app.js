@@ -7,7 +7,7 @@ document.addEventListener("submit", (e) => {
     return;
   }
   // With no file chosen (a new, empty vault) there is nothing to show progress for: submit normally.
-  const picked = form.querySelector('input[type="file"]');
+  const picked = form.querySelector('input[type="file"][name]');
   const hasFile = !!(picked && picked.files && picked.files.length);
   if (form.hasAttribute("data-upload") && hasFile && window.XMLHttpRequest && window.FormData) {
     e.preventDefault();
@@ -51,7 +51,7 @@ function xhrSend(track, method, url, { headers = {}, body = null, onProgress = n
 
 function startUpload(form) {
   const btn = form.querySelector('button[type="submit"]');
-  const fileInput = form.querySelector('input[type="file"]');
+  const fileInput = form.querySelector('input[type="file"][name]');
   const file = fileInput && fileInput.files && fileInput.files[0];
   const csrf = (form.querySelector('input[name="csrf"]') || {}).value || "";
   const box = document.createElement("div");
