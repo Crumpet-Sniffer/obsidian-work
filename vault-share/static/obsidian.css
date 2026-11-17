@@ -222,7 +222,15 @@ input.switch:checked::after { transform: translateX(14px); background: #fff; }
 .docx-page .docx-wrapper { background: transparent !important; padding: 0 !important; }
 .docx-page .docx-wrapper > section.docx { margin-bottom: 16px; box-shadow: 0 1px 6px rgba(0, 0, 0, .35); background: #fff; color: #000; }
 .office-host { display: flex; flex-direction: column; align-items: center; }
-.pptx-stage { position: relative; background: #fff; color: #000; box-shadow: 0 1px 8px rgba(0, 0, 0, .4); overflow: hidden; }
+/* PowerPoint: slide-by-slide, from PPTX Viewer (MIT, see viewer/pptx-viewer.js) */
+.office-host.pptx-deck { align-items: stretch; padding: 0 clamp(8px, 2vw, 18px); }
+.pptx-deck .slide-wrap { width: 100%; max-width: 62rem; margin: 0 auto 1.5rem; scroll-margin-top: 16px; }
+.pptx-deck .slide-num { font-size: 12px; color: var(--muted); font-weight: 600; margin: 0 0 6px 2px; }
+.pptx-deck .slide { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #fff; color: #111; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; container-type: inline-size; box-shadow: 0 1px 8px rgba(0, 0, 0, .4); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+.pptx-deck .s-txt { position: absolute; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-start; box-sizing: border-box; }
+.pptx-deck .s-txt .s-p { margin: 0; line-height: 1.16; color: #111; overflow-wrap: break-word; }
+.pptx-deck .s-pic { position: absolute; box-sizing: border-box; }
+.pptx-deck .s-pic img { width: 100%; height: 100%; object-fit: contain; display: block; }
 
 /* ---------- upload progress ---------- */
 .upload-progress { display: grid; gap: 8px; margin-top: 4px; }

@@ -1,21 +1,9 @@
-// Renders a .docx or .pptx original in the browser (same libraries and options as the Microsidian plugin).
+// Renders a .docx or .pptx original in the browser. Word uses docx-preview (as in the Microsidian plugin);
+// PowerPoint uses the PPTX Viewer renderer (pptx-viewer.js).
 import { renderAsync } from "docx-preview";
-import { init as initPptx } from "pptx-preview";
-import JSZip from "jszip";
+import { renderPptx } from "./pptx-viewer.js";
 
 const host = document.querySelector("[data-office]");
-
-async function slideAspect(buf) {
-  try {
-    const zip = await JSZip.loadAsync(buf);
-    const xml = await zip.file("ppt/presentation.xml")?.async("string");
-    const m = xml?.match(/<p:sldSz[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/);
-    if (m) return Number(m[1]) / Number(m[2]);
-  } catch {
-    /* use default */
-  }
-  return 16 / 9;
-}
 
 function el(cls, parent, text) {
   const d = document.createElement("div");
@@ -45,19 +33,12 @@ async function main() {
     return;
   }
 
-  const aspect = await slideAspect(buf);
-  const width = Math.min(Math.max(320, (host.clientWidth || 900) - 64), 1100);
-  const height = Math.round(width / aspect);
-  const stage = el("pptx-stage", host);
-  stage.style.width = width + "px";
-  stage.style.height = height + "px";
-  const pptx = initPptx(stage, { width, height, mode: "slide" });
-  await pptx.preview(buf);
+  const count = await renderPptx(buf, host);
+  // Links like [[deck.pptx#slide-3]] open at that slide.
   const m = location.hash.match(/slide[-_ ]?(\d+)/i);
-  if (m && pptx.slideCount) {
-    const idx = Math.min(Math.max(Number(m[1]), 1), pptx.slideCount) - 1;
-    pptx.renderSingleSlide(idx);
-    pptx.updatePagination();
+  if (m && count) {
+    const n = Math.min(Math.max(Number(m[1]), 1), count);
+    document.getElementById("slide-" + n)?.scrollIntoView({ block: "start" });
   }
 }
 

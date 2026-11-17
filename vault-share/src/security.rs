@@ -22,7 +22,7 @@ pub fn nonce_csp(nonce: &str) -> String {
 }
 
 /// CSP for the Word/PowerPoint viewer page: like PAGE_CSP, but allows the inline styles and blob: images
-/// that docx-preview / pptx-preview generate. Script sources are unchanged.
+/// that docx-preview and the PowerPoint renderer generate. Script sources are unchanged.
 pub const OFFICE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
     img-src 'self' data: blob: https:; media-src 'self'; font-src 'self' data: blob:; connect-src 'self'; \
     form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";

@@ -167,7 +167,7 @@ Tabs, split view (Alt+click a link, or right-click a note), hover previews, book
 
 ## Building the browser bundles
 
-`static/office.js`, `editor.js`, `render.js`, `mermaid.js`, `graph.js` and `ingest.js` are built from `viewer/` and committed (`ingest.js` also bundles source from `../microsidian`):
+`static/office.js`, `editor.js`, `render.js`, `mermaid.js`, `graph.js` and `ingest.js` are built from `viewer/` and committed (`ingest.js` also bundles source from `../microsidian`). In `office.js`, Word files are drawn by docx-preview and PowerPoint files by the slide reader from [PPTX Viewer](https://github.com/MichalAFerber/pptx-viewer.us) (MIT, vendored as `viewer/pptx-viewer.js`), which shows each slide's text and pictures where the deck placed them:
 
 ```bash
 cd viewer && npm install && npm run build
