@@ -81,6 +81,33 @@ export async function buildCatalogue(io: VaultIO, layout: Layout): Promise<Catal
   return { folders, topics, themes, notes, omitted, text };
 }
 
+/** A note that is about to be filed with others in one batch, at the path the batch plan chose for it. */
+export interface BatchNote extends NoteInfo {
+  summary: string;
+}
+
+/**
+ * The catalogue as it will be once a whole batch is filed: the plan's new topics are listed with the existing
+ * ones, and every note of the batch is listed (in its own section, with a summary) so that each document can be
+ * connected to the others, including ones filed after it.
+ */
+export function withBatch(cat: Catalogue, newTopics: TopicInfo[], batch: BatchNote[]): Catalogue {
+  const lc = (s: string) => s.toLowerCase();
+  const topics = [...cat.topics, ...newTopics.filter((t) => !cat.topics.some((x) => lc(x.name) === lc(t.name)))];
+  topics.sort((a, b) => a.theme.localeCompare(b.theme) || a.name.localeCompare(b.name));
+  const themes = [...new Set(topics.map((t) => t.theme).filter(Boolean))];
+  const folderSet = new Set(cat.folders);
+  for (const n of batch) {
+    const segs = n.folder.split("/").filter(Boolean);
+    for (let i = 1; i <= segs.length; i++) folderSet.add(segs.slice(0, i).join("/"));
+  }
+  const folders = [...folderSet].sort();
+  const out: string[] = [render({ folders, topics, themes, notes: cat.notes, omitted: cat.omitted })];
+  out.push("", "## Notes being added now, in the same batch (path | topics | summary)", "");
+  for (const n of batch) out.push(`${n.path} | ${n.topics.slice(0, 6).join(", ")} | ${n.summary}`);
+  return { folders, topics, themes, notes: [...cat.notes, ...batch], omitted: cat.omitted, text: out.join("\n") };
+}
+
 function render(c: Omit<Catalogue, "text">): string {
   const out: string[] = ["# VAULT CATALOGUE", ""];
   out.push("## Folders that contain notes (folderPath is a path from the vault root)", "");

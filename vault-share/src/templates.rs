@@ -178,6 +178,8 @@ pub struct GraphPage {
     pub vault_name: String,
     pub tree_html: String,
     pub focus: String,
+    /// Folder of topic pages (Admin → Microsidian), for the graph's topic groups.
+    pub topics_folder: String,
 }
 
 pub struct SearchHit {

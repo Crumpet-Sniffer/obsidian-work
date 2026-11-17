@@ -10,6 +10,7 @@ mod spend;
 mod templates;
 mod search;
 mod vault;
+mod worker;
 
 use std::{
     collections::HashMap,
@@ -42,6 +43,10 @@ pub struct AppInner {
     pub http: reqwest::Client,
     /// When each account last called Claude, for the hourly cap.
     pub ingest_calls: std::sync::Mutex<HashMap<i64, Vec<std::time::Instant>>>,
+    /// Proves a request comes from the ingest worker this process started (new on every start).
+    pub worker_token: String,
+    /// When the worker last called in (Unix seconds; 0 = never).
+    pub worker_seen: std::sync::atomic::AtomicI64,
 }
 
 pub type AppState = Arc<AppInner>;
@@ -106,7 +111,13 @@ async fn run() -> anyhow::Result<()> {
             .user_agent(concat!("vault-share/", env!("CARGO_PKG_VERSION")))
             .build()?,
         ingest_calls: std::sync::Mutex::new(HashMap::new()),
+        worker_token: auth::random_token(32),
+        worker_seen: std::sync::atomic::AtomicI64::new(0),
     });
+
+    // Sources added in the background: resume what was running, then start the worker.
+    handlers::batches::recover(&state).await;
+    tokio::spawn(worker::supervise(state.clone()));
 
     // Housekeeping: expire sessions, prune audit log (180 days) and throttle state.
     let bg = state.clone();
@@ -120,6 +131,7 @@ async fn run() -> anyhow::Result<()> {
             let _ = bg.db.prune_audit(180 * 86_400).await;
             // Keep the dollar-to-pound rate for the spend chart fresh (asks at most twice a day).
             ingest::refresh_rate(&bg, false).await;
+            handlers::batches::prune(&bg).await;
             bg.limiter.prune();
         }
     });
@@ -144,11 +156,18 @@ fn router(state: AppState) -> Router {
         .route("/vaults", post(admin::create_vault))
         .route("/admin/vaults/{id}/upload", post(admin::replace_vault))
         .route("/v/{id}/api/ingest/file", put(ingest::put_file))
+        .route("/v/{id}/api/ingest/batches/{bid}/files", post(handlers::batches::upload))
         .layer(DefaultBodyLimit::max(upload_limit));
 
     // The call to Claude can take minutes at high effort, so it has no short timeout.
     let claude = Router::new()
         .route("/v/{id}/api/ingest/claude", post(ingest::claude))
+        .layer(DefaultBodyLimit::max(8 * 1024 * 1024));
+
+    // The ingest worker (loopback, its own token). Progress reports list every file of a batch.
+    let worker = Router::new()
+        .route("/internal/ingest/claim", post(handlers::batches::claim))
+        .route("/internal/ingest/{bid}", post(handlers::batches::report))
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024));
 
     // Reads every note in a vault; can be slow on a big one.
@@ -166,6 +185,9 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/rename", post(edit::rename))
         .route("/v/{id}/api/delete", post(edit::delete))
         .route("/v/{id}/api/ingest/config", get(ingest::config))
+        .route("/v/{id}/api/ingest/batches", get(handlers::batches::list).post(handlers::batches::create))
+        .route("/v/{id}/api/ingest/batches/{bid}/start", post(handlers::batches::start))
+        .route("/v/{id}/api/ingest/batches/{bid}/cancel", post(handlers::batches::cancel))
         .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)));
 
@@ -201,6 +223,7 @@ fn router(state: AppState) -> Router {
         .merge(uploads)
         .merge(api)
         .merge(claude)
+        .merge(worker)
         .merge(corpus)
         .route("/healthz", get(|| async { "ok" }))
         .route("/static/app.css", get(static_css))

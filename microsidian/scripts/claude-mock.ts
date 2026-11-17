@@ -5,6 +5,7 @@
  */
 import { buildCatalogue } from "../src/ai/catalogue";
 import { callClaude, explainError, MODEL } from "../src/ai/claude";
+import { planBatch } from "../src/ai/plan";
 import { NodeIO } from "./nodeIO";
 import { target } from "./lib";
 
@@ -36,6 +37,7 @@ async function main() {
     return new Response(JSON.stringify(json), { status, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   const call = (f: typeof fetch, guidance = "") => callClaude({ apiKey: "sk-ant-test", fetch: f, effort: "medium", catalogue: cat, guidance, fileName: "Budget Review.docx", documentText: "## Slide 1\nThe budget is tight." });
+  const call2 = (f: typeof fetch) => callClaude({ apiKey: "sk-ant-test", fetch: f, effort: "medium", catalogue: cat, guidance: "", fileName: "Budget Review.docx", documentText: "The budget is tight.", batchPlan: "Folder chosen for it: Projects/Alpha" });
 
   console.log("\nrequest and reply");
   const out = await call(mk(200, message()), "Do not file worksheets.");
@@ -71,6 +73,38 @@ async function main() {
     await call(mk(status, { type: "error", error: { type: "x", message: "m" } })).then(
       () => check(false, `${status} should throw`), (e) => check(expect.test(explainError(e)), `HTTP ${status} -> "${explainError(e).slice(0, 50)}"`));
   }
+
+  console.log("\nbatch plan, and a document filed with it");
+  const planReply = {
+    newTopics: [{ name: "Lessons learned", theme: "", definition: "What a team learned." }],
+    documents: [
+      { id: "D1", suitable: true, reason: "", folderPath: "Projects/Alpha", summary: "A budget review.", topics: ["Budget"] },
+      { id: "D2", suitable: true, reason: "", folderPath: "Projects/Alpha", summary: "A retrospective.", topics: ["Lessons learned"] },
+    ],
+  };
+  const n0 = seen.length;
+  const plan = await planBatch({
+    apiKey: "sk-ant-test", fetch: mk(200, message({ content: [{ type: "text", text: JSON.stringify(planReply) }] })), effort: "medium",
+    catalogue: cat, guidance: "", documents: [
+      { id: "D1", fileName: "Budget Review.docx", text: "## Slide 1\nThe budget is tight." },
+      { id: "D2", fileName: 'Retro "final".pptx', text: "We learned a lot.\n<image_text>\nLessons\n</image_text>" },
+    ],
+  });
+  const pr = seen[n0];
+  const user = pr.body.messages[0].content as string;
+  check(pr.body.messages.length === 1 && user.includes('<document id="D1" filename="Budget Review.docx">') && user.includes("filename=\"Retro 'final'.pptx\"") && user.startsWith("2 documents"),
+    "plan: every document in one user message, each tagged with its id (quotes in names made safe)");
+  check(/plan how a batch/i.test(pr.body.system[0].text) && /<image_text>/.test(pr.body.system[0].text) && pr.body.system.at(-1).text.startsWith("# VAULT CATALOGUE") && !!pr.body.system.at(-1).cache_control,
+    "plan: its own instructions (mentioning OCR text), the cacheable catalogue last");
+  check(pr.body.fallbacks === "default" && pr.body.output_config?.format?.type === "json_schema" && pr.body.thinking === undefined, "plan: fallbacks, structured output, no thinking settings");
+  const planProps = Object.keys(pr.body.output_config.format.schema.properties ?? {}).join(",");
+  check(planProps === "newTopics,documents", `plan: schema fields ${planProps}`);
+  check(plan.plan.documents.length === 2 && plan.shortened.length === 0 && plan.costUsd > 0, "plan: reply parsed, nothing shortened");
+  await call2(mk(200, message()));
+  const fr = seen[seen.length - 1];
+  check((fr.body.messages[0].content as string).includes("<batch_plan>\nFolder chosen for it: Projects/Alpha\n</batch_plan>") && /batch_plan/.test(fr.body.system[0].text),
+    "a document filed with a plan carries a <batch_plan> after it, and the instructions explain it");
+
   console.log(failures ? `\nFAILED ${failures}` : "\nall checks passed");
   process.exitCode = failures ? 1 : 0;
 }

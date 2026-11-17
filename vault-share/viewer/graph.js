@@ -104,14 +104,17 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   // ---------- data ----------
   fetch(wrap.dataset.src, { credentials: "same-origin", headers: { Accept: "application/json" } })
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then((d) => { data = d; rebuild(true); })
+    .then((d) => { data = d; annotate(d); rebuild(true); })
     .catch(() => { statusEl.textContent = "Could not load the graph. Try reloading the page."; });
 
   function rebuild(initial) {
     const old = new Map(nodes.map((n) => [n.path, n]));
     const withFiles = filesEl.checked;
     const withOrphans = orphansEl.checked;
-    const included = data.nodes.map((n) => n.kind === "note" || withFiles);
+    const shown = data.nodes.map((n) => n.kind === "note" || withFiles);
+    // Files a group with a closed eye matches are left out, with their links.
+    const included = data.nodes.map((n, i) => shown[i] && !hiddenByGroups(n));
+    const hiddenCount = included.reduce((c, inc, i) => c + (shown[i] && !inc ? 1 : 0), 0);
     const deg = new Array(data.nodes.length).fill(0);
     const kept = [];
     // Links arrive as directed [from, to] pairs; A->B and B->A are drawn as one line (arrows show direction).
@@ -163,7 +166,8 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     statusEl.textContent =
       `${noteCount} note${noteCount === 1 ? "" : "s"}` +
       (fileCount ? ` · ${fileCount} attachment${fileCount === 1 ? "" : "s"}` : "") +
-      ` · ${links.length} link${links.length === 1 ? "" : "s"}`;
+      ` · ${links.length} link${links.length === 1 ? "" : "s"}` +
+      (hiddenCount ? ` · ${hiddenCount} hidden by groups` : "");
 
     buildSim();
     if (initial) {
@@ -694,20 +698,77 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   resetEl.addEventListener("click", () => { fit(); start(); });
 
   // ---------- groups ----------
-  // A group is a search query and a colour. Nodes take the colour of the first group they match.
-  // Queries: plain text (matches name or path), `path:Topics`, or `file:lesson`.
+  // A group picks files by folder, file type, name, topic or search, and gives them a colour; nodes take the colour
+  // of the first group they match. A group's eye hides the files it matches from the graph (any hidden group they
+  // match hides them). Groups live in this browser, like the other graph settings.
   const PALETTE = ["#fb464c", "#e9973f", "#e0de71", "#44cf6e", "#53dfdd", "#027aff", "#a882ff", "#fa99cd"];
+  const KINDS = [
+    { id: "folder", label: "Folder", hint: "Unit 1/Section A" },
+    { id: "type", label: "File type", hint: "md, pptx, png" },
+    { id: "name", label: "Name", hint: "part of a file name" },
+    { id: "topic", label: "Topic", hint: "a topic's name" },
+    { id: "search", label: "Search", hint: "text, path:… or file:…" },
+  ];
+  const topicsFolder = (wrap.dataset.topics || "Topics").replace(/^\/+|\/+$/g, "");
   const groupsList = wrap.querySelector("[data-groups-list]");
   const groupAddEl = wrap.querySelector("[data-group-add]");
+
   let groups = readPref("groups", []);
   if (!Array.isArray(groups)) groups = [];
   groups = groups
-    .filter((g) => g && typeof g.q === "string" && /^#[0-9a-f]{6}$/i.test(g.color || ""))
+    // Groups saved before there were kinds were searches.
+    .map((g) => (g && typeof g.q === "string" && !g.type ? { type: "search", value: g.q, color: g.color, hidden: false } : g))
+    .filter((g) => g && KINDS.some((k) => k.id === g.type) && typeof g.value === "string" && /^#[0-9a-f]{6}$/i.test(g.color || ""))
+    .map((g) => ({ type: g.type, value: g.value.slice(0, 200), color: g.color, hidden: !!g.hidden }))
     .slice(0, 20);
+  const saveGroups = () => savePref("groups", groups);
 
-  function groupMatches(n, raw) {
-    const q = raw.trim().toLowerCase();
-    if (!q) return false;
+  // What groups match on, worked out once per node when the graph loads: its folder, file type and topics (the
+  // topic pages it links to, or its own name if it is one).
+  function annotate(d) {
+    const prefix = topicsFolder.toLowerCase() + "/";
+    const isTopic = (n) => n.kind === "note" && n.path.toLowerCase().startsWith(prefix);
+    for (const n of d.nodes) {
+      const slash = n.path.lastIndexOf("/");
+      n.folder = slash >= 0 ? n.path.slice(0, slash) : "";
+      const name = n.path.slice(slash + 1);
+      n.ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
+      n.topics = isTopic(n) ? [n.label] : [];
+    }
+    for (const [f, t] of d.links) {
+      const a = d.nodes[f], b = d.nodes[t];
+      if (isTopic(b) && !a.topics.includes(b.label)) a.topics.push(b.label);
+    }
+    fillSuggestions(d);
+  }
+
+  // Suggestions for each kind of group, from what is in this vault.
+  const lists = {};
+  for (const k of ["folder", "type", "topic"]) {
+    const dl = document.createElement("datalist");
+    dl.id = `graph-group-${k}`;
+    wrap.appendChild(dl);
+    lists[k] = dl;
+  }
+  function fillSuggestions(d) {
+    const folders = new Set(), types = new Set(), topics = new Set();
+    for (const n of d.nodes) {
+      const segs = n.folder ? n.folder.split("/") : [];
+      for (let i = 1; i <= segs.length; i++) folders.add(segs.slice(0, i).join("/"));
+      if (n.ext) types.add(n.ext);
+      for (const t of n.topics) topics.add(t);
+    }
+    const fill = (dl, values) => dl.replaceChildren(...[...values].sort((a, b) => a.localeCompare(b)).slice(0, 500).map((v) => {
+      const o = document.createElement("option");
+      o.value = v;
+      return o;
+    }));
+    fill(lists.folder, folders);
+    fill(lists.type, types);
+    fill(lists.topic, topics);
+  }
+
+  function searchMatches(n, q) {
     const m = q.match(/^(path|file):\s*(.*)$/);
     if (m) {
       const v = m[2];
@@ -717,52 +778,175 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     return n.label.toLowerCase().includes(q) || n.path.toLowerCase().includes(q);
   }
 
+  function groupMatches(n, g) {
+    const v = g.value.trim().toLowerCase();
+    if (!v) return false;
+    switch (g.type) {
+      case "folder": {
+        // The folder and everything inside it.
+        const f = v.replace(/^\/+|\/+$/g, "");
+        const nf = n.folder.toLowerCase();
+        return nf === f || nf.startsWith(f + "/");
+      }
+      case "type":
+        // One or more types: "pptx", ".pptx", "png jpg"; "note" means Markdown notes.
+        return v.split(/[\s,]+/).filter(Boolean).some((t) => {
+          const e = t.replace(/^\./, "");
+          return (e === "note" || e === "notes" ? "md" : e) === n.ext;
+        });
+      case "name":
+        return n.label.toLowerCase().includes(v);
+      case "topic":
+        return n.topics.some((t) => t.toLowerCase() === v);
+      default:
+        return searchMatches(n, v);
+    }
+  }
+
+  // Hidden by a group whose eye is closed.
+  function hiddenByGroups(n) {
+    for (const g of groups) if (g.hidden && groupMatches(n, g)) return true;
+    return false;
+  }
+
   function applyGroups() {
     for (const n of nodes) {
       n.gc = null;
       for (const g of groups) {
-        if (groupMatches(n, g.q)) { n.gc = g.color; break; }
+        if (groupMatches(n, g)) { n.gc = g.color; break; }
       }
     }
+    updateCounts();
+  }
+
+  // After a change: colours only, or (when what is hidden may have changed) a rebuild of the graph. Typing is
+  // debounced so the layout is not rebuilt on every key.
+  let rebuildTimer = 0;
+  function groupsChanged(structural) {
+    saveGroups();
+    if (structural && data) {
+      window.clearTimeout(rebuildTimer);
+      rebuildTimer = window.setTimeout(() => { rebuild(false); start(); }, 250);
+    } else {
+      applyGroups();
+      start();
+    }
+  }
+
+  const rowRefs = [];
+  function updateCounts() {
+    if (!data) return;
+    groups.forEach((g, i) => {
+      const r = rowRefs[i];
+      if (!r) return;
+      const n = g.value.trim() ? data.nodes.filter((x) => groupMatches(x, g)).length : 0;
+      r.count.textContent = g.value.trim() ? String(n) : "";
+      r.count.title = `${n} file${n === 1 ? "" : "s"} match`;
+      r.eye.hidden = !g.value.trim();
+    });
+  }
+
+  function svgIcon(id) {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class", "ic");
+    const use = document.createElementNS(ns, "use");
+    use.setAttribute("href", `#${id}`);
+    svg.appendChild(use);
+    return svg;
+  }
+
+  function setEye(btn, hidden) {
+    btn.replaceChildren(svgIcon(hidden ? "i-eye-off" : "i-eye"));
+    btn.setAttribute("aria-pressed", hidden ? "true" : "false");
+    btn.title = hidden ? "Hidden from the graph: show these files" : "Hide these files from the graph";
+    btn.setAttribute("aria-label", btn.title);
+    btn.classList.toggle("is-off", hidden);
   }
 
   function renderGroups() {
     if (!groupsList) return;
     groupsList.textContent = "";
+    rowRefs.length = 0;
     groups.forEach((g, i) => {
       const row = document.createElement("div");
       row.className = "group-row";
-      const q = document.createElement("input");
-      q.type = "text";
-      q.value = g.q;
-      q.placeholder = "path:Topics";
-      q.maxLength = 100;
-      q.setAttribute("aria-label", "Group query");
-      q.addEventListener("input", () => { g.q = q.value; savePref("groups", groups); applyGroups(); start(); });
+
+      const kind = document.createElement("select");
+      kind.setAttribute("aria-label", "What the group matches");
+      for (const k of KINDS) {
+        const o = document.createElement("option");
+        o.value = k.id;
+        o.textContent = k.label;
+        kind.appendChild(o);
+      }
+      kind.value = g.type;
+
+      const count = document.createElement("span");
+      count.className = "group-count muted small";
+
       const c = document.createElement("input");
       c.type = "color";
       c.value = g.color;
       c.setAttribute("aria-label", "Group colour");
-      c.addEventListener("input", () => { g.color = c.value; savePref("groups", groups); applyGroups(); start(); });
+      c.addEventListener("input", () => { g.color = c.value; groupsChanged(false); });
+
+      const eye = document.createElement("button");
+      eye.type = "button";
+      eye.className = "icon-btn group-eye";
+      setEye(eye, g.hidden);
+      eye.addEventListener("click", () => {
+        g.hidden = !g.hidden;
+        setEye(eye, g.hidden);
+        window.clearTimeout(rebuildTimer);
+        saveGroups();
+        if (data) { rebuild(false); start(); }
+      });
+
       const x = document.createElement("button");
       x.type = "button";
       x.className = "icon-btn";
       x.title = "Delete group";
       x.setAttribute("aria-label", "Delete group");
       x.textContent = "×";
-      x.addEventListener("click", () => { groups.splice(i, 1); savePref("groups", groups); renderGroups(); applyGroups(); start(); });
-      row.append(q, c, x);
+      x.addEventListener("click", () => {
+        const wasHidden = g.hidden;
+        groups.splice(i, 1);
+        renderGroups();
+        groupsChanged(wasHidden);
+      });
+
+      const q = document.createElement("input");
+      q.type = "text";
+      q.className = "group-value";
+      q.value = g.value;
+      q.maxLength = 200;
+      q.spellcheck = false;
+      q.setAttribute("aria-label", "Group value");
+      const setKind = () => {
+        const k = KINDS.find((k) => k.id === g.type);
+        q.placeholder = k.hint;
+        if (lists[g.type]) q.setAttribute("list", lists[g.type].id);
+        else q.removeAttribute("list");
+      };
+      setKind();
+      q.addEventListener("input", () => { g.value = q.value; groupsChanged(g.hidden); });
+      kind.addEventListener("change", () => { g.type = kind.value; setKind(); groupsChanged(g.hidden); });
+
+      row.append(kind, count, c, eye, x, q);
       groupsList.appendChild(row);
+      rowRefs.push({ count, eye });
     });
+    updateCounts();
   }
   renderGroups();
   if (groupAddEl) {
     groupAddEl.addEventListener("click", () => {
       if (groups.length >= 20) return;
-      groups.push({ q: "", color: PALETTE[groups.length % PALETTE.length] });
-      savePref("groups", groups);
+      groups.push({ type: "folder", value: "", color: PALETTE[groups.length % PALETTE.length], hidden: false });
+      saveGroups();
       renderGroups();
-      const inputs = groupsList.querySelectorAll('input[type="text"]');
+      const inputs = groupsList.querySelectorAll(".group-value");
       if (inputs.length) inputs[inputs.length - 1].focus();
     });
   }

@@ -29,6 +29,12 @@ export interface ApplyReport {
 
 const basename = (p: string) => p.split("/").pop()!;
 
+/** The note name for an original's file name (no extension; no characters that break links). */
+export function noteName(fileName: string): string {
+  const dot = fileName.lastIndexOf(".");
+  return (dot > 0 ? fileName.slice(0, dot) : fileName).replace(/[​[\]#^|]/g, "").replace(/\s+/g, " ").trim();
+}
+
 async function uniquePath(io: VaultIO, path: string): Promise<string> {
   if (!(await io.exists(path))) return path;
   const dot = path.lastIndexOf(".");
@@ -55,7 +61,7 @@ export async function applyIngest(env: ApplyEnv, ingestPath: string, p: Proposal
   const fileName = basename(ingestPath);
   const dot = fileName.lastIndexOf(".");
   const ext = fileName.slice(dot + 1).toLowerCase();
-  const name = fileName.slice(0, dot).replace(/[​[\]#^|]/g, "").replace(/\s+/g, " ").trim();
+  const name = noteName(fileName);
   const folder = p.folderPath;
   const sub = folder ? `/${folder}` : "";
 

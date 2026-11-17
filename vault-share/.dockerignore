@@ -4,3 +4,5 @@ data
 *.db-*
 .git
 .env
+ocr/*.onnx
+ocr/*.wasm

@@ -1,17 +1,10 @@
 // Sources page: add Word and PowerPoint files to a vault, and remove them again.
 //
-// This runs Microsidian's own code (the Obsidian plugin in ../../microsidian) in the browser: the converter, the
-// catalogue, the request to Claude, the checks on its answer and the filing. Only two things differ from the plugin:
-// vault files are read and written through the site's API (SiteIO below), and the request to Claude goes to this
-// server, which adds the API key and applies the model and effort an admin chose. The key never reaches the browser.
-import { convertOffice } from "../../microsidian/src/convert";
-import { buildCatalogue } from "../../microsidian/src/ai/catalogue";
-import { callClaude, explainError } from "../../microsidian/src/ai/claude";
-import { validate } from "../../microsidian/src/ingest/proposal";
-import { applyIngest } from "../../microsidian/src/vault/apply";
+// Adding is done by the server in the background: this page uploads the files as one batch and then shows the
+// progress the server reports (see src/handlers/batches.rs and the worker in ./worker). Removing is done here,
+// through the site's API.
 import { under } from "../../microsidian/src/config";
 import { parseFrontmatter } from "../../microsidian/src/vault/vaultio";
-import JSZip from "jszip";
 
 // Files chosen on the New vault page wait here (in this browser only) until the new vault's Sources page picks
 // them up. A page cannot hand files to the next page any other way.
@@ -253,201 +246,282 @@ const handoff = {
     }
   }
 
-  // The SDK's request, sent to this server instead of to Anthropic.
-  function serverFetch(_url, init = {}) {
-    const beta = new Headers(init.headers || {}).get("anthropic-beta");
-    const headers = { "Content-Type": "application/json", "X-CSRF-Token": csrf };
-    if (beta) headers["anthropic-beta"] = beta;
-    return fetch(`${base}/api/ingest/claude`, { method: "POST", credentials: "same-origin", headers, body: init.body, signal: init.signal });
-  }
-
   function explain(e) {
     if (e instanceof ApiError) return e.message;
-    if (e && e.status === 401) return "The Anthropic API key is missing or was rejected. An admin can fix it under Admin → Microsidian.";
-    if (e && e.status === 403 && /expired|csrf/i.test(String(e.message))) return "Your session expired. Reload the page and try again.";
-    return explainError(e).replace("in the plugin settings", "under Admin → Microsidian");
+    return e && e.message ? e.message : String(e);
   }
 
   // ---------- adding ----------
+  // The files are uploaded to the server as one batch, and the server files them in the background (its ingest
+  // worker: see src/handlers/batches.rs). This page only uploads and then shows the progress the server reports,
+  // so it can be closed once the upload has finished, and opened again later, from any browser, to see how it went.
   const jobsEl = host.querySelector("[data-jobs]");
   const pickEl = host.querySelector("[data-pick]");
   const dropEl = host.querySelector("[data-drop]");
+  const batchesEl = host.querySelector("[data-batches]");
   let cfg = null;
-  const queue = [];
-  let busy = false;
-
-  function jobRow(name) {
-    const li = document.createElement("li");
-    li.className = "job is-waiting";
-    const title = document.createElement("strong");
-    title.textContent = name;
-    const status = document.createElement("span");
-    status.className = "job-status";
-    status.textContent = "Waiting…";
-    const detail = document.createElement("div");
-    detail.className = "job-detail small muted";
-    li.append(title, status, detail);
-    jobsEl.prepend(li);
-    return {
-      set(state, text) { li.className = `job is-${state}`; status.textContent = text; },
-      detail(nodes) { detail.replaceChildren(...nodes); },
-    };
-  }
-
-  // Running totals for this visit, shown above the list while a batch is going through.
-  const progressEl = host.querySelector("[data-progress]");
-  const tally = { total: 0, filed: 0, left: 0 };
-  function showTally() {
-    if (!progressEl) return;
-    progressEl.hidden = tally.total < 2;
-    const settled = tally.filed + tally.left;
-    progressEl.textContent =
-      (settled < tally.total ? `Filing ${Math.min(settled + 1, tally.total)} of ${tally.total}` : `Finished ${tally.total}`) +
-      ` · ${tally.filed} filed` + (tally.left ? ` · ${tally.left} not added` : "");
-  }
-  function addJob(name, title, get) {
-    tally.total++;
-    queue.push({ name, row: jobRow(title), get });
-  }
+  let uploading = 0; // batches being uploaded from this page
+  const local = new Map(); // batch id -> { sent, total } while this page uploads it
+  const opened = new Set(); // batches whose file list is open
+  let batches = [];
+  let workerRunning = true;
+  let received = 0; // when the last list arrived (for the planning clock)
+  let pollTimer = 0;
 
   const isOffice = (name) => OFFICE.includes(extOf(name)) && !basename(name).startsWith("~$");
+  const isSource = (f) => (isOffice(f.name) || extOf(f.name) === "zip") && !f.name.startsWith(".");
 
-  // Every Word and PowerPoint file inside a zip, in any subfolder, becomes a source. Each one is unpacked only
-  // when its turn comes, so a big zip is never held in memory twice over.
-  async function openZip(file) {
-    const row = jobRow(file.name);
-    row.set("working", "Opening the zip…");
-    let zip;
-    try {
-      zip = await JSZip.loadAsync(file);
-    } catch {
-      row.set("failed", "Not added: this zip could not be opened.");
-      return;
-    }
-    const entries = Object.values(zip.files)
-      .filter((e) => !e.dir && isOffice(e.name) && !e.name.split("/").some((seg) => seg.startsWith(".") || seg === "__MACOSX"))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    if (!entries.length) {
-      row.set("failed", "Not added: no .docx or .pptx files were found in this zip.");
-      return;
-    }
-    row.set("done", `${entries.length} file${entries.length === 1 ? "" : "s"} found`);
-    for (const entry of entries) {
-      const name = basename(entry.name);
-      addJob(name, entry.name, async () => new File([await entry.async("uint8array")], name));
-    }
+  function make(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+
+  // A <progress>: a number from 0 to 1 fills it, null makes it a moving "working" bar.
+  function bar(cls, p) {
+    const b = make("progress", cls);
+    b.max = 1;
+    if (p !== null) b.value = Math.max(0, Math.min(1, p));
+    return b;
+  }
+
+  const mb = (n) => `${(n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0)} MB`;
+  const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const active = (b) => b.status === "uploading" || b.status === "queued" || b.status === "running";
+
+  // One line for a file that could not be added before any upload (wrong type, too large).
+  function rejectRow(name, text) {
+    const li = make("li", "job is-failed");
+    li.append(make("strong", "", name), make("span", "job-status", text));
+    jobsEl.prepend(li);
+  }
+
+  // Upload one file of a batch, reporting bytes sent. XMLHttpRequest, because fetch cannot report upload progress.
+  function sendFile(bid, file, onSent) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${base}/api/ingest/batches/${bid}/files`);
+      xhr.setRequestHeader("X-CSRF-Token", csrf);
+      xhr.upload.onprogress = (e) => onSent(e.loaded);
+      xhr.onload = () => {
+        let data = null;
+        try { data = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+        else reject(new ApiError(xhr.status, (data && data.error) || `The server answered ${xhr.status}.`));
+      };
+      xhr.onerror = () => reject(new Error("The upload was interrupted. Check your connection and try again."));
+      const form = new FormData();
+      form.append("file", file, file.name);
+      xhr.send(form);
+    });
   }
 
   async function enqueue(files) {
-    for (const file of files) {
-      if (extOf(file.name) === "zip") {
-        await openZip(file);
-      } else if (isOffice(file.name)) {
-        addJob(file.name, file.name, async () => file);
-      } else {
-        jobRow(file.name).set("failed", "Not added: only .docx, .pptx and .zip files can be added.");
-      }
-    }
-    showTally();
-    void pump();
-  }
-
-  async function pump() {
-    if (busy) return;
-    busy = true;
-    try {
-      while (queue.length) {
-        const job = queue.shift();
-        try {
-          const filed = await addSource(await job.get(), job.row);
-          if (filed) tally.filed++; else tally.left++;
-        } catch (e) {
-          console.error("[sources] could not add", job.name, e);
-          job.row.set("failed", `Not added: ${explain(e)}`);
-          tally.left++;
-        }
-        showTally();
-      }
-    } finally {
-      busy = false;
-      void refreshList();
-    }
-  }
-
-  async function addSource(file, row) {
     if (!cfg) cfg = await api("GET", "ingest/config");
-    if (!cfg.configured) throw new Error("No Anthropic API key is set. An admin can add one under Admin → Microsidian.");
-    if (file.size > cfg.maxFileBytes) throw new Error(`Files can be at most ${Math.floor(cfg.maxFileBytes / 1048576)} MB.`);
-    const layout = cfg.layout;
-    const ext = extOf(file.name);
-    const convertOpts = { imageMinBytes: cfg.imageMinKB * 1000, isLogo: () => false, attachmentsDir: layout.attachments };
-
-    row.set("working", "Reading the file…");
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const res = await convertOffice(bytes, ext, convertOpts);
-
-    row.set("working", "Looking through the vault…");
-    const io = new SiteIO(layout);
-    await io.load();
-    const cat = await buildCatalogue(io, layout);
-
-    row.set("working", "Asking Claude where it belongs…");
-    const outcome = await callClaude({
-      apiKey: "held-by-the-server",
-      fetch: serverFetch,
-      effort: cfg.effort,
-      catalogue: cat,
-      guidance: cfg.guidance,
-      fileName: file.name,
-      documentText: res.body,
-    });
-    const proposal = validate(outcome.analysis, cat, res.body, layout);
-    if (!proposal.suitable) {
-      row.set("skipped", `Not added: ${proposal.reason || "the filing guidance says not to file this kind of document."}`);
-      return false;
+    const ok = [];
+    for (const f of files) {
+      if (!isSource(f)) rejectRow(f.name, "Not added: only .docx, .pptx and .zip files can be added.");
+      else if (isOffice(f.name) && f.size > cfg.maxFileBytes) rejectRow(f.name, `Not added: files can be at most ${Math.floor(cfg.maxFileBytes / 1048576)} MB.`);
+      else ok.push(f);
     }
+    if (!ok.length) return;
 
-    row.set("working", "Filing it…");
-    const ingestPath = `${layout.ingest}/${file.name}`;
-    io.pending = { path: ingestPath, bytes };
-    const report = await applyIngest(
-      {
-        io,
-        cat,
-        layout,
-        updateFolderIndexes: cfg.updateFolderIndexes,
-        convert: async (path) => {
-          const out = await convertOffice(await io.readBinary(path), ext, { ...convertOpts, originalPath: path });
-          for (const img of out.images) if (!(await io.exists(img.path))) await io.writeBinary(img.path, img.data);
-          return out;
-        },
-      },
-      ingestPath,
-      proposal,
-    );
+    uploading++;
+    let bid = null;
+    try {
+      bid = (await api("POST", "ingest/batches")).id;
+      const total = ok.reduce((n, f) => n + f.size, 0);
+      const up = { sent: 0, total, names: ok.map((f) => f.name) };
+      local.set(bid, up);
+      opened.add(bid);
+      await refreshBatches();
+      let done = 0;
+      for (const f of ok) {
+        await sendFile(bid, f, (loaded) => { up.sent = done + loaded; render(); });
+        done += f.size;
+        up.sent = done;
+        render();
+      }
+      await api("POST", `ingest/batches/${bid}/start`);
+    } catch (e) {
+      console.error("[sources] upload failed", e);
+      if (bid) {
+        try { await api("POST", `ingest/batches/${bid}/cancel`); } catch { /* already gone */ }
+      }
+      rejectRow(ok.length === 1 ? ok[0].name : `${ok.length} files`, `Not added: ${explain(e)}`);
+    } finally {
+      uploading--;
+      if (bid) local.delete(bid);
+      await refreshBatches();
+    }
+  }
 
-    const link = document.createElement("a");
-    link.href = `${base}/n/${encodePath(report.notePath)}`;
-    link.textContent = report.notePath.slice(0, -3);
-    const topics = proposal.topics.length + proposal.newTopics.length;
-    const u = outcome.usage;
-    const bits = [
-      `${topics} topic${topics === 1 ? "" : "s"}`,
-      `${proposal.related.length} related note${proposal.related.length === 1 ? "" : "s"}`,
-      `${report.changed.length} files updated`,
-      `${(u.input + u.cacheRead).toLocaleString()} tokens in, ${u.output.toLocaleString()} out`,
-    ];
-    const notes = [...report.warnings];
-    if (outcome.fallbackUsed) notes.push("A substitute model was used because the first declined.");
-    if (cat.omitted) notes.push(`This vault is large: ${cat.omitted} notes were not shown to Claude.`);
-    row.set("done", "Filed");
-    row.detail([link, document.createTextNode(` · ${bits.join(" · ")}${notes.length ? ". " + notes.join(" ") : ""}`)]);
-    return true;
+  async function cancelBatch(b, btn) {
+    if (!window.confirm(b.status === "running"
+      ? "Stop this batch? Files already filed stay in the vault; the rest are not added."
+      : "Cancel this batch? None of its files will be added.")) return;
+    btn.disabled = true;
+    try {
+      await api("POST", `ingest/batches/${b.id}/cancel`);
+    } catch (e) {
+      window.alert(`Could not stop it: ${explain(e)}`);
+    }
+    await refreshBatches();
+  }
+
+  // ---------- showing the batches ----------
+  const STATUS = { uploading: "Uploading", queued: "Waiting to start", running: "Being added", done: "Finished", failed: "Failed", cancelled: "Stopped" };
+
+  function steps(b) {
+    const p = b.progress || {};
+    const s = p.steps || {};
+    const up = local.get(b.id);
+    const out = [];
+    // Uploading (this page's own count, or done once the server has the batch)
+    if (up) out.push({ label: `Uploading ${up.names.length} file${up.names.length === 1 ? "" : "s"} to the server`, state: "working", frac: up.total ? up.sent / up.total : 0, count: `${mb(up.sent)} of ${mb(up.total)}` });
+    else if (b.status === "uploading") out.push({ label: "Uploading the files to the server", state: "working", frac: null, count: "", note: `Being uploaded by ${b.by} from another page` });
+    else out.push({ label: `Uploaded ${b.files.length} file${b.files.length === 1 ? "" : "s"}`, state: "done", frac: 1, count: "Done" });
+    if (b.status === "uploading" || b.status === "queued" || !s.read) {
+      for (const label of ["Reading the files and the text in their pictures", "Claude plans the batch and connects each file, then it is filed"]) {
+        out.push({ label, state: b.status === "cancelled" || b.status === "failed" ? "failed" : "waiting", frac: 0, count: b.status === "queued" ? "Waiting" : "" });
+      }
+      return out;
+    }
+    const counted = (st, label) => {
+      const of = st.of || 0;
+      const working = st.state === "working";
+      return {
+        label,
+        state: st.state,
+        frac: of ? Math.min(1, st.done / of) : st.state === "done" ? 1 : 0,
+        count: st.state === "waiting" ? "Waiting" : of ? (st.done >= of ? `${of} of ${of}` : `${Math.floor(st.done) + 1} of ${of}`) : st.state === "done" ? "Done" : "",
+        note: working ? st.note : "",
+      };
+    };
+    out.push(counted(s.read, "Reading the files and the text in their pictures"));
+    if (p.planned) {
+      const pl = s.plan;
+      const elapsed = (pl.elapsed || 0) + (pl.state === "working" ? (Date.now() - received) / 1000 : 0);
+      out.push({
+        label: `Claude reads all ${s.read.of} files together and plans their topics and folders`,
+        state: pl.state,
+        frac: pl.state === "working" ? null : pl.state === "waiting" ? 0 : 1,
+        count: pl.state === "working" ? clock(elapsed) : pl.state === "done" ? "Done" : pl.state === "waiting" ? "Waiting" : "Skipped",
+        note: pl.note,
+        timer: pl.state === "working" ? pl.elapsed || 0 : null,
+      });
+    }
+    out.push(counted(s.file, "Claude connects each file to the vault and the rest of the batch, then it is filed"));
+    return out;
+  }
+
+  function batchView(b) {
+    const list = steps(b);
+    const overall = list.reduce((n, s) => n + (s.frac === null ? 0.5 : s.frac), 0) / list.length;
+    const done = !active(b);
+    const box = make("section", `batch is-${b.status}`);
+    const head = make("div", "batch-head");
+    const p = b.progress || {};
+    const title = done
+      ? `${STATUS[b.status]}${p.summary ? ` · ${p.summary}` : ""}`
+      : `${STATUS[b.status]} · ${b.files.length} file${b.files.length === 1 ? "" : "s"}`;
+    head.append(make("strong", "", title), make("span", "batch-pct", done ? "" : `${Math.floor(overall * 100)}%`));
+    box.append(head, bar("batch-bar", done ? 1 : overall));
+
+    const ol = make("ol", "batch-steps");
+    for (const s of list) {
+      const li = make("li", `batch-step is-${s.state}`);
+      const count = make("span", "batch-count", s.count);
+      if (s.timer !== null && s.timer !== undefined) count.dataset.timer = String(s.timer);
+      li.append(make("span", "batch-label", s.label), count, bar("", s.frac), make("span", "batch-note", s.note || ""));
+      ol.append(li);
+    }
+    box.append(ol);
+
+    const foot = make("div", "batch-foot small muted");
+    const when = new Date(b.createdAt * 1000).toLocaleString();
+    foot.append(make("span", "", `Added by ${b.by} · ${when}`));
+    if (active(b) && !done && (b.mine || host.dataset.admin === "1") && !b.cancelRequested && !local.has(b.id)) {
+      const stop = make("button", "linklike", b.status === "running" ? "Stop" : "Cancel");
+      stop.type = "button";
+      stop.addEventListener("click", () => cancelBatch(b, stop));
+      foot.append(stop);
+    }
+    if (b.cancelRequested && active(b)) foot.append(make("span", "", " · stopping after the current file…"));
+    box.append(foot);
+
+    const files = p.files || [];
+    if (files.length) {
+      const det = make("details", "batch-files");
+      det.open = opened.has(b.id);
+      det.addEventListener("toggle", () => { if (det.open) opened.add(b.id); else opened.delete(b.id); });
+      const failed = files.filter((f) => f.state === "failed" || f.state === "skipped").length;
+      det.append(make("summary", "", `${files.length} file${files.length === 1 ? "" : "s"}${failed ? ` · ${failed} not added` : ""}`));
+      const ul = make("ul", "jobs");
+      for (const f of files) {
+        const li = make("li", `job is-${f.state}`);
+        li.append(make("strong", "", f.name), make("span", "job-status", f.text));
+        if (f.state === "working" && "bar" in f) li.append(bar("job-bar", f.bar));
+        if (f.link || f.detail) {
+          const d = make("div", "job-detail small muted");
+          if (f.link) {
+            const a = make("a", "", f.link.replace(/\.md$/, ""));
+            a.href = `${base}/n/${encodePath(f.link)}`;
+            d.append(a);
+          }
+          if (f.detail) d.append(document.createTextNode(`${f.link ? " · " : ""}${f.detail}`));
+          li.append(d);
+        }
+        ul.append(li);
+      }
+      det.append(ul);
+      box.append(det);
+    }
+    return box;
+  }
+
+  function render() {
+    if (!batchesEl) return;
+    const nodes = [];
+    const waiting = batches.some((b) => b.status === "queued");
+    if (waiting && !workerRunning) {
+      nodes.push(make("p", "alert error", "The server's ingest worker is not running, so these files are waiting. An admin can check the server's logs."));
+    }
+    for (const b of batches) nodes.push(batchView(b));
+    batchesEl.replaceChildren(...nodes);
+    batchesEl.hidden = nodes.length === 0;
+  }
+
+  // The planning clock keeps going between polls.
+  window.setInterval(() => {
+    if (!batchesEl) return;
+    for (const el of batchesEl.querySelectorAll("[data-timer]")) el.textContent = clock(Number(el.dataset.timer) + (Date.now() - received) / 1000);
+  }, 1000);
+
+  let lastActive = new Set();
+  async function refreshBatches() {
+    window.clearTimeout(pollTimer);
+    try {
+      const r = await api("GET", "ingest/batches");
+      batches = r.batches;
+      workerRunning = r.worker.running;
+      received = Date.now();
+      render();
+      // When a batch finishes, the list of sources below changes.
+      const now = new Set(batches.filter(active).map((b) => b.id));
+      if ([...lastActive].some((id) => !now.has(id))) void refreshList();
+      lastActive = now;
+    } catch (e) {
+      console.error("[sources] could not load the batches", e);
+    }
+    // Watch closely while something is happening; otherwise look now and then (another page may add files).
+    pollTimer = window.setTimeout(refreshBatches, batches.some(active) || uploading ? 2000 : 20000);
   }
 
   if (pickEl) {
     pickEl.addEventListener("change", () => {
-      enqueue([...pickEl.files]);
+      void enqueue([...pickEl.files]);
       pickEl.value = "";
     });
   }
@@ -458,10 +532,12 @@ const handoff = {
     dropEl.addEventListener("drop", (e) => {
       e.preventDefault();
       over(false);
-      if (e.dataTransfer && e.dataTransfer.files.length) enqueue([...e.dataTransfer.files]);
+      if (e.dataTransfer && e.dataTransfer.files.length) void enqueue([...e.dataTransfer.files]);
     });
   }
-  window.addEventListener("beforeunload", (e) => { if (busy) e.preventDefault(); });
+  // Only the upload needs this page; once the server has the files, it can be closed.
+  window.addEventListener("beforeunload", (e) => { if (uploading) e.preventDefault(); });
+  void refreshBatches();
 
   // ---------- the list, and removing ----------
   const listEl = host.querySelector("[data-list]");
@@ -531,7 +607,6 @@ const handoff = {
   }
 
   async function removeSource(io, original, note, btn) {
-    if (busy) return;
     const what = note ? `“${basename(original)}” and its note “${basename(note).slice(0, -3)}”` : `“${basename(original)}”`;
     if (!window.confirm(`Remove ${what} from this vault? They move to the vault's trash.`)) return;
     btn.disabled = true;

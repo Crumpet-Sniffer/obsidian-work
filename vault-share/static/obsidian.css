@@ -242,9 +242,13 @@ input.switch:checked::after { transform: translateX(14px); background: #fff; }
 .upload-progress button { justify-self: start; }
 
 /* ---------- graph groups and forces ---------- */
-.groups-list { display: grid; gap: 6px; }
-.group-row { display: flex; align-items: center; gap: 6px; }
-.group-row input[type="text"] { flex: 1; min-width: 0; padding: 4px 8px; font-size: 13px; }
+.groups-list { display: grid; gap: 8px; }
+.group-row { display: grid; grid-template-columns: 1fr auto auto auto auto; align-items: center; gap: 4px 6px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.group-row select { min-width: 0; padding: 3px 6px; font-size: 12px; }
+.group-row .group-value { grid-column: 1 / -1; min-width: 0; padding: 4px 8px; font-size: 13px; }
+.group-count { min-width: 1.6em; text-align: right; font-variant-numeric: tabular-nums; }
+.group-row .ic { width: 16px; height: 16px; }
+.group-eye.is-off { color: var(--accent); }
 .group-row input[type="color"] { flex: none; width: 28px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }
 .group-row .icon-btn { width: 24px; height: 24px; font-size: 16px; line-height: 1; }
 .group-add { justify-self: stretch; }

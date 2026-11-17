@@ -22,6 +22,12 @@ pub struct Config {
     pub session_max_secs: i64,
     pub admin_username: String,
     pub admin_password: Option<String>,
+    /// Folder holding the OCR models and ONNX Runtime's .wasm, served at /static/ocr/ (see the Dockerfile).
+    pub ocr_dir: PathBuf,
+    /// Node.js, to run the ingest worker.
+    pub node_bin: PathBuf,
+    /// The ingest worker's script (worker/worker.mjs); see worker.rs.
+    pub worker_script: PathBuf,
 }
 
 fn env_str(name: &str) -> Option<String> {
@@ -78,6 +84,9 @@ impl Config {
             session_max_secs: env_u64("SESSION_MAX_DAYS", 7)? as i64 * 86_400,
             admin_username,
             admin_password: env_str("ADMIN_PASSWORD"),
+            node_bin: env_str("NODE_BIN").map(PathBuf::from).unwrap_or_else(|| "node".into()),
+            worker_script: env_str("INGEST_WORKER").map(PathBuf::from).unwrap_or_else(|| "/usr/local/share/vault-share/worker/worker.mjs".into()),
+            ocr_dir: env_str("OCR_DIR").map(PathBuf::from).unwrap_or_else(|| "/usr/local/share/vault-share/ocr".into()),
         };
         if cfg.max_upload_bytes == 0 || cfg.max_files == 0 {
             bail!("upload limits must be greater than zero");

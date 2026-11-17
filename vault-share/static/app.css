@@ -181,8 +181,46 @@ form:has(input[name="mode"][value="zip"]:checked) .mode-scratch { display: none;
 .drop:has(input:disabled) { opacity: .55; cursor: not-allowed; }
 .drop input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
-.jobs-progress { margin: 1rem 0 0; color: var(--ink); font-weight: 550; font-variant-numeric: tabular-nums; }
-.jobs-progress + .jobs { margin-top: .5rem; }
+/* Sources: progress of a batch (overall, then one bar per step) and of each file */
+.batch { display: grid; gap: .6rem; margin: 1rem 0 0; padding: .75rem .85rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.batch[hidden] { display: none; }
+.batches { display: grid; gap: .75rem; margin: 1rem 0 0; }
+.batches[hidden] { display: none; }
+.batches .batch { margin: 0; }
+.batch-foot { display: flex; flex-wrap: wrap; gap: .25rem .75rem; align-items: baseline; }
+.batch-foot button.linklike { font-size: .8125rem; color: var(--bad); }
+.batch-files > summary { cursor: pointer; font-size: .875rem; color: var(--muted); }
+.batch-files .jobs { margin-top: .5rem; }
+.batch.is-done .batch-bar::-webkit-progress-value { background: var(--ok); }
+.batch.is-done .batch-bar::-moz-progress-bar { background: var(--ok); }
+.batch-head { display: flex; justify-content: space-between; gap: 1rem; font-variant-numeric: tabular-nums; }
+.batch-head strong { font-weight: 550; }
+.batch-pct { color: var(--muted); }
+.batch-steps { list-style: none; margin: .1rem 0 0; padding: 0; display: grid; gap: .55rem; }
+.batch-step { display: grid; grid-template-columns: 1fr auto; gap: .2rem 1rem; font-size: .875rem; }
+.batch-step progress { grid-column: 1 / -1; height: 5px; }
+.batch-step.is-waiting { color: var(--muted); }
+.batch-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.batch-step.is-working .batch-count { color: var(--accent); }
+.batch-step.is-done .batch-count { color: var(--ok); }
+.batch-step.is-failed .batch-count { color: var(--bad); }
+.batch-note { grid-column: 1 / -1; color: var(--muted); font-size: .8125rem; overflow-wrap: anywhere; }
+.batch-note:empty { display: none; }
+.batch progress, .job-bar { width: 100%; height: 8px; appearance: none; -webkit-appearance: none; border: 0; border-radius: 999px; background: var(--line); overflow: hidden; }
+.job-bar { grid-column: 1 / -1; height: 4px; margin-top: .2rem; }
+.job-bar[hidden] { display: none; }
+.batch progress::-webkit-progress-bar, .job-bar::-webkit-progress-bar { background: var(--line); border-radius: 999px; }
+.batch progress::-webkit-progress-value, .job-bar::-webkit-progress-value { background: var(--accent); border-radius: 999px; transition: width .3s; }
+.batch progress::-moz-progress-bar, .job-bar::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+/* No value: work that cannot be measured (a call to Claude). A band slides along the bar. */
+.batch progress:indeterminate, .job-bar:indeterminate {
+  background: linear-gradient(90deg, var(--line) 0%, var(--line) 35%, var(--accent) 50%, var(--line) 65%, var(--line) 100%);
+  background-size: 300% 100%; animation: bar-slide 1.6s linear infinite;
+}
+.batch progress:indeterminate::-webkit-progress-bar, .job-bar:indeterminate::-webkit-progress-bar { background: transparent; }
+.batch progress:indeterminate::-moz-progress-bar, .job-bar:indeterminate::-moz-progress-bar { background: transparent; }
+@keyframes bar-slide { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .batch progress:indeterminate, .job-bar:indeterminate { animation: none; background: var(--accent); opacity: .5; } }
 .jobs { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: .5rem; }
 .jobs:empty { display: none; }
 .job { display: grid; grid-template-columns: 1fr auto; gap: .15rem 1rem; padding: .65rem .85rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }

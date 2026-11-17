@@ -1,0 +1,9 @@
+{
+  "name": "vault-share-ingest-worker",
+  "private": true,
+  "description": "Runtime dependencies of worker.mjs (built from ../viewer/worker by ../viewer/build-worker.mjs). Only the native one is installed here.",
+  "type": "module",
+  "dependencies": {
+    "onnxruntime-node": "1.23.2"
+  }
+}

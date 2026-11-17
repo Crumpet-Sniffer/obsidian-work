@@ -45,8 +45,9 @@ pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const GUIDANCE_MAX: usize = 4000;
 /// Calls to Claude one account may make per hour. High enough for a zip of a whole course's files.
 const CALLS_PER_HOUR: usize = 500;
-/// Room for the reply. The browser's own figure is replaced with this.
-const MAX_TOKENS: u64 = 16_000;
+/// Room for the reply (thinking included). The browser's own figure is replaced with this. Planning a large
+/// batch lists every document, so it needs more than filing one document does.
+const MAX_TOKENS: u64 = 32_000;
 /// Most text the corpus endpoint returns in one go.
 const CORPUS_MAX_BYTES: usize = 96 * 1024 * 1024;
 
@@ -322,7 +323,7 @@ pub async fn save_rate(
 pub async fn sources_page(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> AppResult {
     let v = authorize(&st, &user, &id).await?;
     let s = Settings::load(&st.db).await?;
-    Ok(render(&SourcesPage {
+    let res = render(&SourcesPage {
         page: PageCtx::for_user(&user),
         csrf: user.csrf.clone(),
         vault_id: v.id,
@@ -330,7 +331,8 @@ pub async fn sources_page(State(st): State<AppState>, user: CurrentUser, Path(id
         configured: s.api_key.is_some(),
         is_admin: user.is_admin,
         max_file_mb: st.cfg.max_file_bytes / 1024 / 1024,
-    }))
+    });
+    Ok(res)
 }
 
 // ---------------------------------------------------------------- JSON API

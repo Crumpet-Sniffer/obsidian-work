@@ -180,6 +180,28 @@ impl Db {
                  PRAGMA user_version = 3; COMMIT;",
             )?;
         }
+        if version < 4 {
+            // Sources added in the background: one row per batch of uploaded files (see handlers/batches.rs).
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE ingest_batches (
+                     id               TEXT PRIMARY KEY,
+                     vault_id         TEXT NOT NULL,
+                     user_id          INTEGER NOT NULL,
+                     username         TEXT NOT NULL,
+                     status           TEXT NOT NULL,
+                     cancel_requested INTEGER NOT NULL DEFAULT 0,
+                     files            TEXT NOT NULL DEFAULT '[]',
+                     progress         TEXT NOT NULL DEFAULT '{}',
+                     worker_session   TEXT,
+                     created_at       INTEGER NOT NULL,
+                     updated_at       INTEGER NOT NULL
+                 );
+                 CREATE INDEX ingest_batches_vault ON ingest_batches(vault_id, created_at);
+                 CREATE INDEX ingest_batches_status ON ingest_batches(status, created_at);
+                 PRAGMA user_version = 4; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -609,4 +631,209 @@ impl Db {
     pub async fn prune_audit(&self, keep_secs: i64) -> Result<usize> {
         self.call(move |c| c.execute("DELETE FROM audit_log WHERE ts < ?1", [now() - keep_secs])).await
     }
+
+    // ---------------------------------------------------------------- ingest batches
+
+    pub async fn create_batch(&self, id: String, vault_id: String, user_id: i64, username: String) -> Result<()> {
+        self.call(move |c| {
+            let ts = now();
+            c.execute(
+                "INSERT INTO ingest_batches (id, vault_id, user_id, username, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'uploading', ?5, ?5)",
+                params![id, vault_id, user_id, username, ts],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    pub async fn get_batch(&self, id: String) -> Result<Option<BatchRow>> {
+        self.call(move |c| {
+            c.query_row(&format!("SELECT {BATCH_COLS} FROM ingest_batches WHERE id = ?1"), [id], batch_row).optional()
+        })
+        .await
+    }
+
+    /// The most recent batches of a vault, newest first.
+    pub async fn list_batches(&self, vault_id: String, limit: i64) -> Result<Vec<BatchRow>> {
+        self.call(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {BATCH_COLS} FROM ingest_batches WHERE vault_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2"
+            ))?;
+            let rows = st.query_map(params![vault_id, limit], batch_row)?.collect();
+            rows
+        })
+        .await
+    }
+
+    /// Record an uploaded file (as JSON `{name, stored, size}`) on a batch that is still being uploaded.
+    pub async fn add_batch_file(&self, id: String, file: serde_json::Value) -> Result<bool> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let files: Option<String> = tx
+                .query_row("SELECT files FROM ingest_batches WHERE id = ?1 AND status = 'uploading'", [&id], |r| r.get(0))
+                .optional()?;
+            let Some(files) = files else { return Ok(false) };
+            let mut list: Vec<serde_json::Value> = serde_json::from_str(&files).unwrap_or_default();
+            list.push(file);
+            tx.execute(
+                "UPDATE ingest_batches SET files = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, serde_json::Value::Array(list).to_string(), now()],
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
+        .await
+    }
+
+    /// Move a batch from one status to another. False when it was not in `from`.
+    pub async fn set_batch_status(&self, id: String, from: &'static [&'static str], to: &'static str) -> Result<bool> {
+        self.call(move |c| {
+            let marks = from.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(",");
+            let n = c.execute(
+                &format!("UPDATE ingest_batches SET status = ?2, updated_at = ?3 WHERE id = ?1 AND status IN ({marks})"),
+                params![id, to, now()],
+            )?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    pub async fn request_batch_cancel(&self, id: String) -> Result<()> {
+        self.call(move |c| {
+            c.execute("UPDATE ingest_batches SET cancel_requested = 1, updated_at = ?2 WHERE id = ?1", params![id, now()]).map(|_| ())
+        })
+        .await
+    }
+
+    /// Store the worker's progress report; returns whether the batch's owner asked to cancel it.
+    pub async fn set_batch_progress(&self, id: String, progress: String) -> Result<bool> {
+        self.call(move |c| {
+            c.execute(
+                "UPDATE ingest_batches SET progress = ?2, updated_at = ?3 WHERE id = ?1 AND status = 'running'",
+                params![id, progress, now()],
+            )?;
+            let cancel: Option<i64> =
+                c.query_row("SELECT cancel_requested FROM ingest_batches WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+            Ok(cancel.unwrap_or(1) != 0)
+        })
+        .await
+    }
+
+    /// Hand the oldest queued batch to the worker: it becomes `running`, with the hash of the session made for it.
+    pub async fn claim_batch(&self, session_hash: String) -> Result<Option<BatchRow>> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let row = tx
+                .query_row(
+                    &format!("SELECT {BATCH_COLS} FROM ingest_batches WHERE status = 'queued' ORDER BY created_at, rowid LIMIT 1"),
+                    [],
+                    batch_row,
+                )
+                .optional()?;
+            if let Some(r) = &row {
+                tx.execute(
+                    "UPDATE ingest_batches SET status = 'running', worker_session = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![r.id, session_hash, now()],
+                )?;
+            }
+            tx.commit()?;
+            Ok(row)
+        })
+        .await
+    }
+
+    /// End a running batch: final status and progress, and the worker's session is forgotten (returned to delete).
+    pub async fn finish_batch(&self, id: String, status: &'static str, progress: Option<String>) -> Result<Option<String>> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let session: Option<Option<String>> =
+                tx.query_row("SELECT worker_session FROM ingest_batches WHERE id = ?1", [&id], |r| r.get(0)).optional()?;
+            match progress {
+                Some(p) => tx.execute(
+                    "UPDATE ingest_batches SET status = ?2, progress = ?3, worker_session = NULL, updated_at = ?4 WHERE id = ?1",
+                    params![id, status, p, now()],
+                )?,
+                None => tx.execute(
+                    "UPDATE ingest_batches SET status = ?2, worker_session = NULL, updated_at = ?3 WHERE id = ?1",
+                    params![id, status, now()],
+                )?,
+            };
+            tx.commit()?;
+            Ok(session.flatten())
+        })
+        .await
+    }
+
+    /// After a restart: batches that were running go back to the queue (the worker resumes them), and their old
+    /// worker sessions are returned so they can be deleted.
+    pub async fn requeue_running_batches(&self) -> Result<Vec<String>> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let sessions: Vec<String> = {
+                let mut st = tx.prepare("SELECT worker_session FROM ingest_batches WHERE status = 'running' AND worker_session IS NOT NULL")?;
+                let rows = st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+                rows
+            };
+            tx.execute("UPDATE ingest_batches SET status = 'queued', worker_session = NULL, updated_at = ?1 WHERE status = 'running'", [now()])?;
+            tx.commit()?;
+            Ok(sessions)
+        })
+        .await
+    }
+
+    /// Forget finished batches older than `keep_secs`, and abandoned uploads older than a day. Returns their ids.
+    pub async fn prune_batches(&self, keep_secs: i64) -> Result<Vec<String>> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let cutoff = now() - keep_secs;
+            let stale = now() - 86_400;
+            let ids: Vec<String> = {
+                let mut st = tx.prepare(
+                    "SELECT id FROM ingest_batches WHERE (status IN ('done','failed','cancelled') AND updated_at < ?1)
+                        OR (status = 'uploading' AND updated_at < ?2)",
+                )?;
+                let rows = st.query_map(params![cutoff, stale], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+                rows
+            };
+            for id in &ids {
+                tx.execute("DELETE FROM ingest_batches WHERE id = ?1", [id])?;
+            }
+            tx.commit()?;
+            Ok(ids)
+        })
+        .await
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BatchRow {
+    pub id: String,
+    pub vault_id: String,
+    pub user_id: i64,
+    pub username: String,
+    pub status: String,
+    pub cancel_requested: bool,
+    pub files: String,
+    pub progress: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+const BATCH_COLS: &str =
+    "id, vault_id, user_id, username, status, cancel_requested, files, progress, created_at, updated_at";
+
+fn batch_row(r: &rusqlite::Row) -> rusqlite::Result<BatchRow> {
+    Ok(BatchRow {
+        id: r.get(0)?,
+        vault_id: r.get(1)?,
+        user_id: r.get(2)?,
+        username: r.get(3)?,
+        status: r.get(4)?,
+        cancel_requested: r.get::<_, i64>(5)? != 0,
+        files: r.get(6)?,
+        progress: r.get(7)?,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
+    })
 }

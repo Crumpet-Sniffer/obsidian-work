@@ -261,6 +261,7 @@ pub async fn graph_page(
         vault_name: v.name,
         tree_html: idx.tree_html(&v.id, (!focus.is_empty()).then_some(focus.as_str())),
         focus,
+        topics_folder: crate::handlers::ingest::Settings::load(&st.db).await?.topics,
     }))
 }
 

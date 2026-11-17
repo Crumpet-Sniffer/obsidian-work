@@ -16,8 +16,21 @@ export interface Proposal {
   warnings: string[];
 }
 
-const cleanSeg = (s: string) => s.replace(/[\\:*?"<>|#^[\]]/g, "").replace(/\s+/g, " ").trim();
+export const cleanSeg = (s: string) => s.replace(/[\\:*?"<>|#^[\]]/g, "").replace(/\s+/g, " ").trim();
 const lc = (s: string) => s.toLowerCase();
+
+/** A folder from Claude, made safe: cleaned, matched to an existing folder's spelling, never a system folder. */
+export function checkFolder(raw: string, cat: Catalogue, layout: Layout, warnings: string[]): string {
+  let folder = trimFolder(raw).split("/").map(cleanSeg).filter(Boolean).join("/");
+  const known = cat.folders.find((f) => lc(f) === lc(folder));
+  if (known) folder = known;
+  else if (folder && cat.folders.length) warnings.push(`New folder: "${folder}" does not exist yet and will be created.`);
+  if (folder && isSystemPath(folder + "/x", layout)) {
+    warnings.push(`"${folder}" is one of Microsidian's own folders or starts with a dot; the note will go in the vault root instead. Pick a folder below.`);
+    folder = "";
+  }
+  return folder;
+}
 
 /** Keep only phrases that really occur in the document (case-insensitive), at most `max`. */
 export function realPhrases(phrases: string[], doc: string, max = 4): string[] {
@@ -36,14 +49,7 @@ export function validate(a: IngestAnalysis, cat: Catalogue, doc: string, layout:
   const warnings: string[] = [];
 
   // folder
-  let folder = trimFolder(a.folderPath).split("/").map(cleanSeg).filter(Boolean).join("/");
-  const known = cat.folders.find((f) => lc(f) === lc(folder));
-  if (known) folder = known;
-  else if (folder && cat.folders.length) warnings.push(`New folder: "${folder}" does not exist yet and will be created.`);
-  if (folder && isSystemPath(folder + "/x", layout)) {
-    warnings.push(`"${folder}" is one of Microsidian's own folders or starts with a dot; the note will go in the vault root instead. Pick a folder below.`);
-    folder = "";
-  }
+  const folder = checkFolder(a.folderPath, cat, layout, warnings);
 
   // topics
   const byName = new Map(cat.topics.map((t) => [lc(t.name), t.name]));

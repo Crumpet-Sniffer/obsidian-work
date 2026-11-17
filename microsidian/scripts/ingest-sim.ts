@@ -11,6 +11,8 @@ import type { IngestAnalysis } from "../src/ai/schema";
 import { convertOffice } from "../src/convert";
 import { DEFAULT_LAYOUT as L } from "../src/config";
 import { validate } from "../src/ingest/proposal";
+import { checkPlan, fitToPlan, mergeKnownTopics } from "../src/ingest/batch";
+import { fitToBudget } from "../src/ai/plan";
 import { applyIngest, ApplyReport } from "../src/vault/apply";
 import { eol } from "../src/vault/notes";
 import { topicsFromConnections } from "../src/vault/linker";
@@ -208,8 +210,109 @@ async function main() {
     console.log("  warnings:", rE.warnings);
   }
 
+  await batchScenario(realFixture);
+
   console.log(`\n${failures ? "FAILED: " + failures + " check(s)" : "all checks passed"}`);
   process.exitCode = failures ? 1 : 0;
+}
+
+// ---------- F: two documents added together, planned as one batch ----------
+async function batchScenario(realFixture: Set<string>) {
+  console.log("\nF. Budget Review.docx and Retrospective.pptx added together (planned as a batch)");
+  const vF = join(SIM, "f");
+  copyNotes(FIXTURE_VAULT, vF);
+  mkdirSync(join(vF, "Ingest"), { recursive: true });
+  const files = [
+    { id: "D1", fileName: "Budget Review.docx" },
+    { id: "D2", fileName: "Retrospective.pptx" },
+  ];
+  for (const f of files) copyFileSync(join(FIXTURE_ROOT, "samples", f.fileName), join(vF, "Ingest", f.fileName));
+  const io = new NodeIO(vF);
+  const base = await buildCatalogue(io, L);
+  const snap = snapshot(io);
+
+  // Claude's plan (mocked): one new topic shared by both, a new folder for the second document.
+  const plan = checkPlan(
+    {
+      newTopics: [
+        { name: "Lessons learned", theme: "delivery", definition: "What a team takes from finished work into the next piece of work." },
+        { name: "Budget", theme: "Delivery", definition: "Already a topic, so this one is dropped." },
+      ],
+      documents: [
+        { id: "D1", suitable: true, reason: "", folderPath: "projects/alpha", summary: "A review of the Alpha budget.", topics: ["budget", "Lessons learned", "Not a topic"] },
+        { id: "D2", suitable: true, reason: "", folderPath: "Clients/Acme", summary: "A retrospective of the Acme work.", topics: ["Lessons learned", "Risk management"] },
+      ],
+    },
+    base, L, files, (p) => existsSync(join(vF, p)),
+  );
+  check(plan.newTopics.length === 1 && plan.newTopics[0].theme === "Delivery", "plan: the new topic kept (theme matched to the vault's spelling), the duplicate of an existing topic dropped");
+  const d1 = plan.docs.get("D1")!, d2 = plan.docs.get("D2")!;
+  check(d1.folder === "Projects/Alpha" && d1.notePath === "Projects/Alpha/Budget Review", `plan: D1 goes to ${d1.notePath} (existing folder's spelling)`);
+  check(d2.notePath === "Clients/Acme/Retrospective", `plan: D2 goes to ${d2.notePath}`);
+  check(d1.topics.join() === "Budget,Lessons learned", "plan: invented topic names dropped from a document's topics");
+  const cat = plan.catalogue;
+  check(cat.notes.some((n) => n.path === d2.notePath) && cat.topics.some((t) => t.name === "Lessons learned") && cat.folders.includes("Clients/Acme"),
+    "batch catalogue lists the other documents, the planned topic and the planned folder");
+  check(cat.text.includes("## Notes being added now") && cat.text.includes("A retrospective of the Acme work."), "batch catalogue text has the batch section with summaries");
+  check(base.notes.length + 2 === cat.notes.length && base.topics.length + 1 === cat.topics.length, "the vault's own catalogue is left as it was");
+
+  const topicPage = async (name: string) => io.exists(`${L.topics}/${name}.md`);
+
+  // A document the plan left out is still checked against the batch catalogue: a planned topic it uses must be
+  // created (it does not exist yet), and it keeps its own folder.
+  const loose = await fitToPlan(
+    { suitable: true, reason: "", folderPath: "Own/Folder", topics: [{ name: "Lessons learned", phrases: [] }], newTopics: [], related: [], warnings: [] },
+    null, plan, async () => false,
+  );
+  check(loose.newTopics.map((t) => t.name).join() === "Lessons learned" && loose.folderPath === "Own/Folder",
+    "a document left out of the plan still creates the planned topic it uses, and keeps its own folder");
+
+  // D1 first: it links to D2, which is filed after it. Its answer names a different folder and itself.
+  const text1 = await docText(join(FIXTURE_ROOT, "samples", files[0].fileName));
+  let p1 = validate(mergeKnownTopics(analysis({
+    folderPath: "Somewhere/Else",
+    topics: [{ name: "Budget", phrases: [] }, { name: "lessons learned", phrases: [] }],
+    relatedNotes: [{ path: d2.notePath, reason: "Same lessons" }, { path: d1.notePath, reason: "itself" }, { path: "Projects/Alpha/Kickoff", reason: "Same project" }],
+  }), cat), cat, text1, L);
+  p1 = await fitToPlan(p1, d1, plan, topicPage);
+  check(p1.folderPath === "Projects/Alpha", "D1: the planned folder is used, not the one in its own answer");
+  check(!p1.related.some((r) => r.path === d1.notePath) && p1.related.some((r) => r.path === d2.notePath), "D1: no link to itself; the link to D2 (not filed yet) is kept");
+  check(p1.newTopics.map((t) => t.name).join() === "Lessons learned" && p1.topics.map((t) => t.name).join() === "Budget", "D1: the planned topic is created by the first document that uses it");
+  const r1 = await applyIngest(env(io, cat), `Ingest/${files[0].fileName}`, p1);
+  check(r1.notePath === `${d1.notePath}.md`, `D1 filed at the planned path (${r1.notePath})`);
+
+  // D2 gives the planned topic as a "new" topic (in other capitals): it is the same topic.
+  const text2 = await docText(join(FIXTURE_ROOT, "samples", files[1].fileName));
+  let p2 = validate(mergeKnownTopics(analysis({
+    folderPath: "Clients/Acme",
+    topics: [{ name: "Risk management", phrases: [] }],
+    newTopics: [{ name: "Lessons Learned", theme: "Delivery", definition: "x", phrases: [] }],
+    relatedNotes: [{ path: d1.notePath, reason: "Same lessons" }],
+  }), cat), cat, text2, L);
+  p2 = await fitToPlan(p2, d2, plan, topicPage);
+  check(p2.newTopics.length === 0 && p2.topics.map((t) => t.name).sort().join() === "Lessons learned,Risk management", "D2: the planned topic, given as new, is recognised as the same topic and its page is not made twice");
+  const r2 = await applyIngest(env(io, cat), `Ingest/${files[1].fileName}`, p2);
+  check(r2.notePath === `${d2.notePath}.md`, `D2 filed at the planned path (${r2.notePath})`);
+
+  const lessons = read(io, "Topics/Lessons learned.md");
+  check(lessons.includes("[[Projects/Alpha/Budget Review|Budget Review]]") && lessons.includes("[[Clients/Acme/Retrospective|Retrospective]]"), "the planned topic's page lists both documents");
+  check(/- \[\[Topics\/Lessons learned\|Lessons learned\]\]: 2 notes/.test(read(io, "Topics - Index.md")), "Topics index: the planned topic listed once, with 2 notes");
+  check(read(io, r1.notePath).includes("[[Clients/Acme/Retrospective|Retrospective]]: Same lessons"), "D1's note links to D2, filed after it");
+  check(read(io, r2.notePath).includes("[[Projects/Alpha/Budget Review|Budget Review]]: Same lessons"), "D2's note links back to D1");
+  verifyLinks(io, realFixture, [...new Set([...r1.changed, ...r2.changed])], new Set());
+  noLinesLost(io, snap, [...new Set([...r1.changed, ...r2.changed])]);
+
+  // fitting a large batch into one request
+  const big = [
+    { id: "a", fileName: "a", text: "x".repeat(100) },
+    { id: "b", fileName: "b", text: "y".repeat(5_000) },
+    { id: "c", fileName: "c", text: "z".repeat(9_000) },
+  ];
+  const fit = fitToBudget(big, 6_000);
+  const lens = fit.docs.map((d) => d.text.replace(/\n\[The rest.*$/, "").length);
+  check(fit.docs[0].text === big[0].text && fit.shortened.join() === "b,c" && lens[1] === lens[2] && lens.reduce((a, b) => a + b, 0) <= 6_000,
+    `fitToBudget: short documents whole, long ones cut to an equal share (${lens.join(", ")} chars)`);
+  check(fitToBudget(big, 1_000_000).shortened.length === 0, "fitToBudget: nothing cut when the batch fits");
 }
 function readdirSafe(d: string): string[] { return existsSync(d) && statSync(d).isDirectory() ? readdirSync(d) : []; }
 main().catch((e) => { console.error(e); process.exit(1); });

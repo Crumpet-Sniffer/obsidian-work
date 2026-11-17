@@ -462,13 +462,14 @@ async fn import(st: &AppState, zip: &TempFile, vault_id: &str) -> AppResult<vaul
 /// Any account can create a vault: empty, or from a zip of an existing one.
 pub async fn new_vault_form(State(st): State<AppState>, user: CurrentUser) -> AppResult {
     let configured = ingest::Settings::load(&st.db).await?.api_key.is_some();
-    Ok(render(&VaultNewPage {
+    let res = render(&VaultNewPage {
         page: PageCtx::for_user(&user),
         csrf: user.csrf.clone(),
         max_upload_mb: st.cfg.max_upload_bytes / 1024 / 1024,
         configured,
         is_admin: user.is_admin,
-    }))
+    });
+    Ok(res)
 }
 
 pub async fn create_vault(

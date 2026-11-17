@@ -5,3 +5,7 @@ deploy/dist/
 deploy/build/
 deploy/*.spec
 deploy/known_hosts.txt
+
+# OCR models and .wasm fetched for local runs (viewer/fetch-ocr.mjs); the Docker build downloads its own.
+vault-share/ocr/*.onnx
+vault-share/ocr/*.wasm

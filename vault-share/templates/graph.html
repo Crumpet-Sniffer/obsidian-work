@@ -24,7 +24,7 @@
       <span class="icon-btn spacer"></span>
     </div>
     <div class="view-content graph-view">
-      <section class="graph-wrap" data-graph data-src="/v/{{ vault_id }}/graph.json" data-focus="{{ focus }}">
+      <section class="graph-wrap" data-graph data-src="/v/{{ vault_id }}/graph.json" data-focus="{{ focus }}" data-topics="{{ topics_folder }}">
         <canvas role="img" aria-label="Graph of links between notes in {{ vault_name }}. Use the file list to navigate by keyboard."></canvas>
         <div class="graph-controls" data-graph-panel>
           <details class="gc-sec" open>
@@ -41,7 +41,7 @@
           <details class="gc-sec"><summary>Groups</summary><div class="gc-body">
             <div class="groups-list" data-groups-list></div>
             <button type="button" class="mod-cta group-add" data-group-add>New group</button>
-            <p class="muted small">Colour notes by search: plain text, <code>path:Topics</code> or <code>file:lesson</code>.</p>
+            <p class="muted small">Colour files by folder, file type, name, topic or search. The eye hides a group's files from the graph.</p>
           </div></details>
           <details class="gc-sec"><summary>Display</summary><div class="gc-body">
             <label class="toggle-row"><span>Arrows</span><input type="checkbox" class="switch" data-display-toggle="arrows"></label>
