@@ -25,6 +25,9 @@ COPY worker/package.json worker/package-lock.json ./
 RUN ONNXRUNTIME_NODE_INSTALL=skip npm ci --omit=dev --no-audit --no-fund \
  && rm -rf node_modules/onnxruntime-node/bin/napi-v*/darwin node_modules/onnxruntime-node/bin/napi-v*/win32
 COPY worker/worker.mjs ./
+# The app runs as an unprivileged user, and COPY keeps the checkout's modes (root-only when it was cloned with
+# sudo): make the worker readable by everyone.
+RUN chmod -R a+rX /worker
 
 # ---------- OCR files ----------
 # Read by the ingest worker. PaddleOCR PP-OCRv6 small, PaddlePaddle's own ONNX exports (Apache-2.0), pinned and
