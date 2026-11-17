@@ -297,24 +297,55 @@ const handoff = {
     jobsEl.prepend(li);
   }
 
-  // Upload one file of a batch, reporting bytes sent. XMLHttpRequest, because fetch cannot report upload progress.
-  function sendFile(bid, file, onSent) {
+  // Files go up in pieces of this size, so no request is over the 100 MB a proxy in front of the site may accept
+  // (Cloudflare's free plan). The server joins them up.
+  const CHUNK = 64 * 1024 * 1024;
+
+  // One piece of a file. XMLHttpRequest, because fetch cannot report upload progress.
+  function sendChunk(bid, file, offset, onSent) {
     return new Promise((resolve, reject) => {
+      const end = Math.min(offset + CHUNK, file.size);
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${base}/api/ingest/batches/${bid}/files`);
       xhr.setRequestHeader("X-CSRF-Token", csrf);
-      xhr.upload.onprogress = (e) => onSent(e.loaded);
+      xhr.setRequestHeader("X-Upload-Name", encodeURIComponent(file.name));
+      xhr.setRequestHeader("X-Upload-Size", String(file.size));
+      xhr.setRequestHeader("X-Upload-Offset", String(offset));
+      xhr.upload.onprogress = (e) => onSent(offset + Math.min(e.loaded, end - offset));
       xhr.onload = () => {
         let data = null;
         try { data = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
         if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+        else if (xhr.status === 409 && data && typeof data.received === "number") resolve({ received: data.received, resync: true });
+        else if (xhr.status === 413) reject(new ApiError(413, (data && data.error) || "This file is too large for the server or the connection to it."));
         else reject(new ApiError(xhr.status, (data && data.error) || `The server answered ${xhr.status}.`));
       };
-      xhr.onerror = () => reject(new Error("The upload was interrupted. Check your connection and try again."));
+      xhr.onerror = () => reject(Object.assign(new Error("The upload was interrupted. Check your connection and try again."), { network: true }));
       const form = new FormData();
-      form.append("file", file, file.name);
+      form.append("chunk", file.slice(offset, end), "chunk");
       xhr.send(form);
     });
+  }
+
+  // Upload one file of a batch in pieces, reporting bytes sent. A piece lost to the network is sent again (up to
+  // three times in a row); if the server already has more or less of the file, carry on from where it is.
+  async function sendFile(bid, file, onSent) {
+    let offset = 0;
+    let failures = 0;
+    for (;;) {
+      let r;
+      try {
+        r = await sendChunk(bid, file, offset, onSent);
+      } catch (e) {
+        if (!e.network || ++failures > 3) throw e;
+        await new Promise((ok) => setTimeout(ok, 2000 * failures));
+        continue;
+      }
+      failures = 0;
+      offset = r.received;
+      onSent(offset);
+      if (offset >= file.size && !r.resync) return r;
+    }
   }
 
   async function enqueue(files) {
@@ -381,6 +412,7 @@ const handoff = {
     // Uploading (this page's own count, or done once the server has the batch)
     if (up) out.push({ label: `Uploading ${up.names.length} file${up.names.length === 1 ? "" : "s"} to the server`, state: "working", frac: up.total ? up.sent / up.total : 0, count: `${mb(up.sent)} of ${mb(up.total)}` });
     else if (b.status === "uploading") out.push({ label: "Uploading the files to the server", state: "working", frac: null, count: "", note: `Being uploaded by ${b.by} from another page` });
+    else if (!b.files.length) out.push({ label: "The files were not uploaded", state: "failed", frac: 0, count: "" });
     else out.push({ label: `Uploaded ${b.files.length} file${b.files.length === 1 ? "" : "s"}`, state: "done", frac: 1, count: "Done" });
     if (b.status === "uploading" || b.status === "queued" || !s.read) {
       for (const label of ["Reading the files and the text in their pictures", "Claude plans the batch and connects each file, then it is filed"]) {

@@ -100,7 +100,19 @@ pub async fn create(State(st): State<AppState>, user: CurrentUser, Path(id): Pat
     ok(json!({ "id": bid }))
 }
 
-/// One file of a batch, as a multipart field named `file`. Written straight to disk as it arrives.
+/// Largest piece of a file one request may carry. The browser sends pieces of 64 MB, so a request stays under the
+/// 100 MB a proxy in front of the site may accept (Cloudflare's free plan), like the chunked vault upload.
+const MAX_CHUNK: u64 = 96 * 1024 * 1024;
+
+fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// One piece of one file of a batch: the multipart field `chunk`, with the file's name (`X-Upload-Name`,
+/// percent-encoded), its total size (`X-Upload-Size`) and where this piece starts (`X-Upload-Offset`). Pieces are
+/// appended to a part file as they arrive; a piece that does not start where the part file ends is refused with
+/// 409 and the size received so far, so the browser can carry on from there. When the last piece is in, the file
+/// is checked and added to the batch.
 pub async fn upload(
     State(st): State<AppState>,
     user: CurrentUser,
@@ -118,53 +130,87 @@ pub async fn upload(
     if count >= MAX_FILES {
         return Err(ApiErr::Bad(format!("A batch can have at most {MAX_FILES} files. Put the rest in a zip, or add them as another batch.")));
     }
+    let raw_name = header_str(&headers, "x-upload-name").unwrap_or("");
+    let decoded = percent_encoding::percent_decode_str(raw_name).decode_utf8_lossy();
+    let name = clean_name(&decoded).ok_or_else(|| ApiErr::Bad("Only .docx, .pptx and .zip files can be added.".into()))?;
+    let total: u64 = header_str(&headers, "x-upload-size").and_then(|v| v.parse().ok()).ok_or_else(|| ApiErr::Bad("Missing file size.".into()))?;
+    let offset: u64 = header_str(&headers, "x-upload-offset").and_then(|v| v.parse().ok()).ok_or_else(|| ApiErr::Bad("Missing upload offset.".into()))?;
+    let lower = name.to_ascii_lowercase();
+    let is_zip = lower.ends_with(".zip");
+    let limit = if is_zip { st.cfg.max_upload_bytes } else { st.cfg.max_file_bytes };
+    if total == 0 {
+        return Err(ApiErr::Bad(format!("{name} is empty.")));
+    }
+    if total > limit {
+        return Err(ApiErr::TooLarge(format!("{name} is too large: files can be at most {} MB.", limit / 1024 / 1024)));
+    }
+
+    let dir = batch_dir(&st, &bid);
+    let part = dir.join("upload.part");
+    let have = if offset == 0 { 0 } else { tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0) };
+    if offset != have {
+        // The last piece arrived but its answer was lost, and the browser is sending it again: the file is already
+        // complete (it is the batch's latest file and no part file is left), so say so instead of starting over.
+        let files = serde_json::from_str::<Vec<Value>>(&b.files).unwrap_or_default();
+        let done = files.last().is_some_and(|f| f.get("name").and_then(Value::as_str) == Some(name.as_str()) && f.get("size").and_then(Value::as_u64) == Some(total));
+        if done && have == 0 && offset > 0 {
+            return ok(json!({ "received": total, "name": name, "size": total }));
+        }
+        return Err(ApiErr::Conflict(json!({ "error": "The upload is out of step.", "received": have })));
+    }
+    let mut out = if offset == 0 {
+        tokio::fs::File::create(&part).await
+    } else {
+        tokio::fs::OpenOptions::new().append(true).open(&part).await
+    }
+    .map_err(|e| ApiErr::Internal(e.into()))?;
+
     let interrupted = || ApiErr::Bad("The upload was interrupted.".into());
+    let mut got: u64 = 0;
+    let mut found = false;
     while let Some(mut field) = mp.next_field().await.map_err(|_| interrupted())? {
-        if field.name() != Some("file") {
+        if field.name() != Some("chunk") {
             continue;
         }
-        let name = clean_name(field.file_name().unwrap_or(""))
-            .ok_or_else(|| ApiErr::Bad("Only .docx, .pptx and .zip files can be added.".into()))?;
-        let is_zip = name.to_ascii_lowercase().ends_with(".zip");
-        let limit = if is_zip { st.cfg.max_upload_bytes } else { st.cfg.max_file_bytes };
-        let stored = format!("{count:04}{}", if is_zip { ".zip" } else if name.to_ascii_lowercase().ends_with(".docx") { ".docx" } else { ".pptx" });
-        let path = batch_dir(&st, &bid).join(&stored);
-        let mut out = tokio::fs::File::create(&path).await.map_err(|e| ApiErr::Internal(e.into()))?;
-        let mut size: u64 = 0;
-        let mut head: Vec<u8> = Vec::with_capacity(4);
-        let result: Result<(), ApiErr> = async {
-            while let Some(piece) = field.chunk().await.map_err(|_| interrupted())? {
-                size += piece.len() as u64;
-                if size > limit {
-                    return Err(ApiErr::TooLarge(format!("{name} is too large: files can be at most {} MB.", limit / 1024 / 1024)));
-                }
-                if head.len() < 4 {
-                    head.extend(piece.iter().take(4 - head.len()));
-                }
-                out.write_all(&piece).await.map_err(|e| ApiErr::Internal(e.into()))?;
+        found = true;
+        while let Some(piece) = field.chunk().await.map_err(|_| interrupted())? {
+            got += piece.len() as u64;
+            if got > MAX_CHUNK || offset + got > total {
+                drop(out);
+                let _ = tokio::fs::remove_file(&part).await;
+                return Err(ApiErr::Bad("That piece of the upload is larger than expected.".into()));
             }
-            out.flush().await.map_err(|e| ApiErr::Internal(e.into()))?;
-            if size == 0 {
-                return Err(ApiErr::Bad(format!("{name} is empty.")));
-            }
-            if head != b"PK\x03\x04" {
-                return Err(ApiErr::Bad(format!("{name} is not a Word, PowerPoint or zip file.")));
-            }
-            Ok(())
+            out.write_all(&piece).await.map_err(|e| ApiErr::Internal(e.into()))?;
         }
-        .await;
-        if let Err(e) = result {
-            drop(out);
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(e);
-        }
-        if !st.db.add_batch_file(bid.clone(), json!({ "name": name, "stored": stored, "size": size })).await? {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(ApiErr::Bad("This batch has already started.".into()));
-        }
-        return ok(json!({ "name": name, "size": size }));
     }
-    Err(ApiErr::Bad("No file was sent.".into()))
+    out.flush().await.map_err(|e| ApiErr::Internal(e.into()))?;
+    drop(out);
+    if !found {
+        return Err(ApiErr::Bad("No file was sent.".into()));
+    }
+    let received = offset + got;
+    if received < total {
+        return ok(json!({ "received": received }));
+    }
+
+    // The whole file is in: check it is a zip container (Word, PowerPoint and zips all are), then keep it.
+    let mut head = [0u8; 4];
+    let is_pk = match tokio::fs::File::open(&part).await {
+        Ok(mut f) => tokio::io::AsyncReadExt::read_exact(&mut f, &mut head).await.is_ok() && &head == b"PK\x03\x04",
+        Err(_) => false,
+    };
+    if !is_pk {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(ApiErr::Bad(format!("{name} is not a Word, PowerPoint or zip file.")));
+    }
+    let ext = if is_zip { ".zip" } else if lower.ends_with(".docx") { ".docx" } else { ".pptx" };
+    let stored = format!("{count:04}{ext}");
+    tokio::fs::rename(&part, dir.join(&stored)).await.map_err(|e| ApiErr::Internal(e.into()))?;
+    if !st.db.add_batch_file(bid.clone(), json!({ "name": name, "stored": stored, "size": total })).await? {
+        let _ = tokio::fs::remove_file(dir.join(&stored)).await;
+        return Err(ApiErr::Bad("This batch has already started.".into()));
+    }
+    ok(json!({ "received": received, "name": name, "size": total }))
 }
 
 /// All files are uploaded: queue the batch for the worker.
