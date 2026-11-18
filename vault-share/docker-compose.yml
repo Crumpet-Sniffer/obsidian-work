@@ -41,7 +41,7 @@ services:
         limits:
           cpus: "2"
           # The ingest worker (OCR, big zips of slides) needs well over 1 GB: at 1g it is killed mid-batch.
-          memory: 4g
+          memory: 12g
     logging:
       driver: json-file
       options:
