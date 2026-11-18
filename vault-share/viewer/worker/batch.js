@@ -92,13 +92,17 @@ export async function runBatch(claim) {
         p.files.push(row);
         try {
           const zip = await JSZip.loadAsync(await readFile(f.path));
+          // Some tools (Windows PowerShell's Compress-Archive, older Windows zippers) write folder separators as
+          // backslashes, so names are normalised before looking at folders and file names.
           const entries = Object.values(zip.files)
-            .filter((e) => !e.dir && OFFICE.test(e.name) && !basename(e.name).startsWith("~$") && !e.name.split("/").some((s) => s.startsWith(".") || s === "__MACOSX"))
-            .sort((a, b) => a.name.localeCompare(b.name));
+            .map((e) => ({ e, path: e.name.replace(/\\/g, "/") }))
+            .filter(({ e, path }) => !e.dir && !path.endsWith("/") && OFFICE.test(path) && !basename(path).startsWith("~$") && !path.split("/").some((s) => s.startsWith(".") || s === "__MACOSX"))
+            .sort((a, b) => a.path.localeCompare(b.path));
           if (!entries.length) Object.assign(row, { state: "failed", text: "Not added: no .docx or .pptx files were found in this zip." });
           else Object.assign(row, { state: "done", text: `${entries.length} file${entries.length === 1 ? "" : "s"} found` });
-          for (const e of entries) sources.push({ key: `${i}:${e.name}`, name: basename(e.name), title: e.name, get: () => e.async("uint8array") });
-        } catch {
+          for (const { e, path } of entries) sources.push({ key: `${i}:${path}`, name: basename(path), title: path, get: () => e.async("uint8array") });
+        } catch (err) {
+          console.warn(`could not open zip ${f.name}: ${err && err.stack ? err.stack : err}`);
           Object.assign(row, { state: "failed", text: "Not added: this zip could not be opened." });
         }
       } else {

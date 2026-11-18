@@ -96390,11 +96390,12 @@ async function runBatch(claim) {
         p.files.push(row);
         try {
           const zip = await import_jszip2.default.loadAsync(await readFile3(f.path));
-          const entries = Object.values(zip.files).filter((e) => !e.dir && OFFICE.test(e.name) && !basename3(e.name).startsWith("~$") && !e.name.split("/").some((s) => s.startsWith(".") || s === "__MACOSX")).sort((a, b) => a.name.localeCompare(b.name));
+          const entries = Object.values(zip.files).map((e) => ({ e, path: e.name.replace(/\\/g, "/") })).filter(({ e, path: path4 }) => !e.dir && !path4.endsWith("/") && OFFICE.test(path4) && !basename3(path4).startsWith("~$") && !path4.split("/").some((s) => s.startsWith(".") || s === "__MACOSX")).sort((a, b) => a.path.localeCompare(b.path));
           if (!entries.length) Object.assign(row, { state: "failed", text: "Not added: no .docx or .pptx files were found in this zip." });
           else Object.assign(row, { state: "done", text: `${entries.length} file${entries.length === 1 ? "" : "s"} found` });
-          for (const e of entries) sources.push({ key: `${i}:${e.name}`, name: basename3(e.name), title: e.name, get: () => e.async("uint8array") });
-        } catch {
+          for (const { e, path: path4 } of entries) sources.push({ key: `${i}:${path4}`, name: basename3(path4), title: path4, get: () => e.async("uint8array") });
+        } catch (err) {
+          console.warn(`could not open zip ${f.name}: ${err && err.stack ? err.stack : err}`);
           Object.assign(row, { state: "failed", text: "Not added: this zip could not be opened." });
         }
       } else {
