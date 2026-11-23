@@ -5,3 +5,4 @@ pub mod edit;
 pub mod ingest;
 pub mod batches;
 pub mod graph;
+pub mod practice;

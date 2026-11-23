@@ -25,14 +25,14 @@ const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
 const basename = (p) => p.split("/").pop();
 const extOf = (p) => (p.includes(".") ? p.slice(p.lastIndexOf(".") + 1).toLowerCase() : "");
 /** Word and PowerPoint by Microsidian's converter, PDFs by pdf.js: the same result either way. */
-const convertSource = (bytes, name, opts) => (extOf(name) === "pdf" ? convertPdf(bytes, opts) : convertOffice(bytes, extOf(name), opts));
+export const convertSource = (bytes, name, opts) => (extOf(name) === "pdf" ? convertPdf(bytes, opts) : convertOffice(bytes, extOf(name), opts));
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-class Cancelled extends Error {
+export class Cancelled extends Error {
   constructor() { super("Cancelled"); this.name = "Cancelled"; }
 }
 
-function explain(e) {
+export function explain(e) {
   if (e instanceof ApiError) return e.message;
   if (e && e.status === 401) return "The Anthropic API key is missing or was rejected. An admin can fix it under Admin → Microsidian.";
   return explainError(e).replace("in the plugin settings", "under Admin → Microsidian");
@@ -40,7 +40,7 @@ function explain(e) {
 
 // Sends the batch's progress to the server: at most every 1.5 seconds, at once when forced, and every 5 seconds
 // while a long step is running (so the page's clock keeps going). The answer says whether to stop.
-class Reporter {
+export class Reporter {
   constructor(id, progress) {
     this.id = id;
     this.p = progress;
@@ -243,7 +243,7 @@ export async function runBatch(claim) {
   await rep.finish(status);
 }
 
-const convertOptions = (cfg) => ({ imageMinBytes: cfg.imageMinKB * 1000, isLogo: () => false, attachmentsDir: cfg.layout.attachments });
+export const convertOptions = (cfg) => ({ imageMinBytes: cfg.imageMinKB * 1000, isLogo: () => false, attachmentsDir: cfg.layout.attachments });
 
 const imageCfg = (cfg) => cfg.images || { mode: "ocr", model: "", parallel: 4 };
 const picturesDirect = (cfg) => imageCfg(cfg).mode === "claude" && !imageCfg(cfg).model;
@@ -253,7 +253,7 @@ const picturesDirect = (cfg) => imageCfg(cfg).mode === "claude" && !imageCfg(cfg
  * readings (a Map of path -> { text, description }), how many could not be read, and why reading failed
  * altogether, if it did. When the filing model is to be shown the pictures itself, nothing is read here.
  */
-async function readPictures(images, s, cfg, session, set, onFraction, check) {
+export async function readPictures(images, s, cfg, session, set, onFraction, check) {
   const ic = imageCfg(cfg);
   const readings = new Map();
   if (!images.length) return { readings, failed: 0, error: "", how: "" };

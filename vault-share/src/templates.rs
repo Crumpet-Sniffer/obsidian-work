@@ -48,6 +48,7 @@ pub fn asset_version() -> &'static str {
             include_str!("../static/mermaid.js"),
             include_str!("../static/editor.js"),
             include_str!("../static/ingest.js"),
+            include_str!("../static/practice.js"),
         ] {
             h.update(f.as_bytes());
         }
@@ -290,6 +291,18 @@ pub struct PromptView {
 #[derive(Template)]
 #[template(path = "sources.html")]
 pub struct SourcesPage {
+    pub page: PageCtx,
+    pub csrf: String,
+    pub vault_id: String,
+    pub vault_name: String,
+    pub configured: bool,
+    pub is_admin: bool,
+    pub max_file_mb: u64,
+}
+
+#[derive(Template)]
+#[template(path = "practice.html")]
+pub struct PracticePage {
     pub page: PageCtx,
     pub csrf: String,
     pub vault_id: String,

@@ -2,6 +2,7 @@
 // OCR_DIR. It asks the server for the next batch of uploaded sources every few seconds, files it, and reports
 // progress as it goes. One batch at a time; batches wait in the server's queue.
 import { runBatch } from "./batch.js";
+import { runPaper } from "./paper.js";
 import { internal } from "./server.js";
 
 const IDLE_MS = 3000;
@@ -27,10 +28,11 @@ while (!stopping) {
     await sleep(IDLE_MS);
     continue;
   }
-  console.log(`batch ${claim.id}: ${claim.files.length} upload(s)`);
+  console.log(`${claim.kind === "paper" ? "past paper" : "batch"} ${claim.id}: ${claim.files.length} upload(s)`);
   const t0 = Date.now();
   try {
-    await runBatch(claim);
+    if (claim.kind === "paper") await runPaper(claim);
+    else await runBatch(claim);
   } catch (e) {
     // runBatch reports its own failures; this is only reached if even that report could not be sent.
     console.error(`batch ${claim.id}: ${e && e.stack ? e.stack : e}`);

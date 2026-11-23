@@ -86,6 +86,43 @@ pub async fn dashboard(
         .collect();
     let s = ingest::Settings::load(&st.db).await?;
     let (file_prompt, plan_prompt, image_prompt) = (s.file_prompt().to_string(), s.plan_prompt().to_string(), s.image_prompt().to_string());
+    let practice_prompts = vec![
+            PromptView {
+                field: "prompt_extract".into(),
+                label: "Reading a past paper".into(),
+                help: "Used for the question hub: turns an uploaded exam paper and its mark scheme into separate questions with their marks, type, topics and mark scheme.".into(),
+                custom: !s.prompt_extract.trim().is_empty(),
+                text: s.extract_prompt().to_string(),
+            },
+            PromptView {
+                field: "prompt_generate".into(),
+                label: "Writing practice questions".into(),
+                help: "Writes quiz and sample exam questions from the chosen topics' notes, in the style of the past papers in the question hub.".into(),
+                custom: !s.prompt_generate.trim().is_empty(),
+                text: s.generate_prompt().to_string(),
+            },
+            PromptView {
+                field: "prompt_mark".into(),
+                label: "Marking a written answer".into(),
+                help: "Marks each written answer against its mark scheme, with feedback and a model answer.".into(),
+                custom: !s.prompt_mark.trim().is_empty(),
+                text: s.mark_prompt().to_string(),
+            },
+            PromptView {
+                field: "prompt_cards".into(),
+                label: "Writing flashcards".into(),
+                help: "Writes flashcard decks from the chosen topics' notes.".into(),
+                custom: !s.prompt_cards.trim().is_empty(),
+                text: s.cards_prompt().to_string(),
+            },
+            PromptView {
+                field: "prompt_coach".into(),
+                label: "Exam coach".into(),
+                help: "The coach students chat with on the Practice page; it is given a summary of their results.".into(),
+                custom: !s.prompt_coach.trim().is_empty(),
+                text: s.coach_prompt().to_string(),
+            },
+    ];
     let ms = MsView {
         key_set: s.api_key.is_some(),
         key_from_env: s.api_key.is_some() && !s.key_saved,
@@ -151,7 +188,10 @@ pub async fn dashboard(
                 custom: !s.prompt_image.trim().is_empty(),
                 text: image_prompt.clone(),
             },
-        ],
+        ]
+        .into_iter()
+        .chain(practice_prompts)
+        .collect(),
     };
     let spend = crate::spend::view(&st.db, ingest::usd_gbp(&st.db).await?).await?;
     Ok(render(&AdminPage { page: PageCtx::for_user(&user), csrf: user.csrf.clone(), users, vaults, audit, ms, spend }))

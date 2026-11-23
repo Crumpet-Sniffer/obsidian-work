@@ -90,6 +90,11 @@ pub struct Settings {
     pub prompt_file: String,
     pub prompt_plan: String,
     pub prompt_image: String,
+    pub prompt_extract: String,
+    pub prompt_generate: String,
+    pub prompt_mark: String,
+    pub prompt_cards: String,
+    pub prompt_coach: String,
 }
 
 /// A saved prompt, or the default when none is saved.
@@ -106,6 +111,21 @@ impl Settings {
     }
     pub fn image_prompt(&self) -> &str {
         or_default(&self.prompt_image, crate::prompts::IMAGE)
+    }
+    pub fn extract_prompt(&self) -> &str {
+        or_default(&self.prompt_extract, crate::prompts::EXTRACT)
+    }
+    pub fn generate_prompt(&self) -> &str {
+        or_default(&self.prompt_generate, crate::prompts::GENERATE)
+    }
+    pub fn mark_prompt(&self) -> &str {
+        or_default(&self.prompt_mark, crate::prompts::MARK)
+    }
+    pub fn cards_prompt(&self) -> &str {
+        or_default(&self.prompt_cards, crate::prompts::CARDS)
+    }
+    pub fn coach_prompt(&self) -> &str {
+        or_default(&self.prompt_coach, crate::prompts::COACH)
     }
 
     pub async fn load(db: &Db) -> anyhow::Result<Self> {
@@ -138,6 +158,11 @@ impl Settings {
             prompt_file: get("ms.prompt_file", ""),
             prompt_plan: get("ms.prompt_plan", ""),
             prompt_image: get("ms.prompt_image", ""),
+            prompt_extract: get("ms.prompt_extract", ""),
+            prompt_generate: get("ms.prompt_generate", ""),
+            prompt_mark: get("ms.prompt_mark", ""),
+            prompt_cards: get("ms.prompt_cards", ""),
+            prompt_coach: get("ms.prompt_coach", ""),
         })
     }
 
@@ -191,6 +216,21 @@ pub struct SettingsForm {
     reset_prompt_file: Option<String>,
     reset_prompt_plan: Option<String>,
     reset_prompt_image: Option<String>,
+    #[serde(default)]
+    prompt_extract: String,
+    reset_prompt_extract: Option<String>,
+    #[serde(default)]
+    prompt_generate: String,
+    reset_prompt_generate: Option<String>,
+    #[serde(default)]
+    prompt_mark: String,
+    reset_prompt_mark: Option<String>,
+    #[serde(default)]
+    prompt_cards: String,
+    reset_prompt_cards: Option<String>,
+    #[serde(default)]
+    prompt_coach: String,
+    reset_prompt_coach: Option<String>,
 }
 
 /// A prompt as typed: Windows line ends made plain, control characters dropped. The default itself (or nothing, or
@@ -256,7 +296,21 @@ pub async fn save_settings(
     let prompt_file = clean_prompt(&f.prompt_file, crate::prompts::FILE, f.reset_prompt_file.is_some())?;
     let prompt_plan = clean_prompt(&f.prompt_plan, crate::prompts::PLAN, f.reset_prompt_plan.is_some())?;
     let prompt_image = clean_prompt(&f.prompt_image, crate::prompts::IMAGE, f.reset_prompt_image.is_some())?;
-    let custom: Vec<&str> = [("filing", &prompt_file), ("planning", &prompt_plan), ("pictures", &prompt_image)]
+    let prompt_extract = clean_prompt(&f.prompt_extract, crate::prompts::EXTRACT, f.reset_prompt_extract.is_some())?;
+    let prompt_generate = clean_prompt(&f.prompt_generate, crate::prompts::GENERATE, f.reset_prompt_generate.is_some())?;
+    let prompt_mark = clean_prompt(&f.prompt_mark, crate::prompts::MARK, f.reset_prompt_mark.is_some())?;
+    let prompt_cards = clean_prompt(&f.prompt_cards, crate::prompts::CARDS, f.reset_prompt_cards.is_some())?;
+    let prompt_coach = clean_prompt(&f.prompt_coach, crate::prompts::COACH, f.reset_prompt_coach.is_some())?;
+    let custom: Vec<&str> = [
+        ("filing", &prompt_file),
+        ("planning", &prompt_plan),
+        ("pictures", &prompt_image),
+        ("past papers", &prompt_extract),
+        ("question writing", &prompt_generate),
+        ("marking", &prompt_mark),
+        ("flashcards", &prompt_cards),
+        ("exam coach", &prompt_coach),
+    ]
         .iter()
         .filter(|(_, p)| !p.is_empty())
         .map(|(n, _)| *n)
@@ -282,6 +336,11 @@ pub async fn save_settings(
         ("ms.prompt_file", prompt_file),
         ("ms.prompt_plan", prompt_plan),
         ("ms.prompt_image", prompt_image),
+        ("ms.prompt_extract", prompt_extract),
+        ("ms.prompt_generate", prompt_generate),
+        ("ms.prompt_mark", prompt_mark),
+        ("ms.prompt_cards", prompt_cards),
+        ("ms.prompt_coach", prompt_coach),
     ];
     let new_key = f.api_key.trim().to_string();
     let mut key_change = "unchanged";
@@ -486,7 +545,7 @@ pub async fn config(State(st): State<AppState>, user: CurrentUser, Path(id): Pat
             "model": if s.image_mode == "claude" { s.image_model.clone() } else { String::new() },
             "parallel": s.image_parallel,
         },
-        "prompts": { "file": s.file_prompt(), "plan": s.plan_prompt(), "image": s.image_prompt() },
+        "prompts": { "file": s.file_prompt(), "plan": s.plan_prompt(), "image": s.image_prompt(), "extract": s.extract_prompt() },
         "updateFolderIndexes": s.folder_indexes,
         "maxFileBytes": st.cfg.max_file_bytes,
     }))
@@ -566,7 +625,7 @@ fn api_error(status: StatusCode, kind: &str, message: &str) -> Response {
     (status, [(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
 }
 
-fn allow_call(st: &AppState, user_id: i64, image: bool) -> bool {
+pub(crate) fn allow_call(st: &AppState, user_id: i64, image: bool) -> bool {
     let (map, limit) = if image { (&st.image_calls, IMAGE_CALLS_PER_HOUR) } else { (&st.ingest_calls, CALLS_PER_HOUR) };
     let mut calls = map.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
@@ -584,7 +643,7 @@ fn allow_call(st: &AppState, user_id: i64, image: bool) -> bool {
 }
 
 /// Where the Anthropic API is. ANTHROPIC_BASE_URL overrides it (a gateway, or a mock server in tests).
-fn api_base() -> String {
+pub(crate) fn api_base() -> String {
     std::env::var("ANTHROPIC_BASE_URL")
         .ok()
         .map(|u| u.trim().trim_end_matches('/').to_string())

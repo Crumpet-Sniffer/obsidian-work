@@ -6,6 +6,7 @@ mod graph;
 mod handlers;
 mod markdown;
 mod security;
+mod practice;
 mod prompts;
 mod spend;
 mod stats;
@@ -33,7 +34,7 @@ use axum::{
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-use handlers::{admin, auth as auth_h, edit, graph as graph_h, ingest, vaults};
+use handlers::{admin, auth as auth_h, edit, graph as graph_h, ingest, practice as practice_h, vaults};
 
 pub struct AppInner {
     pub cfg: config::Config,
@@ -172,6 +173,8 @@ fn router(state: AppState) -> Router {
     // The call to Claude can take minutes at high effort, so it has no short timeout.
     let claude = Router::new()
         .route("/v/{id}/api/ingest/claude", post(ingest::claude))
+        // The exam coach waits for Claude's reply.
+        .route("/v/{id}/api/practice/coach", get(practice_h::coach).post(practice_h::coach_send))
         // Pictures shown to the filing model travel in the request (Anthropic takes at most 32 MB).
         .layer(DefaultBodyLimit::max(34 * 1024 * 1024));
 
@@ -203,6 +206,18 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/graph/presets", post(graph_h::save_preset))
         .route("/v/{id}/api/graph/presets/{pid}", axum::routing::delete(graph_h::delete_preset))
         .route("/api/stats", get(stats::stats))
+        .route("/v/{id}/api/practice/meta", get(practice_h::meta))
+        .route("/v/{id}/api/practice/hub", get(practice_h::hub))
+        .route("/v/{id}/api/practice/papers", post(practice_h::add_paper))
+        .route("/v/{id}/api/practice/papers/{pid}", axum::routing::delete(practice_h::delete_paper))
+        .route("/v/{id}/api/practice/generate", post(practice_h::generate))
+        .route("/v/{id}/api/practice/sessions", get(practice_h::sessions).post(practice_h::from_hub))
+        .route("/v/{id}/api/practice/sessions/{sid}", get(practice_h::session))
+        .route("/v/{id}/api/practice/sessions/{sid}/submit", post(practice_h::submit))
+        .route("/v/{id}/api/practice/decks", get(practice_h::decks).post(practice_h::make_deck))
+        .route("/v/{id}/api/practice/decks/{did}", get(practice_h::deck).delete(practice_h::delete_deck))
+        .route("/v/{id}/api/practice/decks/{did}/progress", axum::routing::put(practice_h::deck_progress))
+        .route("/v/{id}/api/practice/coach/clear", post(practice_h::coach_clear))
         .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)));
 
@@ -215,6 +230,7 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/search", get(vaults::search))
         .route("/v/{id}/new-tab", get(vaults::new_tab))
         .route("/v/{id}/sources", get(ingest::sources_page))
+        .route("/v/{id}/practice", get(practice_h::page))
         .route("/vaults/new", get(admin::new_vault_form))
         .route("/admin/microsidian", post(ingest::save_settings))
         .route("/admin/spend-rate", post(ingest::save_rate))
@@ -252,6 +268,7 @@ fn router(state: AppState) -> Router {
         .route("/static/app.js", get(static_js))
         .route("/static/graph.js", get(static_graph_js))
         .route("/static/ingest.js", get(static_ingest_js))
+        .route("/static/practice.js", get(static_practice_js))
         .route("/favicon.svg", get(favicon))
         .route("/robots.txt", get(|| async { "User-agent: *\nDisallow: /\n" }))
         .fallback(|| async { errors::AppError::NotFound })
@@ -331,6 +348,13 @@ async fn static_ingest_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
         include_str!("../static/ingest.js"),
+    )
+}
+
+async fn static_practice_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
+        include_str!("../static/practice.js"),
     )
 }
 

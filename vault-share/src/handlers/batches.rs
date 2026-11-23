@@ -12,7 +12,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use axum::{
-    extract::{ConnectInfo, Multipart, Path, State},
+    extract::{ConnectInfo, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -88,8 +88,30 @@ fn batch_json(b: &BatchRow, me: &CurrentUser) -> Value {
         "createdAt": b.created_at,
         "updatedAt": b.updated_at,
         "files": names,
+        "kind": b.kind,
+        "meta": serde_json::from_str::<Value>(&b.meta).unwrap_or(json!({})),
         "progress": serde_json::from_str::<Value>(&b.progress).unwrap_or(json!({})),
     })
+}
+
+#[derive(Deserialize, Default)]
+pub struct CreateBody {
+    #[serde(default)]
+    kind: String,
+    /// For a past paper: what to call it in the question hub.
+    #[serde(default)]
+    title: String,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ListQuery {
+    #[serde(default)]
+    kind: String,
+}
+
+/// The kind of batch asked for: "paper", or "sources" for anything else.
+fn kind_of(k: &str) -> &'static str {
+    if k == "paper" { "paper" } else { "sources" }
 }
 
 async fn own_batch(st: &AppState, user: &CurrentUser, vault: &str, bid: &str) -> Result<BatchRow, ApiErr> {
@@ -109,15 +131,27 @@ async fn own_batch(st: &AppState, user: &CurrentUser, vault: &str, bid: &str) ->
 // ---------------------------------------------------------------- the Sources page
 
 /// Start a batch. Files are then uploaded to it one by one, and `start` queues it for the worker.
-pub async fn create(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap) -> ApiResult {
+pub async fn create(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Option<Json<CreateBody>>,
+) -> ApiResult {
     check_csrf(&user, &headers)?;
     let v = authorize(&st, &user, &id).await?;
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let kind = kind_of(&body.kind);
+    let title: String = body.title.trim().chars().filter(|c| !c.is_control()).take(150).collect();
+    if kind == "paper" && title.is_empty() {
+        return Err(ApiErr::Bad("Give the paper a name, such as \"June 2024 Paper 1\".".into()));
+    }
     if Settings::load(&st.db).await?.api_key.is_none() {
         return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
     }
     let bid = uuid::Uuid::new_v4().simple().to_string();
     tokio::fs::create_dir_all(batch_dir(&st, &bid)).await.map_err(|e| ApiErr::Internal(e.into()))?;
-    st.db.create_batch(bid.clone(), v.id, user.id, user.username.clone()).await?;
+    st.db.create_batch(bid.clone(), v.id, user.id, user.username.clone(), kind, json!({ "title": title }).to_string()).await?;
     ok(json!({ "id": bid }))
 }
 
@@ -287,9 +321,9 @@ pub async fn cancel(
 }
 
 /// The recent batches of a vault with their progress, and whether the worker is running.
-pub async fn list(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> ApiResult {
+pub async fn list(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, Query(q): Query<ListQuery>) -> ApiResult {
     let v = authorize(&st, &user, &id).await?;
-    let rows = st.db.list_batches(v.id, LIST).await?;
+    let rows = st.db.list_batches(v.id, kind_of(&q.kind), LIST).await?;
     let seen = st.worker_seen.load(std::sync::atomic::Ordering::Relaxed);
     ok(json!({
         "batches": rows.iter().map(|b| batch_json(b, &user)).collect::<Vec<_>>(),
@@ -352,6 +386,8 @@ pub async fn claim(State(st): State<AppState>, ConnectInfo(peer): ConnectInfo<So
     Json(json!({
         "id": b.id,
         "vault": b.vault_id,
+        "kind": b.kind,
+        "meta": serde_json::from_str::<Value>(&b.meta).unwrap_or(json!({})),
         "files": files,
         "progress": serde_json::from_str::<Value>(&b.progress).unwrap_or(json!({})),
         "session": { "cookie": st.cfg.session_cookie(), "token": token, "csrf": csrf },

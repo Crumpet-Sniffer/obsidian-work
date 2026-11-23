@@ -14,6 +14,7 @@ notes. Wikilinks, embeds, the folder tree, search and the graph all work. Nothin
 | | |
 |---|---|
 | Vaults | Any account can create a vault: empty, or from a .zip of an Obsidian vault. An admin can re-upload a zip to update it; links stay the same. |
+| Practice | Quizzes and flashcards Claude writes from chosen topics, a question hub of past exam questions with their mark schemes, marking by Claude, history, and an exam coach (see "Practice" below). |
 | Sources | Add Word and PowerPoint files and pictures to a vault, or a zip of them (culled to just those first). Each is converted to a note and filed by Claude (see "Sources" below). |
 | Resources | A live tracker in the top right of every page shows the NAS's CPU, memory and data disk, and the site's own CPU and memory (server plus ingest worker); click it for details. |
 | Reading | Obsidian-style `[[wikilinks]]`, `[[Note#Heading\|alias]]`, `![[image.png\|300]]` embeds, audio/video/PDF, `==highlights==`, callouts (`> [!NOTE]`), task lists, tables, footnotes, frontmatter hidden |
@@ -175,6 +176,17 @@ An admin sets this up under **Admin → Microsidian**: the Anthropic API key, th
 - **Admin → API spend** shows a line graph of estimated spend per day for the last 30 days, with totals, in pounds. Costs are worked out from each call's token counts and Anthropic's list prices in US dollars (see `src/spend.rs`; update the prices there if they change) and converted at the dollar-to-pound rate. By default the server looks that rate up about twice a day from `api.frankfurter.dev` (European Central Bank reference rates; free, no key, and nothing about the site is sent); an admin can tick "Set the rate myself" to stop the lookups and type a rate instead. If a lookup fails, the last rate fetched stays in use. It is an estimate; the Anthropic invoice is the true figure.
 - The container needs outbound HTTPS to `api.anthropic.com` for this. The only other outbound request the site makes is the exchange-rate lookup below.
 - Not carried over from the plugin: skipping template logos that repeat across many files (repeated logos are saved as images), and re-syncing a note when its original changes.
+
+## Practice (questions, flashcards, past papers, exam coach)
+
+Open a vault and press the cap icon in the sidebar (`/v/{id}/practice`). Everything here uses Claude with the key, model and effort set under Admin → Microsidian, and each account's answers and results are private to it.
+
+- **Questions:** choose topics (the vault's topic pages), question types (select one option, select multiple options, fill in the blanks, written answer), mark levels and difficulty, each group with "Select all", and how many questions (up to 30, or "Just one"). Claude writes them from the notes on those topics (the topic page and every note linking to it), and, when the question hub has past papers, models their wording, command words and mark schemes on the most similar past questions. Choice and fill-in answers are marked at once; written answers are marked by Claude against the mark scheme (several at a time), with marks, feedback, the points met and missed, a model answer and the mark scheme. Questions Claude writes are kept in the question hub too.
+- **Question hub:** upload a past exam paper and its mark scheme (PDF, Word or PowerPoint). The ingest worker reads both (with the text in their pictures), keeps them in the vault under `<originals>/Question Hub/<name>/`, and Claude splits the paper into its questions, each with its number, marks, type, topics and its part of the mark scheme (`viewer/worker/paper.js`). Filter the hub by topic, type, mark level, source and paper, and practise any selection; answers are marked with the official mark scheme.
+- **Flashcards:** decks written from the chosen topics' notes at a chosen difficulty; turn cards over, mark them Got it or Again (saved), shuffle, or go through only the Again cards. Keys: Space turns over, arrows move, 1 = Again, 2 = Got it.
+- **History:** every set answered, with its score; reopen one to see the answers and feedback, or try the same questions again.
+- **Exam coach:** a conversation with Claude, which is given a summary of the account's results (marks by topic, question type and mark level, flashcard results, and recent answers that lost marks) and says where marks are being lost and what to do next. The page shows the same summary as bars.
+- All eight system prompts (filing, planning, pictures, past papers, writing questions, marking, flashcards, coach) can be edited under Admin → Microsidian → System prompts. Calls count towards each account's hourly limit and appear in the spend chart and audit log.
 
 ## Features beyond reading
 

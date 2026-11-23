@@ -227,6 +227,99 @@ impl Db {
                  PRAGMA user_version = 5; COMMIT;",
             )?;
         }
+        if version < 6 {
+            // Practice: past papers and their questions (the question hub), questions Claude wrote, practice
+            // sessions and every answer given, flashcard decks, and each account's conversation with the exam
+            // coach. Batches gain a kind ('sources' or 'paper', a past paper being read by the ingest worker).
+            conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE ingest_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'sources';
+                 ALTER TABLE ingest_batches ADD COLUMN meta TEXT NOT NULL DEFAULT '{}';
+                 CREATE TABLE hub_papers (
+                     id          INTEGER PRIMARY KEY,
+                     vault_id    TEXT NOT NULL,
+                     user_id     INTEGER,
+                     username    TEXT NOT NULL DEFAULT '',
+                     title       TEXT NOT NULL,
+                     exam_path   TEXT NOT NULL DEFAULT '',
+                     scheme_path TEXT NOT NULL DEFAULT '',
+                     created_at  INTEGER NOT NULL
+                 );
+                 CREATE INDEX hub_papers_vault ON hub_papers(vault_id);
+                 CREATE TABLE questions (
+                     id         INTEGER PRIMARY KEY,
+                     vault_id   TEXT NOT NULL,
+                     paper_id   INTEGER REFERENCES hub_papers(id) ON DELETE CASCADE,
+                     source     TEXT NOT NULL,
+                     user_id    INTEGER,
+                     number     TEXT NOT NULL DEFAULT '',
+                     text       TEXT NOT NULL,
+                     qtype      TEXT NOT NULL,
+                     options    TEXT NOT NULL DEFAULT '[]',
+                     answer     TEXT NOT NULL DEFAULT '{}',
+                     marks      INTEGER NOT NULL,
+                     scheme     TEXT NOT NULL DEFAULT '',
+                     topics     TEXT NOT NULL DEFAULT '[]',
+                     difficulty TEXT NOT NULL DEFAULT '',
+                     created_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX questions_vault ON questions(vault_id, source);
+                 CREATE TABLE practice_sessions (
+                     id           TEXT PRIMARY KEY,
+                     vault_id     TEXT NOT NULL,
+                     user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     title        TEXT NOT NULL,
+                     kind         TEXT NOT NULL,
+                     settings     TEXT NOT NULL DEFAULT '{}',
+                     status       TEXT NOT NULL,
+                     error        TEXT NOT NULL DEFAULT '',
+                     question_ids TEXT NOT NULL DEFAULT '[]',
+                     score        INTEGER NOT NULL DEFAULT 0,
+                     total        INTEGER NOT NULL DEFAULT 0,
+                     created_at   INTEGER NOT NULL,
+                     updated_at   INTEGER NOT NULL
+                 );
+                 CREATE INDEX practice_sessions_user ON practice_sessions(user_id, vault_id, created_at);
+                 CREATE TABLE attempts (
+                     id          INTEGER PRIMARY KEY,
+                     session_id  TEXT NOT NULL REFERENCES practice_sessions(id) ON DELETE CASCADE,
+                     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     vault_id    TEXT NOT NULL,
+                     question_id INTEGER REFERENCES questions(id) ON DELETE SET NULL,
+                     question    TEXT NOT NULL,
+                     answer      TEXT NOT NULL,
+                     marks       INTEGER,
+                     total       INTEGER NOT NULL,
+                     feedback    TEXT NOT NULL DEFAULT '{}',
+                     created_at  INTEGER NOT NULL
+                 );
+                 CREATE INDEX attempts_user ON attempts(user_id, vault_id);
+                 CREATE TABLE flash_decks (
+                     id         TEXT PRIMARY KEY,
+                     vault_id   TEXT NOT NULL,
+                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     title      TEXT NOT NULL,
+                     settings   TEXT NOT NULL DEFAULT '{}',
+                     status     TEXT NOT NULL,
+                     error      TEXT NOT NULL DEFAULT '',
+                     cards      TEXT NOT NULL DEFAULT '[]',
+                     progress   TEXT NOT NULL DEFAULT '{}',
+                     created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX flash_decks_user ON flash_decks(user_id, vault_id, created_at);
+                 CREATE TABLE coach_messages (
+                     id         INTEGER PRIMARY KEY,
+                     vault_id   TEXT NOT NULL,
+                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     role       TEXT NOT NULL,
+                     content    TEXT NOT NULL,
+                     created_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX coach_messages_user ON coach_messages(user_id, vault_id, id);
+                 PRAGMA user_version = 6; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -525,6 +618,9 @@ impl Db {
             let tx = c.transaction()?;
             tx.execute("DELETE FROM graph_state WHERE vault_id = ?1", [&id])?;
             tx.execute("DELETE FROM graph_presets WHERE vault_id = ?1", [&id])?;
+            for table in ["attempts", "practice_sessions", "questions", "hub_papers", "flash_decks", "coach_messages"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE vault_id = ?1"), [&id])?;
+            }
             tx.execute("DELETE FROM vaults WHERE id = ?1", [&id])?;
             tx.commit()
         })
@@ -666,13 +762,13 @@ impl Db {
 
     // ---------------------------------------------------------------- ingest batches
 
-    pub async fn create_batch(&self, id: String, vault_id: String, user_id: i64, username: String) -> Result<()> {
+    pub async fn create_batch(&self, id: String, vault_id: String, user_id: i64, username: String, kind: &'static str, meta: String) -> Result<()> {
         self.call(move |c| {
             let ts = now();
             c.execute(
-                "INSERT INTO ingest_batches (id, vault_id, user_id, username, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 'uploading', ?5, ?5)",
-                params![id, vault_id, user_id, username, ts],
+                "INSERT INTO ingest_batches (id, vault_id, user_id, username, status, created_at, updated_at, kind, meta)
+                 VALUES (?1, ?2, ?3, ?4, 'uploading', ?5, ?5, ?6, ?7)",
+                params![id, vault_id, user_id, username, ts, kind, meta],
             )
             .map(|_| ())
         })
@@ -687,12 +783,12 @@ impl Db {
     }
 
     /// The most recent batches of a vault, newest first.
-    pub async fn list_batches(&self, vault_id: String, limit: i64) -> Result<Vec<BatchRow>> {
+    pub async fn list_batches(&self, vault_id: String, kind: &'static str, limit: i64) -> Result<Vec<BatchRow>> {
         self.call(move |c| {
             let mut st = c.prepare(&format!(
-                "SELECT {BATCH_COLS} FROM ingest_batches WHERE vault_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2"
+                "SELECT {BATCH_COLS} FROM ingest_batches WHERE vault_id = ?1 AND kind = ?3 ORDER BY created_at DESC, rowid DESC LIMIT ?2"
             ))?;
-            let rows = st.query_map(params![vault_id, limit], batch_row)?.collect();
+            let rows = st.query_map(params![vault_id, limit, kind], batch_row)?.collect();
             rows
         })
         .await
@@ -956,10 +1052,13 @@ pub struct BatchRow {
     pub progress: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// "sources" (files to file into the vault) or "paper" (a past paper and its mark scheme for the question hub).
+    pub kind: String,
+    pub meta: String,
 }
 
 const BATCH_COLS: &str =
-    "id, vault_id, user_id, username, status, cancel_requested, files, progress, created_at, updated_at";
+    "id, vault_id, user_id, username, status, cancel_requested, files, progress, created_at, updated_at, kind, meta";
 
 fn batch_row(r: &rusqlite::Row) -> rusqlite::Result<BatchRow> {
     Ok(BatchRow {
@@ -973,5 +1072,7 @@ fn batch_row(r: &rusqlite::Row) -> rusqlite::Result<BatchRow> {
         progress: r.get(7)?,
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
+        kind: r.get(10)?,
+        meta: r.get(11)?,
     })
 }
