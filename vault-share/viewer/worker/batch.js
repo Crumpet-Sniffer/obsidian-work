@@ -8,6 +8,7 @@
 import { readFile } from "node:fs/promises";
 import JSZip from "jszip";
 import { convertOffice } from "../../../microsidian/src/convert";
+import { convertPdf } from "./pdf.js";
 import { buildCatalogue } from "../../../microsidian/src/ai/catalogue";
 import { callClaude, explainError } from "../../../microsidian/src/ai/claude";
 import { planBatch } from "../../../microsidian/src/ai/plan";
@@ -23,6 +24,8 @@ import { cullZip } from "./cull.js";
 const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
 const basename = (p) => p.split("/").pop();
 const extOf = (p) => (p.includes(".") ? p.slice(p.lastIndexOf(".") + 1).toLowerCase() : "");
+/** Word and PowerPoint by Microsidian's converter, PDFs by pdf.js: the same result either way. */
+const convertSource = (bytes, name, opts) => (extOf(name) === "pdf" ? convertPdf(bytes, opts) : convertOffice(bytes, extOf(name), opts));
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 class Cancelled extends Error {
@@ -305,7 +308,7 @@ async function readSource(s, cfg, session, set, onFraction, check) {
       how: r.how,
     };
   }
-  const res = await convertOffice(bytes, extOf(s.name), convertOptions(cfg));
+  const res = await convertSource(bytes, s.name, convertOptions(cfg));
   const r = await readPictures(res.images, s, cfg, session, set, onFraction, check);
   return {
     fileName: s.name,
@@ -355,7 +358,7 @@ async function fileSource(s, cfg, io, plan, total, set, onFraction) {
     set(s, "working", "Preparing its pictures for Claude…", null);
     const pics = doc.picture
       ? [{ path: doc.fileName, data: await s.get() }]
-      : (await convertOffice(await s.get(), extOf(s.name), convertOptions(cfg))).images;
+      : (await convertSource(await s.get(), s.name, convertOptions(cfg))).images;
     const d = directBlocks(pics);
     images = d.blocks;
     notShown = d.left;
@@ -398,7 +401,7 @@ async function fileSource(s, cfg, io, plan, total, set, onFraction) {
         updateFolderIndexes: cfg.updateFolderIndexes,
         convert: async (path) => {
           if (doc.picture) return pictureBody(path, doc.reading);
-          const out = await convertOffice(await io.readBinary(path), ext, { ...convertOptions(cfg), originalPath: path });
+          const out = await convertSource(await io.readBinary(path), path, { ...convertOptions(cfg), originalPath: path });
           for (const img of out.images) if (!(await io.exists(img.path))) await io.writeBinary(img.path, img.data);
           return out;
         },

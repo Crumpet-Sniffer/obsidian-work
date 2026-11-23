@@ -1,9 +1,9 @@
-// Culling a zip of course files before anything is filed: only resource files are kept (Word and PowerPoint
-// documents, and pictures big enough to be content rather than icons), from any subfolder. Everything else (PDFs,
-// videos, spreadsheets, shortcuts, system and temporary files, folders such as __MACOSX) is left out and counted.
+// Culling a zip of course files before anything is filed: only resource files are kept (Word, PowerPoint and PDF
+// documents, and pictures big enough to be content rather than icons), from any subfolder. Everything else (videos,
+// spreadsheets, shortcuts, system and temporary files, folders such as __MACOSX) is left out and counted.
 // Used by the Sources page (before uploading, so less is sent) and by the ingest worker (for zips sent whole).
 
-export const DOCUMENT = /\.(docx|pptx)$/i;
+export const DOCUMENT = /\.(docx|pptx|pdf)$/i;
 export const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
 const SYSTEM_FILES = new Set(["thumbs.db", "desktop.ini", ".ds_store", "icon\r"]);
 

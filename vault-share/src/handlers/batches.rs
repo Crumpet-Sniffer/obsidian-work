@@ -57,16 +57,17 @@ fn clean_name(raw: &str) -> Option<String> {
 /// Pictures that can be added as sources on their own (each becomes a note of its text and description).
 pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 
-/// The extension of a file that can be uploaded to a batch: Word, PowerPoint, a picture, or a zip of them.
+/// The extension of a file that can be uploaded to a batch: Word, PowerPoint, PDF, a picture, or a zip of them.
 fn source_ext(name: &str) -> Option<String> {
     let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
-    (matches!(ext.as_str(), "docx" | "pptx" | "zip") || IMAGE_EXTS.contains(&ext.as_str())).then_some(ext)
+    (matches!(ext.as_str(), "docx" | "pptx" | "pdf" | "zip") || IMAGE_EXTS.contains(&ext.as_str())).then_some(ext)
 }
 
 /// Whether a file's first bytes fit its extension.
 fn magic_ok(ext: &str, head: &[u8]) -> bool {
     match ext {
         "docx" | "pptx" | "zip" => head.starts_with(b"PK\x03\x04"),
+        "pdf" => head.starts_with(b"%PDF-"),
         "png" => head.starts_with(b"\x89PNG"),
         "jpg" | "jpeg" => head.starts_with(&[0xFF, 0xD8, 0xFF]),
         "gif" => head.starts_with(b"GIF8"),
@@ -152,7 +153,7 @@ pub async fn upload(
     }
     let raw_name = header_str(&headers, "x-upload-name").unwrap_or("");
     let decoded = percent_encoding::percent_decode_str(raw_name).decode_utf8_lossy();
-    let name = clean_name(&decoded).ok_or_else(|| ApiErr::Bad("Only Word, PowerPoint, picture (.png, .jpg, .gif, .webp) and .zip files can be added.".into()))?;
+    let name = clean_name(&decoded).ok_or_else(|| ApiErr::Bad("Only Word, PowerPoint, PDF, picture (.png, .jpg, .gif, .webp) and .zip files can be added.".into()))?;
     let total: u64 = header_str(&headers, "x-upload-size").and_then(|v| v.parse().ok()).ok_or_else(|| ApiErr::Bad("Missing file size.".into()))?;
     let offset: u64 = header_str(&headers, "x-upload-offset").and_then(|v| v.parse().ok()).ok_or_else(|| ApiErr::Bad("Missing upload offset.".into()))?;
     let lower = name.to_ascii_lowercase();

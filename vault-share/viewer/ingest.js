@@ -51,7 +51,7 @@ const handoff = {
   const dropText = form.querySelector("[data-drop-text]");
   const emptyText = dropText ? dropText.innerHTML : "";
   const mode = () => (form.querySelector('input[name="mode"]:checked') || {}).value;
-  const isSource = (f) => /\.(docx|pptx|zip|png|jpe?g|gif|webp)$/i.test(f.name) && !f.name.startsWith("~$");
+  const isSource = (f) => /\.(docx|pptx|pdf|zip|png|jpe?g|gif|webp)$/i.test(f.name) && !f.name.startsWith("~$");
   let chosen = [];
 
   function show() {
@@ -63,7 +63,7 @@ const handoff = {
   }
   function choose(files) {
     const ok = files.filter(isSource);
-    if (ok.length < files.length) window.alert("Only Word, PowerPoint, picture and .zip files can be added. The others were left out.");
+    if (ok.length < files.length) window.alert("Only Word, PowerPoint, PDF, picture and .zip files can be added. The others were left out.");
     chosen = ok;
     show();
   }
@@ -123,7 +123,7 @@ const handoff = {
   const csrf = host.dataset.csrf;
   const configured = host.dataset.configured === "1";
   const base = `/v/${vault}`;
-  const OFFICE = ["docx", "pptx"];
+  const OFFICE = ["docx", "pptx", "pdf"];
 
   const encodePath = (p) => p.split("/").map(encodeURIComponent).join("/");
   const basename = (p) => p.split("/").pop();
@@ -383,7 +383,7 @@ const handoff = {
     const { kept, culled, summary } = cullZip(zip, { imageMinBytes: (cfg.imageMinKB || 0) * 1000 });
     if (!kept.length) {
       row.remove();
-      rejectRow(f.name, `Not added: no Word, PowerPoint or picture files were found in it.${summary ? ` Culled: ${summary}.` : ""}`);
+      rejectRow(f.name, `Not added: no Word, PowerPoint, PDF or picture files were found in it.${summary ? ` Culled: ${summary}.` : ""}`);
       return null;
     }
     const status = row.querySelector(".job-status");
@@ -405,7 +405,7 @@ const handoff = {
     if (!cfg) cfg = await api("GET", "ingest/config");
     const ok = [];
     for (const f of files) {
-      if (!isSource(f)) rejectRow(f.name, "Not added: only Word (.docx), PowerPoint (.pptx), pictures (.png, .jpg, .gif, .webp) and .zip files can be added.");
+      if (!isSource(f)) rejectRow(f.name, "Not added: only Word (.docx), PowerPoint (.pptx), PDF, pictures (.png, .jpg, .gif, .webp) and .zip files can be added.");
       else if ((isOffice(f.name) || isPicture(f.name)) && f.size > cfg.maxFileBytes) rejectRow(f.name, `Not added: files can be at most ${Math.floor(cfg.maxFileBytes / 1048576)} MB.`);
       else if (extOf(f.name) === "zip") {
         const z = await cullBeforeUpload(f);
@@ -636,7 +636,7 @@ const handoff = {
       if (!cfg) cfg = await api("GET", "ingest/config");
       const io = new SiteIO(cfg.layout);
       await io.load();
-      const originals = [...io.files].filter((p) => under(p, cfg.layout.originals) && OFFICE.includes(extOf(p))).sort((a, b) => a.localeCompare(b));
+      const originals = [...io.files].filter((p) => under(p, cfg.layout.originals) && (OFFICE.includes(extOf(p)) || PICTURES.includes(extOf(p)))).sort((a, b) => a.localeCompare(b));
       const noteFor = new Map();
       for (const [path, text] of io.notes) {
         const src = parseFrontmatter(text).source;
