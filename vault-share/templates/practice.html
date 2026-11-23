@@ -94,6 +94,17 @@
     <p class="small muted">Specifications, and other documents not about one exam year.</p>
     <div data-docs></div>
 
+    {% if is_admin %}
+    <details class="pr-more pr-wipe" data-wipe>
+      <summary>Clear the question hub</summary>
+      <div>
+        <p class="small">Deletes every past paper and its questions, every exam document, the paper guides and the examiners' notes for each year from this vault's question hub. Questions Claude wrote, everyone's answers and history, flashcards and the exam coach are kept. This cannot be undone; upload the papers again to start over.</p>
+        <label class="check small"><input type="checkbox" name="files"> Also move the exam files kept in the vault (the <code>Question Hub</code> folder under the originals folder) to the vault's trash</label>
+        <div class="pr-actions"><button type="button" class="danger" data-wipe-go>Clear all exam data…</button></div>
+      </div>
+    </details>
+    {% endif %}
+
     <h2 class="pr-h2">Find questions</h2>
     <form class="pr-form" data-hub-form>
       <fieldset class="pr-choices" data-choices="hub-topics"><legend>Topics</legend></fieldset>

@@ -925,6 +925,66 @@ pub async fn delete_doc(State(st): State<AppState>, user: CurrentUser, Path((id,
     ok(json!({ "ok": true }))
 }
 
+#[derive(Deserialize)]
+pub struct WipeBody {
+    /// The vault's name, typed to confirm.
+    confirm: String,
+    /// Also move the files kept for the hub (`<originals>/Question Hub`) to the vault's trash.
+    #[serde(default)]
+    files: bool,
+}
+
+/// Clear everything the question hub holds for this vault (admins only). Refused while papers are being added or
+/// guides built, since those would write to it again afterwards.
+pub async fn wipe(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<WipeBody>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    if !user.is_admin {
+        return Err(ApiErr::Forbidden("Only an admin can clear the question hub.".into()));
+    }
+    if b.confirm.trim() != v.name.trim() {
+        return Err(ApiErr::Bad(format!("Type the vault's name, \"{}\", to confirm.", v.name)));
+    }
+    let busy = st.db.list_batches(v.id.clone(), "paper", 50).await?.iter().any(|x| matches!(x.status.as_str(), "uploading" | "queued" | "running"));
+    if busy {
+        return Err(ApiErr::Bad("Papers are still being added to the hub. Wait for them to finish, or stop them, then try again.".into()));
+    }
+    if !practice::profile_status(&st, &v.id).0.is_empty() {
+        return Err(ApiErr::Bad("The paper guides are being built. Try again in a minute or two.".into()));
+    }
+    let w = st.db.wipe_exam_data(v.id.clone()).await?;
+    practice::clear_profile_errors(&st, &v.id);
+    let mut files_moved = false;
+    if b.files {
+        let s = Settings::load(&st.db).await?;
+        if let Some(rel) = crate::vault::safe_rel(&format!("{}/Question Hub", s.originals.trim_end_matches('/'))) {
+            let root = crate::handlers::edit::root_of(&st, &v.id);
+            files_moved = tokio::task::spawn_blocking(move || crate::vault::path_exists(&root, &rel) && crate::vault::move_to_trash(&root, &rel).is_ok()).await.unwrap_or(false);
+            if files_moved {
+                crate::handlers::edit::changed(&st, &v.id, true).await;
+            }
+        }
+    }
+    st.db
+        .audit(
+            user.audit_id(),
+            None,
+            "exam_data_wiped",
+            format!(
+                "{}: {} papers, {} questions, {} documents, {} guides, {} years{}",
+                v.name,
+                w.papers,
+                w.questions,
+                w.docs,
+                w.guides,
+                w.years,
+                if files_moved { ", files moved to the trash" } else { "" }
+            ),
+        )
+        .await;
+    ok(json!({ "papers": w.papers, "questions": w.questions, "docs": w.docs, "guides": w.guides, "years": w.years, "filesMoved": files_moved }))
+}
+
 #[derive(Deserialize, Default)]
 pub struct RebuildBody {
     #[serde(default)]

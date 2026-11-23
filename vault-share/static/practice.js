@@ -870,6 +870,33 @@
     try { await api("POST", "practice/profiles/rebuild", {}); await loadMeta(); } catch (e) { alertBox($("[data-panel=hub]"), e.message); }
   });
 
+  // Admins only: clear everything the question hub holds for this vault.
+  const wipeBox = $("[data-wipe]");
+  if (wipeBox) {
+    $("[data-wipe-go]", wipeBox).addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      const files = $("input[name=files]", wipeBox).checked;
+      const n = meta ? meta.papers.length : 0;
+      const typed = window.prompt(
+        `This deletes ${plural(n, "past paper")} and all their questions, ${plural(meta ? meta.docs.length : 0, "exam document")}, the paper guides and the year notes${files ? ", and moves the exam files to the vault's trash" : ""}. It cannot be undone.\n\nType the vault's name to confirm:`,
+        "",
+      );
+      if (typed === null) return;
+      btn.disabled = true;
+      try {
+        const r = await api("POST", "practice/wipe", { confirm: typed, files });
+        selected.clear();
+        await loadMeta();
+        loadHub();
+        alertBox($("div", wipeBox), `Cleared: ${plural(r.papers, "paper")} (${plural(r.questions, "question")}), ${plural(r.docs, "document")}, ${plural(r.guides, "guide")}, ${plural(r.years, "year")} of notes${r.filesMoved ? "; the exam files are in the vault's trash" : ""}.`, "ok");
+      } catch (err) {
+        alertBox($("div", wipeBox), err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   async function loadPaperJobs() {
     window.clearTimeout(jobsTimer);
     let r;

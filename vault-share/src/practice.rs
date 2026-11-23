@@ -1384,6 +1384,49 @@ impl Db {
     }
 }
 
+/// What clearing a vault's exam data removed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Wiped {
+    pub papers: i64,
+    pub questions: i64,
+    pub docs: i64,
+    pub guides: i64,
+    pub years: i64,
+}
+
+impl Db {
+    /// Remove everything the question hub holds for a vault: past papers and their questions, exam documents,
+    /// paper guides and year notes. Questions Claude wrote, answers, flashcards and the coach stay (questions
+    /// written for a paper's guide lose the link to it).
+    pub async fn wipe_exam_data(&self, vault: String) -> Result<Wiped> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let count = |sql: &str| -> rusqlite::Result<i64> { tx.query_row(sql, [&vault], |r| r.get(0)) };
+            let w = Wiped {
+                papers: count("SELECT COUNT(*) FROM hub_papers WHERE vault_id = ?1")?,
+                questions: count("SELECT COUNT(*) FROM questions WHERE vault_id = ?1 AND paper_id IS NOT NULL")?,
+                docs: count("SELECT COUNT(*) FROM hub_docs WHERE vault_id = ?1")?,
+                guides: count("SELECT COUNT(*) FROM paper_profiles WHERE vault_id = ?1")?,
+                years: count("SELECT COUNT(*) FROM hub_years WHERE vault_id = ?1")?,
+            };
+            tx.execute("DELETE FROM questions WHERE vault_id = ?1 AND paper_id IS NOT NULL", [&vault])?;
+            tx.execute("UPDATE questions SET profile_id = NULL WHERE vault_id = ?1 AND profile_id IS NOT NULL", [&vault])?;
+            for table in ["hub_papers", "hub_docs", "paper_profiles", "hub_years"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE vault_id = ?1"), [&vault])?;
+            }
+            tx.commit()?;
+            Ok(w)
+        })
+        .await
+    }
+}
+
+/// Forget the last guide-building errors of a vault (after its exam data is cleared).
+pub fn clear_profile_errors(st: &AppState, vault: &str) {
+    let prefix = format!("{vault}\u{1f}");
+    st.profile_errors.lock().unwrap_or_else(|e| e.into_inner()).retain(|k, _| !k.starts_with(&prefix));
+}
+
 /// Doc kinds that say how a year's exams went (a specification is about the course, not a year).
 const YEAR_DOC_KINDS: &[&str] = &["examiner_report", "answers_commentary", "notes_guidance"];
 

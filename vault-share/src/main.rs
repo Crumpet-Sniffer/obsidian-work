@@ -226,6 +226,7 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/practice/docs", post(practice_h::add_doc))
         .route("/v/{id}/api/practice/docs/{did}", axum::routing::delete(practice_h::delete_doc))
         .route("/v/{id}/api/practice/profiles/rebuild", post(practice_h::rebuild_profiles))
+        .route("/v/{id}/api/practice/wipe", post(practice_h::wipe))
         .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)));
 
