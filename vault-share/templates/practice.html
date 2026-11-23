@@ -75,6 +75,7 @@
       <label>Name <input name="title" maxlength="150" required placeholder="June 2024 Paper 1"></label>
       <label>Exam paper <input type="file" name="exam" accept=".pdf,.docx,.pptx" required></label>
       <label>Mark scheme <input type="file" name="scheme" accept=".pdf,.docx,.pptx"></label>
+      <label>Insert <span class="muted">(optional: a case study, source booklet or data sheet given with the paper)</span> <input type="file" name="insert" accept=".pdf,.docx,.pptx"></label>
       <div><button type="submit" class="primary">Add the paper</button></div>
     </form>
     </details>
@@ -86,9 +87,11 @@
     <div class="pr-guides" data-guides></div>
     <div class="pr-actions"><button type="button" data-guides-rebuild>Build the guides again</button></div>
 
-    <h2 class="pr-h2">Past papers</h2>
-    <div data-papers></div>
-    <h2 class="pr-h2">Exam documents</h2>
+    <h2 class="pr-h2">Papers by year</h2>
+    <p class="small muted">Each exam year: every paper sat that year, the documents about it (examiner reports, commentaries, guidance), and what examiners said about the year as a whole. The examiners' notes are written by Claude from that year's documents when the guides are built.</p>
+    <div class="pr-years" data-years></div>
+    <h2 class="pr-h2">Course documents</h2>
+    <p class="small muted">Specifications, and other documents not about one exam year.</p>
     <div data-docs></div>
 
     <h2 class="pr-h2">Find questions</h2>

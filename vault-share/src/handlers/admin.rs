@@ -116,6 +116,13 @@ pub async fn dashboard(
                 text: s.profile_prompt().to_string(),
             },
             PromptView {
+                field: "prompt_years".into(),
+                label: "Writing examiners' notes for each year".into(),
+                help: "Writes, for each exam year, what examiners said about that year's papers taken together (how candidates did, common mistakes and advice), from that year's examiner reports, commentaries and guidance.".into(),
+                custom: !s.prompt_years.trim().is_empty(),
+                text: s.year_prompt().to_string(),
+            },
+            PromptView {
                 field: "prompt_generate".into(),
                 label: "Writing practice questions".into(),
                 help: "Writes quiz and sample exam questions from the chosen topics' notes, in the style of the past papers in the question hub.".into(),

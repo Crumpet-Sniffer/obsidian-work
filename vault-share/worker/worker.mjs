@@ -228370,9 +228370,14 @@ var Cancelled = class extends Error {
     this.name = "Cancelled";
   }
 };
+var outOfCredit = (e) => !!e && typeof e.status === "number" && /credit balance is too low/i.test(String(e.message || ""));
 function explain(e) {
   if (e instanceof ApiError) return e.message;
   if (e && e.status === 401) return "The Anthropic API key is missing or was rejected. An admin can fix it under Admin \u2192 Microsidian.";
+  if (outOfCredit(e)) return "The Anthropic account has run out of credit. An admin can add credit in the Anthropic Console (Plans & Billing), then try again.";
+  if (e && typeof e.status === "number" && e.error && e.error.error && typeof e.error.error.message === "string") {
+    return `The Anthropic API returned an error (${e.status}): ${e.error.error.message}`;
+  }
   return explainError(e).replace("in the plugin settings", "under Admin \u2192 Microsidian");
 }
 var Reporter = class {
@@ -230043,6 +230048,7 @@ function datetime3(args) {
 var anyString = /^[\s\S]{0,}$/;
 var integer2 = /^-?\d+$/;
 var number2 = /^-?\d+(?:\.\d+)?$/;
+var boolean3 = /^(?:true|false)$/i;
 var lowercase2 = /^[^A-Z]*$/;
 var uppercase2 = /^[^a-z]*$/;
 
@@ -230930,6 +230936,27 @@ var $ZodNumber2 = /* @__PURE__ */ $constructor2("$ZodNumber", (inst, def) => {
 var $ZodNumberFormat2 = /* @__PURE__ */ $constructor2("$ZodNumberFormat", (inst, def) => {
   $ZodCheckNumberFormat2.init(inst, def);
   $ZodNumber2.init(inst, def);
+});
+var $ZodBoolean2 = /* @__PURE__ */ $constructor2("$ZodBoolean", (inst, def) => {
+  $ZodType2.init(inst, def);
+  inst._zod.pattern = boolean3;
+  inst._zod.parse = (payload, _ctx) => {
+    if (def.coerce)
+      try {
+        payload.value = Boolean(payload.value);
+      } catch (_) {
+      }
+    const input = payload.value;
+    if (typeof input === "boolean")
+      return payload;
+    payload.issues.push({
+      expected: "boolean",
+      code: "invalid_type",
+      input,
+      inst
+    });
+    return payload;
+  };
 });
 var $ZodUnknown2 = /* @__PURE__ */ $constructor2("$ZodUnknown", (inst, def) => {
   $ZodType2.init(inst, def);
@@ -232511,6 +232538,13 @@ function _int2(Class3, params) {
     check: "number_format",
     abort: false,
     format: "safeint",
+    ...normalizeParams2(params)
+  });
+}
+// @__NO_SIDE_EFFECTS__
+function _boolean2(Class3, params) {
+  return new Class3({
+    type: "boolean",
     ...normalizeParams2(params)
   });
 }
@@ -234570,6 +234604,14 @@ var ZodNumberFormat = /* @__PURE__ */ $constructor2("ZodNumberFormat", (inst, de
 function int(params) {
   return _int2(ZodNumberFormat, params);
 }
+var ZodBoolean2 = /* @__PURE__ */ $constructor2("ZodBoolean", (inst, def) => {
+  $ZodBoolean2.init(inst, def);
+  ZodType2.init(inst, def);
+  inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
+});
+function boolean4(params) {
+  return _boolean2(ZodBoolean2, params);
+}
 var ZodUnknown2 = /* @__PURE__ */ $constructor2("ZodUnknown", (inst, def) => {
   $ZodUnknown2.init(inst, def);
   ZodType2.init(inst, def);
@@ -234966,8 +235008,9 @@ var Extracted = object2({
 });
 var DOC_KINDS = ["specification", "examiner_report", "answers_commentary", "notes_guidance", "mark_scheme"];
 var KIND_LABEL = { specification: "Specification", examiner_report: "Examiner report", answers_commentary: "Answers and commentary", notes_guidance: "Notes and guidance", mark_scheme: "Mark scheme" };
+var Version2 = object2({ file: string4(), modified: boolean4() });
 var Matched = object2({
-  papers: array2(PaperDetails.extend({ exam_file: string4(), scheme_file: string4() })),
+  papers: array2(PaperDetails.extend({ exam_file: string4(), modified: boolean4(), scheme_file: string4(), inserts: array2(Version2) })),
   documents: array2(PaperDetails.extend({ file: string4(), kind: _enum2([...DOC_KINDS, "other"]), reason: string4() }))
 });
 var Digest = PaperDetails.extend({
@@ -234981,12 +235024,15 @@ var Digest = PaperDetails.extend({
   exemplars: array2(object2({ question: string4(), marks: string4(), comment: string4() }))
 });
 var BUDGET = 16e5;
+var INSERT_SHARE = 0.25;
 var PEEK = 5e3;
 var PAPERS_AT_ONCE = 2;
 var basename5 = (p) => p.split("/").pop();
 var safeName = (s) => s.replace(/[\\/:*?"<>|#^[\]]/g, " ").replace(/\s+/g, " ").trim().slice(0, 100) || "Paper";
 var plural2 = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 var titleOf = (d) => [[d.month, d.year > 0 ? String(d.year) : ""].filter(Boolean).join(" "), d.paper_number].filter(Boolean).join(" ").trim();
+var ALTERNATIVE = /\bmodified\b|enlarged|large[- ]?print|braille|\b\d{2}\s?pt\b/i;
+var accountProblem = (e) => outOfCredit(e) || !!e && (e.status === 401 || e.status === 403);
 var claude = (session) => new Anthropic2({ apiKey: "held-by-the-server", fetch: session.claudeFetch, dangerouslyAllowBrowser: true });
 async function readDoc(doc, cfg, readCfg, session, set, onFraction, check2) {
   set("working", "Reading the file\u2026", null);
@@ -235002,12 +235048,15 @@ async function keep(io, folder, name, bytes, images) {
   for (const img of images) if (!await io.exists(img.path)) await io.writeBinary(img.path, img.data);
   return path7;
 }
-async function extract(session, cfg, topics, title, paperText, schemeText) {
+async function extract(session, cfg, topics, title, paperText, schemeText, insertText) {
   let paper = paperText || "";
   let scheme = schemeText || "";
-  if (paper.length + scheme.length > BUDGET) {
-    paper = paper.slice(0, Math.max(Math.floor(BUDGET / 2), BUDGET - scheme.length));
-    scheme = scheme.slice(0, BUDGET - paper.length);
+  let insert = insertText || "";
+  if (paper.length + scheme.length + insert.length > BUDGET) {
+    insert = insert.slice(0, Math.max(Math.floor(BUDGET * INSERT_SHARE), BUDGET - paper.length - scheme.length));
+    const rest = BUDGET - insert.length;
+    paper = paper.slice(0, Math.max(Math.floor(rest / 2), rest - scheme.length));
+    scheme = scheme.slice(0, rest - paper.length);
   }
   const msg = await claude(session).beta.messages.parse({
     model: "claude-sonnet-5-5",
@@ -235028,7 +235077,11 @@ ${topics.join("\n")}
 ${paper}
 </exam_paper>
 
-` + (scheme ? `<mark_scheme>
+` + (insert ? `<insert>
+${insert}
+</insert>
+
+` : "") + (scheme ? `<mark_scheme>
 ${scheme}
 </mark_scheme>` : "<mark_scheme>\n(No mark scheme was uploaded: write one for each question.)\n</mark_scheme>")
       }
@@ -235039,28 +235092,41 @@ ${scheme}
   if (!msg.parsed_output) throw new Error("Claude's list of questions could not be read. Try again.");
   return { ...msg.parsed_output, usage: msg.usage };
 }
-async function addOne({ session, cfg, readCfg, io, topics, title, details, exam, scheme, set, onFraction, check: check2, onClaude }) {
+async function addOne({ session, cfg, readCfg, io, topics, title, details, exam, scheme, inserts = [], cache = /* @__PURE__ */ new Map(), set, onFraction, check: check2, onClaude }) {
   const folder = `${cfg.layout.originals}/Question Hub/${safeName(title || titleOf(details || {}) || basename5(exam.name).replace(/\.[^.]+$/, ""))}`;
-  const docs = [exam, scheme].filter(Boolean);
+  const docs = [
+    { doc: exam, label: "the paper" },
+    ...scheme ? [{ doc: scheme, label: "the mark scheme" }] : [],
+    ...inserts.map((d2, i) => ({ doc: d2, label: inserts.length > 1 ? `insert ${i + 1}` : "the insert" }))
+  ];
   const read = [];
   for (let i = 0; i < docs.length; i++) {
-    const label = i === 0 ? "the paper" : "the mark scheme";
-    const r = await readDoc(docs[i], cfg, readCfg, session, (state, text, bar) => set(state, `${text.replace("the file", label)}`, bar), (f) => onFraction((i + f) / docs.length), check2);
-    set("working", `Saving ${label} in the vault\u2026`, null);
-    r.path = await keep(io, folder, docs[i].name, r.bytes, r.res.images);
+    const { doc, label } = docs[i];
+    let r = cache.get(doc);
+    if (!r) {
+      r = await readDoc(doc, cfg, readCfg, session, (state, text, bar) => set(state, `${text.replace("the file", label)}`, bar), (f) => onFraction((i + f) / docs.length), check2);
+      set("working", `Saving ${label} in the vault\u2026`, null);
+      r.path = await keep(io, folder, doc.name, r.bytes, r.res.images);
+      cache.set(doc, r);
+    }
     read.push(r);
   }
   check2();
   set("working", "Claude is splitting the paper into questions\u2026", null);
   if (onClaude) await onClaude();
-  const out = await extract(session, cfg, topics, title || titleOf(details || {}) || exam.name, read[0].text, read[1] ? read[1].text : "");
+  const insertRead = read.slice(scheme ? 2 : 1);
+  const insertText = insertRead.map((r, i) => insertRead.length > 1 ? `## ${inserts[i].name}
+
+${r.text}` : r.text).join("\n\n");
+  const out = await extract(session, cfg, topics, title || titleOf(details || {}) || exam.name, read[0].text, scheme ? read[1].text : "", insertText);
   const d = details && (details.year || details.paper_number || details.month) ? details : out.paper;
   set("working", "Adding the questions to the hub\u2026", null);
   const saved = await session.api("POST", "practice/papers", {
     json: {
       title: title || "",
       exam_path: read[0].path,
-      scheme_path: read[1] ? read[1].path : "",
+      scheme_path: scheme ? read[1].path : "",
+      insert_paths: insertRead.map((r) => r.path),
       qualification: d.qualification || out.paper.qualification || "",
       paper_number: d.paper_number || "",
       month: d.month || "",
@@ -235167,13 +235233,18 @@ async function runPaper(claim2) {
     await io.load();
     const meta2 = await session.api("GET", "practice/meta");
     const topics = meta2.topics || [];
-    const ctx = { session, cfg, readCfg, io, topics, quals: meta2.qualifications || [], check: () => rep.check() };
+    const ctx = { session, cfg, readCfg, io, topics, quals: meta2.qualifications || [], check: () => rep.check(), halt: "" };
     let touched = [];
     if (zipMode) touched = await runZip(claim2, p, rep, ctx, meta2);
     else if (specMode) touched = await runSpec(claim2, p, rep, ctx);
     else touched = await runSingle(claim2, p, rep, ctx);
-    await rebuildGuides(session, touched);
-    if (touched.some(Boolean)) p.summary += " \xB7 the paper guides are being built again";
+    if (ctx.halt) {
+      status = "failed";
+      p.summary = `${p.summary} \xB7 Stopped: ${ctx.halt}`;
+    } else {
+      await rebuildGuides(session, touched);
+      if (touched.some(Boolean)) p.summary += " \xB7 the paper guides are being built again";
+    }
   } catch (e) {
     if (e instanceof Cancelled) {
       status = "cancelled";
@@ -235194,6 +235265,9 @@ async function runSingle(claim2, p, rep, ctx) {
   const row = { key: "0", name: title || claim2.files[0].name, state: "waiting", text: "Waiting\u2026" };
   p.files.push(row);
   const doc = (f) => ({ name: f.name, title: `${title}: ${f.name}`, get: async () => new Uint8Array(await readFile5(f.path)) });
+  const parts = Array.isArray(claim2.meta && claim2.meta.parts) && claim2.meta.parts.length === claim2.files.length ? claim2.meta.parts : ["exam", "scheme"];
+  const of = (part) => claim2.files.filter((_f, i) => parts[i] === part).map(doc);
+  const exam = of("exam")[0] || doc(claim2.files[0]);
   p.steps.read.state = "working";
   p.steps.read.of = 1;
   await rep.push(true);
@@ -235201,8 +235275,9 @@ async function runSingle(claim2, p, rep, ctx) {
     ...ctx,
     title,
     details: null,
-    exam: doc(claim2.files[0]),
-    scheme: claim2.files[1] ? doc(claim2.files[1]) : null,
+    exam,
+    scheme: of("scheme")[0] || null,
+    inserts: of("insert"),
     set: setter(row),
     onFraction: async (f) => {
       p.steps.read.done = f;
@@ -235283,13 +235358,13 @@ async function runZip(claim2, p, rep, ctx, meta2) {
   }
   Object.assign(p.steps.read, { state: "done", done: docs.length, note: "" });
   p.stage = "plan";
-  Object.assign(p.steps.plan, { state: "working", note: "Claude is matching each paper to its mark scheme", elapsed: 0 });
+  Object.assign(p.steps.plan, { state: "working", note: "Claude is matching each paper to its mark scheme and inserts", elapsed: 0 });
   rep.started = Date.now();
   await rep.push(true);
   const readable = docs.filter((d) => !d.unreadable);
   const msg = await claude(ctx.session).beta.messages.parse({
     model: "claude-sonnet-5-5",
-    max_tokens: 8e3,
+    max_tokens: 16e3,
     output_config: { effort: "medium", format: zodOutputFormat2(Matched) },
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
@@ -235311,7 +235386,8 @@ ${d.peek || "(no text could be read)"}
   if (!msg.parsed_output) throw new Error("Claude could not sort the files in this zip. Try again.");
   const byId = new Map(readable.map((d) => [d.id, d]));
   const used = /* @__PURE__ */ new Set();
-  const pairs = [];
+  const others = [];
+  const groups = /* @__PURE__ */ new Map();
   for (const m of msg.parsed_output.papers) {
     const exam = byId.get(m.exam_file);
     if (!exam || used.has(exam.id)) continue;
@@ -235319,62 +235395,112 @@ ${d.peek || "(no text could be read)"}
     let scheme = byId.get(m.scheme_file);
     if (scheme && used.has(scheme.id)) scheme = null;
     if (scheme) used.add(scheme.id);
-    pairs.push({ exam, scheme, details: { qualification: m.qualification, paper_number: m.paper_number, month: m.month, year: m.year } });
+    const details = { qualification: m.qualification, paper_number: m.paper_number, month: m.month, year: m.year };
+    const title = titleOf(details) || exam.name.replace(/\.[^.]+$/, "");
+    const key = `${(details.qualification || "").toLowerCase()}|${title.toLowerCase()}`;
+    let g = groups.get(key);
+    if (!g) groups.set(key, g = { key, title, details, copies: [], schemes: [], inserts: /* @__PURE__ */ new Map() });
+    g.copies.push({ exam, modified: !!m.modified || ALTERNATIVE.test(exam.name) });
+    if (scheme) g.schemes.push(scheme);
+    for (const v of m.inserts || []) {
+      const d = byId.get(v.file);
+      if (d && !g.inserts.has(d.id)) g.inserts.set(d.id, { doc: d, modified: !!v.modified || ALTERNATIVE.test(d.name) });
+    }
   }
+  const pairs = [...groups.values()];
+  for (const g of pairs) {
+    g.copies.sort((a, b) => Number(a.modified) - Number(b.modified));
+    g.scheme = g.schemes[0] || null;
+    for (const extra of g.schemes.slice(1)) others.push(`${extra.path} (another copy of the mark scheme for ${g.title})`);
+    const ins = [...g.inserts.values()].filter((v) => !used.has(v.doc.id));
+    const standard = ins.filter((v) => !v.modified);
+    g.insertDocs = (standard.length ? standard : ins.slice(0, 1)).map((v) => v.doc);
+    g.otherInserts = ins.filter((v) => !g.insertDocs.includes(v.doc)).map((v) => v.doc);
+  }
+  for (const g of pairs) for (const d of [...g.insertDocs, ...g.otherInserts]) used.add(d.id);
   const resources = [];
   const haveDocs = new Set((meta2.docs || []).map((d) => `${d.kind}|${d.title.toLowerCase()}`));
-  let docsSkipped = 0;
+  const docsSkipped = [];
   for (const m of msg.parsed_output.documents) {
     const doc = byId.get(m.file);
     if (!doc || used.has(doc.id) || m.kind === "other") continue;
     used.add(doc.id);
+    const details = { qualification: m.qualification, paper_number: m.paper_number, month: m.month, year: m.year };
     const key = `${m.kind}|${doc.name.replace(/\.[^.]+$/, "").toLowerCase()}`;
     if (haveDocs.has(key)) {
-      docsSkipped++;
+      docsSkipped.push({ doc, kind: m.kind, details });
       continue;
     }
     haveDocs.add(key);
-    resources.push({ doc, kind: m.kind, details: { qualification: m.qualification, paper_number: m.paper_number, month: m.month, year: m.year } });
+    resources.push({ doc, kind: m.kind, details });
   }
-  const others = [
+  others.push(
     ...msg.parsed_output.documents.filter((o) => o.kind === "other" && byId.has(o.file) && !used.has(o.file)).map((o) => `${byId.get(o.file).path} (${o.reason})`),
     ...readable.filter((d) => !used.has(d.id) && !msg.parsed_output.documents.some((o) => o.file === d.id)).map((d) => `${d.path} (not recognised)`),
     ...docs.filter((d) => d.unreadable).map((d) => `${d.path} (could not be read: ${d.unreadable})`)
-  ];
+  );
   const have = (meta2.papers || []).map((x) => ({ q: (x.qualification || "").toLowerCase(), t: x.title.toLowerCase() }));
   const already = (q, t) => have.some((h) => h.t === t && (!h.q || !q || h.q === q));
   const todo = [];
-  for (const pair of pairs) {
-    const title = titleOf(pair.details) || pair.exam.name.replace(/\.[^.]+$/, "");
-    pair.title = title;
-    pair.row = { key: pair.exam.id, name: `${title}${pair.details.qualification ? ` \xB7 ${pair.details.qualification}` : ""}`, state: "waiting", text: pair.scheme ? `${pair.exam.name} + ${pair.scheme.name}` : `${pair.exam.name} (no mark scheme found)` };
-    p.files.push(pair.row);
-    if (already((pair.details.qualification || "").toLowerCase(), title.toLowerCase())) Object.assign(pair.row, { state: "skipped", text: "Already in the question hub" });
-    else {
-      todo.push(pair);
-      have.push({ q: (pair.details.qualification || "").toLowerCase(), t: title.toLowerCase() });
-    }
+  for (const g of pairs) {
+    const first = g.copies[0].exam;
+    const files = [first.name, g.scheme ? g.scheme.name : "", ...g.insertDocs.map((d) => d.name)].filter(Boolean).join(" + ");
+    const notes = [];
+    if (g.copies.length > 1) notes.push(`Other versions of this paper, read only if the first cannot be: ${g.copies.slice(1).map((c) => c.exam.name).join(", ")}.`);
+    if (g.otherInserts.length) notes.push(`Other versions of its insert, not needed: ${g.otherInserts.map((d) => d.name).join(", ")}.`);
+    g.row = { key: first.id, name: `${g.title}${g.details.qualification ? ` \xB7 ${g.details.qualification}` : ""}`, state: "waiting", text: g.scheme ? files : `${files} (no mark scheme found)` };
+    if (notes.length) g.row.detail = notes.join(" ");
+    p.files.push(g.row);
+    if (already((g.details.qualification || "").toLowerCase(), g.title.toLowerCase())) Object.assign(g.row, { state: "skipped", text: "Already in the question hub" });
+    else todo.push(g);
   }
   for (const r of resources) {
     const series = [r.details.month, r.details.year > 0 ? String(r.details.year) : "", r.details.paper_number].filter(Boolean).join(" ");
     r.row = { key: r.doc.id, name: `${KIND_LABEL[r.kind]}${series ? ` \xB7 ${series}` : ""}${r.details.qualification ? ` \xB7 ${r.details.qualification}` : ""}`, state: "waiting", text: r.doc.name };
     p.files.push(r.row);
   }
-  if (others.length) p.files.push({ key: "others", name: `${plural2(others.length, "other document")} not used`, state: "skipped", text: "Not a paper, mark scheme or other useful exam document", detail: others.join(" \xB7 ") });
+  if (docsSkipped.length) {
+    p.files.push({
+      key: "docs-skipped",
+      name: `${plural2(docsSkipped.length, "exam document")} already in the hub`,
+      state: "skipped",
+      text: "Read before, so not read again",
+      detail: docsSkipped.map((d) => `${d.doc.name} (${KIND_LABEL[d.kind]})`).join(" \xB7 ")
+    });
+  }
+  if (others.length) p.files.push({ key: "others", name: `${plural2(others.length, "other document")} not used`, state: "skipped", text: "Not a paper, mark scheme, insert or other useful exam document", detail: others.join(" \xB7 ") });
   const withScheme = pairs.filter((x) => x.scheme).length;
+  const withInsert = pairs.filter((x) => x.insertDocs.length).length;
   Object.assign(p.steps.plan, {
     state: "done",
-    note: [`${plural2(pairs.length, "paper")} found, ${withScheme} with a mark scheme`, resources.length ? `${plural2(resources.length, "other exam document")} to read` : ""].filter(Boolean).join(" \xB7 ")
+    note: [
+      `${plural2(pairs.length, "paper")} found, ${withScheme} with a mark scheme${withInsert ? `, ${withInsert} with an insert` : ""}`,
+      resources.length ? `${plural2(resources.length, "other exam document")} to read` : ""
+    ].filter(Boolean).join(" \xB7 ")
   });
-  if (!pairs.length && !resources.length) throw new Error("Claude found no question papers or other exam documents in this zip.");
+  if (!pairs.length && !resources.length && !docsSkipped.length) throw new Error("Claude found no question papers or other exam documents in this zip.");
   p.stage = "file";
-  const jobs = [...resources.map((r) => ({ resource: r })), ...todo.map((pair) => ({ pair }))];
+  const jobs = [...resources.map((r) => ({ resource: r })), ...todo.map((g) => ({ group: g }))];
   Object.assign(p.steps.file, { state: "working", done: 0, of: jobs.length, note: "" });
   await rep.push(true);
-  let added = 0, questions = 0, failed = 0, read = 0, unread = 0;
+  let added = 0, questions = 0, failed = 0, read = 0, unread = 0, notStarted = 0;
   const touched = [];
+  const finished = async () => {
+    p.steps.file.done = added + failed + read + unread + notStarted;
+    await rep.push(true);
+  };
+  const stop = (e) => {
+    if (!ctx.halt) ctx.halt = explain(e);
+  };
   await pool(jobs, PAPERS_AT_ONCE, async (job) => {
     rep.check();
+    const row = job.resource ? job.resource.row : job.group.row;
+    if (ctx.halt) {
+      notStarted++;
+      Object.assign(row, { state: "skipped", text: `Not started: ${ctx.halt}` });
+      await finished();
+      return;
+    }
     if (job.resource) {
       const r = job.resource;
       try {
@@ -235382,42 +235508,62 @@ ${d.peek || "(no text could be read)"}
         read++;
       } catch (e) {
         if (e instanceof Cancelled) throw e;
+        if (accountProblem(e)) stop(e);
         unread++;
         console.warn(`could not read ${r.doc.path}: ${e && e.stack ? e.stack : e}`);
         setter(r.row)("failed", `Not read: ${explain(e)}`);
       }
-      p.steps.file.done = added + failed + read + unread;
-      await rep.push(true);
+      await finished();
       return;
     }
-    const pair = job.pair;
-    const set = setter(pair.row);
-    try {
-      const saved = await addOne({ ...ctx, title: "", details: pair.details, exam: pair.exam, scheme: pair.scheme, set, onFraction: async () => {
-        rep.check();
-        await rep.push();
-      } });
-      added++;
-      questions += saved.questions;
-      touched.push(saved.qualification);
-      set("done", `${plural2(saved.questions, "question")} added${pair.scheme ? "" : " \xB7 no mark scheme, so Claude wrote one"}${saved.dropped ? ` \xB7 ${saved.dropped} could not be used` : ""}`);
-    } catch (e) {
-      if (e instanceof Cancelled) throw e;
-      failed++;
-      console.warn(`could not add ${pair.title}: ${e && e.stack ? e.stack : e}`);
-      set("failed", `Not added: ${explain(e)}`);
+    const g = job.group;
+    const set = setter(g.row);
+    const cache = /* @__PURE__ */ new Map();
+    let lastErr = null;
+    for (let i = 0; i < g.copies.length; i++) {
+      const exam = g.copies[i].exam;
+      try {
+        const saved = await addOne({ ...ctx, title: "", details: g.details, exam, scheme: g.scheme, inserts: g.insertDocs, cache, set, onFraction: async () => {
+          rep.check();
+          await rep.push();
+        } });
+        added++;
+        questions += saved.questions;
+        touched.push(saved.qualification);
+        const bits = [`${plural2(saved.questions, "question")} added`];
+        if (i > 0) bits.push(`from ${exam.name}`);
+        if (!g.scheme) bits.push("no mark scheme, so Claude wrote one");
+        if (g.insertDocs.length) bits.push(`with ${g.insertDocs.length === 1 ? "its insert" : plural2(g.insertDocs.length, "insert")}`);
+        if (saved.dropped) bits.push(`${saved.dropped} could not be used`);
+        set("done", bits.join(" \xB7 "));
+        lastErr = null;
+        break;
+      } catch (e) {
+        if (e instanceof Cancelled) throw e;
+        lastErr = e;
+        console.warn(`could not add ${g.title} from ${exam.path}: ${e && e.stack ? e.stack : e}`);
+        if (accountProblem(e)) {
+          stop(e);
+          break;
+        }
+        if (i + 1 < g.copies.length) set("working", `${exam.name} could not be used (${explain(e)}). Trying ${g.copies[i + 1].exam.name}\u2026`, null);
+      }
     }
-    p.steps.file.done = added + failed + read + unread;
-    await rep.push(true);
+    if (lastErr) {
+      failed++;
+      set("failed", `Not added: ${explain(lastErr)}`);
+    }
+    await finished();
   });
-  Object.assign(p.steps.file, { state: "done", note: "" });
+  Object.assign(p.steps.file, { state: ctx.halt ? "failed" : "done", note: "" });
   const skipped = pairs.length - todo.length;
   p.summary = [
     `${plural2(added, "paper")} added (${plural2(questions, "question")})`,
-    skipped || docsSkipped ? `${skipped + docsSkipped} already in the hub` : "",
+    skipped || docsSkipped.length ? `${skipped + docsSkipped.length} already in the hub` : "",
     failed ? `${failed} could not be added` : "",
     read ? `${plural2(read, "other exam document")} read` : "",
     unread ? `${unread} could not be read` : "",
+    notStarted ? `${notStarted} not started` : "",
     others.length ? `${plural2(others.length, "other document")} not used` : ""
   ].filter(Boolean).join(" \xB7 ");
   return touched;

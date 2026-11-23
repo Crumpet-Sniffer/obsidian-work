@@ -368,6 +368,24 @@ impl Db {
                  PRAGMA user_version = 8; COMMIT;",
             )?;
         }
+        if version < 9 {
+            // Past papers keep the inserts given with them (case studies, source booklets, data sheets), and each
+            // exam year of a qualification gets the examiners' notes on that year as a whole.
+            conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE hub_papers ADD COLUMN insert_paths TEXT NOT NULL DEFAULT '[]';
+                 CREATE TABLE hub_years (
+                     id            INTEGER PRIMARY KEY,
+                     vault_id      TEXT NOT NULL,
+                     qualification TEXT NOT NULL,
+                     year          INTEGER NOT NULL,
+                     notes         TEXT NOT NULL,
+                     updated_at    INTEGER NOT NULL,
+                     UNIQUE (vault_id, qualification, year)
+                 );
+                 PRAGMA user_version = 9; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -666,7 +684,7 @@ impl Db {
             let tx = c.transaction()?;
             tx.execute("DELETE FROM graph_state WHERE vault_id = ?1", [&id])?;
             tx.execute("DELETE FROM graph_presets WHERE vault_id = ?1", [&id])?;
-            for table in ["attempts", "practice_sessions", "questions", "hub_papers", "flash_decks", "coach_messages", "hub_docs", "paper_profiles"] {
+            for table in ["attempts", "practice_sessions", "questions", "hub_papers", "flash_decks", "coach_messages", "hub_docs", "paper_profiles", "hub_years"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE vault_id = ?1"), [&id])?;
             }
             tx.execute("DELETE FROM vaults WHERE id = ?1", [&id])?;

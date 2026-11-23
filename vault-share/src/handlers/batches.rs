@@ -107,6 +107,9 @@ pub struct CreateBody {
     /// For the question hub: a qualification's specification.
     #[serde(default)]
     spec: bool,
+    /// For one past paper: what each file is, in upload order ("exam", "scheme" or "insert").
+    #[serde(default)]
+    parts: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -152,12 +155,16 @@ pub async fn create(
     if kind == "paper" && title.is_empty() && !body.zip && !body.spec {
         return Err(ApiErr::Bad("Give the paper a name, such as \"June 2024 Paper 1\".".into()));
     }
+    if body.parts.len() > MAX_FILES || body.parts.iter().any(|p| !matches!(p.as_str(), "exam" | "scheme" | "insert")) {
+        return Err(ApiErr::Bad("Unknown kind of file for this paper.".into()));
+    }
     if Settings::load(&st.db).await?.api_key.is_none() {
         return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
     }
     let bid = uuid::Uuid::new_v4().simple().to_string();
     tokio::fs::create_dir_all(batch_dir(&st, &bid)).await.map_err(|e| ApiErr::Internal(e.into()))?;
-    st.db.create_batch(bid.clone(), v.id, user.id, user.username.clone(), kind, json!({ "title": title, "zip": body.zip, "spec": body.spec }).to_string()).await?;
+    let meta = json!({ "title": title, "zip": body.zip, "spec": body.spec, "parts": body.parts });
+    st.db.create_batch(bid.clone(), v.id, user.id, user.username.clone(), kind, meta.to_string()).await?;
     ok(json!({ "id": bid }))
 }
 

@@ -77,6 +77,7 @@ pub async fn meta(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
                 "createdAt": p.created_at,
                 "examUrl": if p.exam_path.is_empty() { String::new() } else { file_url(&v.id, &p.exam_path) },
                 "schemeUrl": if p.scheme_path.is_empty() { String::new() } else { file_url(&v.id, &p.scheme_path) },
+                "insertUrls": p.insert_paths.iter().filter(|x| !x.is_empty()).map(|x| file_url(&v.id, x)).collect::<Vec<_>>(),
                 "canDelete": user.is_admin || p.user_id == Some(user.id),
             })
         })
@@ -131,7 +132,15 @@ pub async fn meta(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
     })
     .await?;
     let quals = st.db.qualifications(v.id.clone()).await?;
+    let years: Vec<Value> = st
+        .db
+        .year_notes(v.id.clone())
+        .await?
+        .into_iter()
+        .map(|y| json!({ "qualification": y.qualification, "year": y.year, "notes": y.notes, "updatedAt": y.updated_at }))
+        .collect();
     ok(json!({
+        "years": years,
         "configured": s.api_key.is_some(),
         "docs": doc_json,
         "profiles": profile_json,
@@ -164,6 +173,7 @@ fn question_json(idx: &VaultIndex, vault_id: &str, q: &Question, reveal: bool) -
         "difficulty": q.difficulty,
         "source": q.source,
         "paper": q.paper_title,
+        "paperId": q.paper_id,
         "html": practice::render(idx, vault_id, &q.text),
         "options": q.options,
         "blanks": q.blanks.len(),
@@ -250,6 +260,8 @@ pub struct PaperBody {
     exam_path: String,
     #[serde(default)]
     scheme_path: String,
+    #[serde(default)]
+    insert_paths: Vec<String>,
     questions: Vec<Value>,
     #[serde(default)]
     qualification: String,
@@ -280,7 +292,8 @@ pub async fn add_paper(State(st): State<AppState>, user: CurrentUser, Path(id): 
         title = "Past paper".into();
     }
     let n = qs.len();
-    let pid = st.db.add_paper(v.id.clone(), who(&user), title.clone(), info, b.exam_path, b.scheme_path, qs).await?;
+    let inserts: Vec<String> = b.insert_paths.into_iter().map(|x| x.trim().to_string()).filter(|x| !x.is_empty() && x.len() <= 1000).take(10).collect();
+    let pid = st.db.add_paper(v.id.clone(), who(&user), title.clone(), info, b.exam_path, b.scheme_path, inserts, qs).await?;
     st.db.audit(user.audit_id(), None, "paper_added", format!("{}: {title}, {n} questions", v.name)).await;
     ok(json!({ "id": pid, "questions": n, "dropped": b.questions.len() - n }))
 }

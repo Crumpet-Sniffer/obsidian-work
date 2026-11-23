@@ -32,9 +32,17 @@ export class Cancelled extends Error {
   constructor() { super("Cancelled"); this.name = "Cancelled"; }
 }
 
+/** The Anthropic account has no credit left: nothing more can be read until an admin adds some. */
+export const outOfCredit = (e) => !!e && typeof e.status === "number" && /credit balance is too low/i.test(String(e.message || ""));
+
 export function explain(e) {
   if (e instanceof ApiError) return e.message;
   if (e && e.status === 401) return "The Anthropic API key is missing or was rejected. An admin can fix it under Admin → Microsidian.";
+  if (outOfCredit(e)) return "The Anthropic account has run out of credit. An admin can add credit in the Anthropic Console (Plans & Billing), then try again.";
+  // An API error from another copy of the SDK than Microsidian's: show the API's own message, not its raw JSON.
+  if (e && typeof e.status === "number" && e.error && e.error.error && typeof e.error.error.message === "string") {
+    return `The Anthropic API returned an error (${e.status}): ${e.error.error.message}`;
+  }
   return explainError(e).replace("in the plugin settings", "under Admin → Microsidian");
 }
 

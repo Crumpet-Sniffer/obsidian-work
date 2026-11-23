@@ -37,6 +37,18 @@
   const when = (ts) => new Date(ts * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   let meta = null;
   const typeLabel = (t) => ((meta && meta.types.find((x) => x.id === t)) || { label: t }).label;
+  /** Links to the inserts of a question's paper (its case study or source booklet), or nothing. */
+  function insertLinks(q) {
+    const paper = meta && q.paperId && meta.papers.find((p) => p.id === q.paperId);
+    if (!paper || !paper.insertUrls || !paper.insertUrls.length) return [];
+    return paper.insertUrls.map((u, i) => {
+      const a = make("a", "small", paper.insertUrls.length > 1 ? `Insert ${i + 1}` : "Insert");
+      a.href = u;
+      a.target = "_blank";
+      a.title = "The case study or source material given with this paper";
+      return a;
+    });
+  }
 
   function alertBox(where, text, kind = "error") {
     const p = make("p", `alert ${kind}`, text);
@@ -272,6 +284,7 @@
       for (const t of q.topics) head.append(make("span", "pr-tag pr-topic", t));
       for (const t of q.spec || []) head.append(make("span", "pr-tag pr-spec", t));
       if (q.paper) head.append(make("span", "muted small", `${q.paper}${q.number ? ` · Q${q.number}` : ""}`));
+      head.append(...insertLinks(q));
       li.appendChild(head);
       const body = make("div", "pr-q-text prose");
       body.innerHTML = q.html;
@@ -435,21 +448,102 @@
   let hubTimer = 0;
   const selected = new Set();
   function renderPapers() {
-    const box = $("[data-papers]");
-    box.replaceChildren();
     const sel = $("[data-paper-filter]");
     const keep = sel.value;
     sel.replaceChildren(new Option("Any paper", ""));
-    if (!meta.papers.length) {
+    for (const p of meta.papers) sel.appendChild(new Option(p.qualification ? `${p.title} · ${p.qualification}` : p.title, String(p.id)));
+    sel.value = [...sel.options].some((o) => o.value === keep) ? keep : "";
+    renderYears();
+  }
+
+  // A document about one exam year (an examiner report, commentary or guidance for a dated series).
+  const ofYear = (d) => d.year > 0 && d.kind !== "specification";
+
+  /** One section per exam year: its papers, its documents and the examiners' notes on the year as a whole. */
+  function renderYears() {
+    const box = $("[data-years]");
+    const open = new Set($$("details.pr-year[open]", box).map((d) => d.dataset.year));
+    const first = !box.dataset.drawn;
+    box.dataset.drawn = "1";
+    box.replaceChildren();
+    const notes = meta.years || [];
+    const years = [...new Set([...meta.papers.map((p) => p.year), ...meta.docs.filter(ofYear).map((d) => d.year), ...notes.map((y) => y.year)].filter((y) => y > 0))].sort((a, b) => b - a);
+    const undated = meta.papers.filter((p) => !(p.year > 0));
+    if (!years.length && !undated.length) {
       box.appendChild(make("p", "muted small", "No past papers yet."));
       return;
     }
+    const quals = new Set([...meta.papers.map((p) => p.qualification), ...notes.map((y) => y.qualification)].filter(Boolean));
+    const section = (key, title, papers, docs, yearNotes) => {
+      const d = make("details", "pr-guide pr-year");
+      d.dataset.year = key;
+      d.open = open.has(key) || (first && key === String(years[0]));
+      const sum = make("summary");
+      sum.append(make("strong", "", title));
+      const qs = papers.reduce((n, p) => n + p.questions, 0);
+      const bits = [plural(papers.length, "paper"), plural(qs, "question")];
+      if (docs.length) bits.push(plural(docs.length, "document"));
+      sum.append(make("span", "muted small", bits.join(" · ")));
+      d.appendChild(sum);
+      for (const y of yearNotes) d.appendChild(yearNotesBox(y, quals.size > 1));
+      if (!yearNotes.length && docs.length) {
+        const building = (meta.buildingProfiles || []).length;
+        d.appendChild(make("p", "muted small", building ? "Claude is writing the examiners' notes for this year…" : "No examiners' notes for this year yet: they are written when the guides are built."));
+      }
+      if (papers.length) {
+        d.appendChild(make("h3", "pr-h3", "Papers"));
+        d.appendChild(paperTable(papers));
+      }
+      if (docs.length) {
+        d.appendChild(make("h3", "pr-h3", "Documents"));
+        d.appendChild(docTable(docs));
+      }
+      if (papers.length && key !== "undated") {
+        const act = make("div", "pr-actions");
+        const go = make("button", "", `Show ${key}'s questions`);
+        go.type = "button";
+        go.addEventListener("click", () => {
+          $$("[data-choices=hub-years] .pr-chip input").forEach((c) => { c.checked = c.value === key; });
+          $("[data-paper-filter]").value = "";
+          hubForm.querySelector("[name=source]").value = "paper";
+          loadHub();
+          hubList.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        act.appendChild(go);
+        d.appendChild(act);
+      }
+      box.appendChild(d);
+    };
+    for (const y of years) {
+      section(String(y), String(y), meta.papers.filter((p) => p.year === y), meta.docs.filter((d) => ofYear(d) && d.year === y), notes.filter((n) => n.year === y));
+    }
+    if (undated.length) section("undated", "Sample and undated papers", undated, [], []);
+  }
+
+  /** What examiners said about one year of one qualification. */
+  function yearNotesBox(y, showQual) {
+    const n = y.notes || {};
+    const box = make("div", "pr-year-notes");
+    box.appendChild(make("h3", "", showQual && y.qualification ? `Examiners' notes · ${y.qualification}` : "Examiners' notes"));
+    if (n.overview) box.appendChild(make("p", "", n.overview));
+    for (const [k, title] of [["went_well", "What went well"], ["common_mistakes", "Common mistakes"], ["advice", "Advice for next time"]]) {
+      const items = n[k] || [];
+      if (!items.length) continue;
+      box.appendChild(make("h3", "", title));
+      const ul = make("ul", "small");
+      for (const i of items) ul.appendChild(make("li", "", i));
+      box.appendChild(ul);
+    }
+    return box;
+  }
+
+  function paperTable(papers) {
+    const box = make("div");
     const wrap = make("div", "table-wrap");
     const t = make("table", "table small");
     t.innerHTML = "<thead><tr><th>Paper</th><th>Qualification</th><th>Questions</th><th>Added by</th><th></th></tr></thead>";
     const tb = make("tbody");
-    for (const p of meta.papers) {
-      sel.appendChild(new Option(p.qualification ? `${p.title} · ${p.qualification}` : p.title, String(p.id)));
+    for (const p of papers) {
       const tr = make("tr");
       tr.appendChild(make("td", "", p.title));
       tr.appendChild(make("td", "muted", p.qualification || ""));
@@ -458,6 +552,7 @@
       const act = make("td", "actions");
       if (p.examUrl) { const a = make("a", "button", "Paper"); a.href = p.examUrl; a.target = "_blank"; act.appendChild(a); }
       if (p.schemeUrl) { const a = make("a", "button", "Mark scheme"); a.href = p.schemeUrl; a.target = "_blank"; act.appendChild(a); }
+      (p.insertUrls || []).forEach((u, i, all) => { const a = make("a", "button", all.length > 1 ? `Insert ${i + 1}` : "Insert"); a.href = u; a.target = "_blank"; act.appendChild(a); });
       if (p.canDelete) {
         const b = make("button", "danger", "Remove");
         b.type = "button";
@@ -473,7 +568,7 @@
     t.appendChild(tb);
     wrap.appendChild(t);
     box.appendChild(wrap);
-    sel.value = [...sel.options].some((o) => o.value === keep) ? keep : "";
+    return box;
   }
 
   async function loadHub() {
@@ -506,6 +601,8 @@
       for (const t of q.topics) head.append(make("span", "pr-tag pr-topic", t));
       for (const t of q.spec || []) head.append(make("span", "pr-tag pr-spec", t));
       li.appendChild(head);
+      const links = insertLinks(q);
+      if (links.length) { const line = make("p", "small muted pr-q-links", "Uses the insert given with the paper: "); line.append(...links); li.appendChild(line); }
       const body = make("div", "pr-q-text prose");
       body.innerHTML = q.html;
       li.appendChild(body);
@@ -587,8 +684,9 @@
     e.preventDefault();
     const f = new FormData(paperForm);
     const title = String(f.get("title") || "").trim();
-    const files = [f.get("exam"), f.get("scheme")].filter((x) => x && x.size);
-    if (!title || !files.length) return;
+    const chosen = [["exam", f.get("exam")], ["scheme", f.get("scheme")], ["insert", f.get("insert")]].filter(([, x]) => x && x.size);
+    const files = chosen.map(([, x]) => x);
+    if (!title || !chosen.length || chosen[0][0] !== "exam") return;
     const tooBig = files.find((x) => x.size > meta.maxFileBytes);
     if (tooBig) { alertBox(paperForm, `${tooBig.name} is too large.`); return; }
     const btn = paperForm.querySelector("button[type=submit]");
@@ -598,7 +696,7 @@
     jobsEl.prepend(row);
     let bid = null;
     try {
-      bid = (await api("POST", "ingest/batches", { kind: "paper", title })).id;
+      bid = (await api("POST", "ingest/batches", { kind: "paper", title, parts: chosen.map(([part]) => part) })).id;
       const total = files.reduce((n, x) => n + x.size, 0);
       let done = 0;
       for (const file of files) {
@@ -677,12 +775,18 @@
   function renderDocs() {
     const box = $("[data-docs]");
     box.replaceChildren();
-    if (!meta.docs.length) { box.appendChild(make("p", "muted small", "No specifications, examiner reports, commentaries or guidance yet.")); return; }
+    const course = meta.docs.filter((d) => !ofYear(d));
+    if (!course.length) { box.appendChild(make("p", "muted small", meta.docs.length ? "None: every document so far is about one exam year, under Papers by year." : "No specifications, examiner reports, commentaries or guidance yet.")); return; }
+    box.appendChild(docTable(course));
+  }
+
+  function docTable(docs) {
+    const box = make("div");
     const wrap = make("div", "table-wrap");
     const t = make("table", "table small");
     t.innerHTML = "<thead><tr><th>Document</th><th>Kind</th><th>Qualification</th><th>Paper / series</th><th></th></tr></thead>";
     const tb = make("tbody");
-    for (const d of meta.docs) {
+    for (const d of docs) {
       const tr = make("tr");
       const name = make("td");
       name.appendChild(make("strong", "", d.title));
@@ -708,6 +812,7 @@
     t.appendChild(tb);
     wrap.appendChild(t);
     box.appendChild(wrap);
+    return box;
   }
 
   let guidesTimer = 0;

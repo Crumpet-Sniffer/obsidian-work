@@ -406,6 +406,13 @@ form:has(input[name="mode"][value="zip"]:checked) .mode-scratch { display: none;
 .pr-guide > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: .25rem .75rem; align-items: baseline; }
 .pr-guide > summary strong { font-size: 1.02rem; }
 .pr-guide-body { margin-top: .5rem; }
+.pr-years { display: grid; gap: .75rem; }
+.pr-year-notes { margin: .75rem 0; padding: .6rem .85rem; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 0 8px 8px 0; }
+.pr-year-notes h3 { font-size: .95rem; font-weight: 650; margin: .6rem 0 .25rem; }
+.pr-year-notes h3:first-child { margin-top: 0; }
+.pr-year-notes p, .pr-year-notes ul { margin: .25rem 0; }
+.pr-year-notes ul { padding-left: 1.2rem; }
+.pr-year .pr-h3 { margin-top: 1rem; }
 .pr-guide .pr-guide-body h2 { display: none; }
 .pr-guide .pr-guide-body h3 { font-size: .95rem; font-weight: 650; margin: 1rem 0 .35rem; }
 .pr-fields { display: flex; flex-wrap: wrap; gap: .35rem; margin: .6rem 0 .25rem; }

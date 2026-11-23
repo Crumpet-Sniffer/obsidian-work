@@ -98,6 +98,7 @@ pub struct Settings {
     pub prompt_match: String,
     pub prompt_digest: String,
     pub prompt_profile: String,
+    pub prompt_years: String,
 }
 
 /// A saved prompt, or the default when none is saved.
@@ -132,6 +133,9 @@ impl Settings {
     }
     pub fn profile_prompt(&self) -> &str {
         or_default(&self.prompt_profile, crate::prompts::PROFILE)
+    }
+    pub fn year_prompt(&self) -> &str {
+        or_default(&self.prompt_years, crate::prompts::YEARS)
     }
     pub fn match_prompt(&self) -> &str {
         or_default(&self.prompt_match, crate::prompts::MATCH)
@@ -178,6 +182,7 @@ impl Settings {
             prompt_match: get("ms.prompt_match", ""),
             prompt_digest: get("ms.prompt_digest", ""),
             prompt_profile: get("ms.prompt_profile", ""),
+            prompt_years: get("ms.prompt_years", ""),
         })
     }
 
@@ -255,6 +260,9 @@ pub struct SettingsForm {
     #[serde(default)]
     prompt_profile: String,
     reset_prompt_profile: Option<String>,
+    #[serde(default)]
+    prompt_years: String,
+    reset_prompt_years: Option<String>,
 }
 
 /// A prompt as typed: Windows line ends made plain, control characters dropped. The default itself (or nothing, or
@@ -328,6 +336,7 @@ pub async fn save_settings(
     let prompt_profile = clean_prompt(&f.prompt_profile, crate::prompts::PROFILE, f.reset_prompt_profile.is_some())?;
     let prompt_match = clean_prompt(&f.prompt_match, crate::prompts::MATCH, f.reset_prompt_match.is_some())?;
     let prompt_coach = clean_prompt(&f.prompt_coach, crate::prompts::COACH, f.reset_prompt_coach.is_some())?;
+    let prompt_years = clean_prompt(&f.prompt_years, crate::prompts::YEARS, f.reset_prompt_years.is_some())?;
     let custom: Vec<&str> = [
         ("filing", &prompt_file),
         ("planning", &prompt_plan),
@@ -340,6 +349,7 @@ pub async fn save_settings(
         ("sorting papers", &prompt_match),
         ("reading course documents", &prompt_digest),
         ("paper guides", &prompt_profile),
+        ("year notes", &prompt_years),
     ]
         .iter()
         .filter(|(_, p)| !p.is_empty())
@@ -374,6 +384,7 @@ pub async fn save_settings(
         ("ms.prompt_match", prompt_match),
         ("ms.prompt_digest", prompt_digest),
         ("ms.prompt_profile", prompt_profile),
+        ("ms.prompt_years", prompt_years),
     ];
     let new_key = f.api_key.trim().to_string();
     let mut key_change = "unchanged";

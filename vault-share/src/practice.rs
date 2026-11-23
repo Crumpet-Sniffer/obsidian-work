@@ -498,6 +498,8 @@ pub struct Paper {
     pub title: String,
     pub exam_path: String,
     pub scheme_path: String,
+    /// The inserts given with the paper (case studies, source booklets, data sheets), as vault paths.
+    pub insert_paths: Vec<String>,
     pub questions: i64,
     pub created_at: i64,
 }
@@ -600,13 +602,13 @@ impl Db {
 
     /// Add a past paper and the questions taken from it, together.
     #[allow(clippy::too_many_arguments)]
-    pub async fn add_paper(&self, vault: String, who: Who, title: String, info: PaperInfo, exam: String, scheme: String, qs: Vec<Question>) -> Result<i64> {
+    pub async fn add_paper(&self, vault: String, who: Who, title: String, info: PaperInfo, exam: String, scheme: String, inserts: Vec<String>, qs: Vec<Question>) -> Result<i64> {
         self.call(move |c| {
             let tx = c.transaction()?;
             tx.execute(
-                "INSERT INTO hub_papers (vault_id, user_id, username, title, exam_path, scheme_path, created_at, qualification, paper_number, month, year)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![vault, who.0, who.1, title, exam, scheme, now(), info.qualification, info.paper_number, info.month, info.year],
+                "INSERT INTO hub_papers (vault_id, user_id, username, title, exam_path, scheme_path, created_at, qualification, paper_number, month, year, insert_paths)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![vault, who.0, who.1, title, exam, scheme, now(), info.qualification, info.paper_number, info.month, info.year, serde_json::to_string(&inserts).unwrap_or_else(|_| "[]".into())],
             )?;
             let pid = tx.last_insert_rowid();
             for q in &qs {
@@ -636,7 +638,7 @@ impl Db {
             let mut st = c.prepare(
                 "SELECT p.id, p.user_id, p.username, p.title, p.exam_path, p.scheme_path,
                         (SELECT COUNT(*) FROM questions q WHERE q.paper_id = p.id), p.created_at,
-                        p.qualification, p.paper_number, p.month, p.year
+                        p.qualification, p.paper_number, p.month, p.year, p.insert_paths
                  FROM hub_papers p WHERE p.vault_id = ?1",
             )?;
             let rows: rusqlite::Result<Vec<Paper>> = st
@@ -649,6 +651,7 @@ impl Db {
                         title: r.get(3)?,
                         exam_path: r.get(4)?,
                         scheme_path: r.get(5)?,
+                        insert_paths: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
                         questions: r.get(6)?,
                         created_at: r.get(7)?,
                     })
@@ -1340,6 +1343,127 @@ impl Db {
     }
 }
 
+/// What examiners said about one exam year of a qualification, all its papers and series taken together. `notes`
+/// holds what Claude wrote, checked: overview, went_well, common_mistakes, advice.
+#[derive(Clone, Debug)]
+pub struct YearNotes {
+    pub qualification: String,
+    pub year: i64,
+    pub notes: Value,
+    pub updated_at: i64,
+}
+
+impl Db {
+    pub async fn year_notes(&self, vault: String) -> Result<Vec<YearNotes>> {
+        self.call(move |c| {
+            let mut st = c.prepare("SELECT qualification, year, notes, updated_at FROM hub_years WHERE vault_id = ?1 ORDER BY year DESC, qualification COLLATE NOCASE")?;
+            let rows = st
+                .query_map([vault], |r| {
+                    Ok(YearNotes { qualification: r.get(0)?, year: r.get(1)?, notes: serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(json!({})), updated_at: r.get(3)? })
+                })?
+                .collect();
+            rows
+        })
+        .await
+    }
+
+    /// Replace a qualification's year notes with these (years left out lose theirs).
+    pub async fn save_year_notes(&self, vault: String, qualification: String, years: Vec<(i64, Value)>) -> Result<()> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            tx.execute("DELETE FROM hub_years WHERE vault_id = ?1 AND qualification = ?2", params![vault, qualification])?;
+            for (year, notes) in &years {
+                tx.execute(
+                    "INSERT INTO hub_years (vault_id, qualification, year, notes, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![vault, qualification, year, notes.to_string(), now()],
+                )?;
+            }
+            tx.commit()
+        })
+        .await
+    }
+}
+
+/// Doc kinds that say how a year's exams went (a specification is about the course, not a year).
+const YEAR_DOC_KINDS: &[&str] = &["examiner_report", "answers_commentary", "notes_guidance"];
+
+/// Write the examiners' notes on each exam year of one qualification, from that year's examiner reports,
+/// commentaries and guidance. Years without such documents get no notes. Returns how many years have notes.
+pub async fn build_year_notes(st: &AppState, who: &Who, vault: &str, qualification: &str) -> Result<usize, String> {
+    let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
+    let same = |q: &str| q.trim().eq_ignore_ascii_case(qualification.trim());
+    let docs: Vec<Doc> = st
+        .db
+        .docs(vault.to_string())
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|d| same(&d.info.qualification) && d.info.year > 0 && YEAR_DOC_KINDS.contains(&d.kind.as_str()))
+        .collect();
+    let years: Vec<i64> = {
+        let mut y: Vec<i64> = docs.iter().map(|d| d.info.year).collect();
+        y.sort_unstable_by(|a, b| b.cmp(a));
+        y.dedup();
+        y
+    };
+    if years.is_empty() {
+        st.db.save_year_notes(vault.to_string(), qualification.to_string(), Vec::new()).await.map_err(|e| e.to_string())?;
+        return Ok(0);
+    }
+    let papers: Vec<Paper> = st.db.papers(vault.to_string()).await.map_err(|e| e.to_string())?.into_iter().filter(|p| same(&p.info.qualification) && years.contains(&p.info.year)).collect();
+    let mut documents = String::new();
+    for d in &docs {
+        // Only what bears on how the year went: not the content areas or command words of the course.
+        let g = |k: &str| d.digest.get(k).cloned().unwrap_or(json!([]));
+        let digest = json!({ "summary": d.digest.get("summary").cloned().unwrap_or(json!("")), "key_points": g("key_points"), "marking_guidance": g("marking_guidance"), "exemplars": g("exemplars") });
+        let block = format!(
+            "<document kind=\"{}\" title=\"{}\" year=\"{}\" series=\"{}\" paper=\"{}\">\n{}\n</document>\n",
+            d.kind,
+            d.title.replace('"', "'"),
+            d.info.year,
+            d.info.month.replace('"', "'"),
+            d.info.paper_number.replace('"', "'"),
+            cut(&digest.to_string(), 60_000)
+        );
+        if documents.len() + block.len() > 800_000 {
+            break;
+        }
+        documents.push_str(&block);
+    }
+    let mut listed = String::new();
+    for p in &papers {
+        listed.push_str(&format!("{} | {} | {} questions\n", p.info.year, p.title, p.questions));
+    }
+    let msg = format!("Qualification: {qualification}\n\n<documents>\n{documents}</documents>\n\n<papers>\nyear | paper | questions in the bank\n{listed}</papers>");
+    let year = object(json!({
+        "year": { "type": "integer" },
+        "overview": { "type": "string" },
+        "went_well": strings(),
+        "common_mistakes": strings(),
+        "advice": strings(),
+    }));
+    let schema = object(json!({ "years": { "type": "array", "items": year } }));
+    let v = ask(st, who, vault, "writing year notes", s.year_prompt(), None, json!([{ "role": "user", "content": msg }]), Some(schema), 16_000).await?;
+    let texts = |x: &Value, k: &str| -> Vec<Value> { list_of(x, k).iter().map(|t| clip(t.as_str().unwrap_or(""), 400)).filter(|t| !t.is_empty()).take(25).map(Value::String).collect() };
+    let mut saved: Vec<(i64, Value)> = Vec::new();
+    for y in list_of(&v, "years") {
+        let Some(n) = y["year"].as_i64().filter(|n| years.contains(n)) else { continue };
+        if saved.iter().any(|x| x.0 == n) {
+            continue;
+        }
+        let notes = json!({
+            "overview": clip(y["overview"].as_str().unwrap_or(""), 2000),
+            "went_well": texts(&y, "went_well"),
+            "common_mistakes": texts(&y, "common_mistakes"),
+            "advice": texts(&y, "advice"),
+        });
+        saved.push((n, notes));
+    }
+    let n = saved.len();
+    st.db.save_year_notes(vault.to_string(), qualification.to_string(), saved).await.map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
 /// Build (or rebuild) the paper guides of one qualification from its documents and past questions.
 pub async fn build_profiles(st: &AppState, who: &Who, vault: &str, qualification: &str) -> Result<usize, String> {
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
@@ -1492,7 +1616,14 @@ pub fn rebuild_in_background(st: &AppState, who: Who, vault: String, qualificati
         started.push(q.clone());
         let (st2, who2, vault2) = (st.clone(), who.clone(), vault.clone());
         tokio::spawn(async move {
-            let r = build_profiles(&st2, &who2, &vault2, &q).await;
+            let guides = build_profiles(&st2, &who2, &vault2, &q).await;
+            // The year notes need only the documents, so they are written even when the guides could not be.
+            let years = build_year_notes(&st2, &who2, &vault2, &q).await;
+            let r = match (guides, years) {
+                (Err(e), _) => Err(e),
+                (Ok(_), Err(e)) => Err(format!("the examiners' notes for each year could not be written: {e}")),
+                (Ok(n), Ok(_)) => Ok(n),
+            };
             {
                 let mut errors = st2.profile_errors.lock().unwrap_or_else(|e| e.into_inner());
                 match &r {
