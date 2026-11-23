@@ -5,6 +5,8 @@
 // through the site's API.
 import { under } from "../../microsidian/src/config";
 import { parseFrontmatter } from "../../microsidian/src/vault/vaultio";
+import JSZip from "jszip";
+import { cullZip } from "./worker/cull.js";
 
 // Files chosen on the New vault page wait here (in this browser only) until the new vault's Sources page picks
 // them up. A page cannot hand files to the next page any other way.
@@ -49,7 +51,7 @@ const handoff = {
   const dropText = form.querySelector("[data-drop-text]");
   const emptyText = dropText ? dropText.innerHTML : "";
   const mode = () => (form.querySelector('input[name="mode"]:checked') || {}).value;
-  const isSource = (f) => /\.(docx|pptx|zip)$/i.test(f.name) && !f.name.startsWith("~$");
+  const isSource = (f) => /\.(docx|pptx|zip|png|jpe?g|gif|webp)$/i.test(f.name) && !f.name.startsWith("~$");
   let chosen = [];
 
   function show() {
@@ -61,7 +63,7 @@ const handoff = {
   }
   function choose(files) {
     const ok = files.filter(isSource);
-    if (ok.length < files.length) window.alert("Only .docx, .pptx and .zip files can be added. The others were left out.");
+    if (ok.length < files.length) window.alert("Only Word, PowerPoint, picture and .zip files can be added. The others were left out.");
     chosen = ok;
     show();
   }
@@ -268,8 +270,10 @@ const handoff = {
   let received = 0; // when the last list arrived (for the planning clock)
   let pollTimer = 0;
 
+  const PICTURES = ["png", "jpg", "jpeg", "gif", "webp"];
   const isOffice = (name) => OFFICE.includes(extOf(name)) && !basename(name).startsWith("~$");
-  const isSource = (f) => (isOffice(f.name) || extOf(f.name) === "zip") && !f.name.startsWith(".");
+  const isPicture = (name) => PICTURES.includes(extOf(name));
+  const isSource = (f) => (isOffice(f.name) || isPicture(f.name) || extOf(f.name) === "zip") && !f.name.startsWith(".");
 
   function make(tag, cls, text) {
     const e = document.createElement(tag);
@@ -348,13 +352,65 @@ const handoff = {
     }
   }
 
+  // One line saying what culling a zip did.
+  function noteRow(name, text, failed) {
+    const li = make("li", failed ? "job is-failed" : "job is-done");
+    li.append(make("strong", "", name), make("span", "job-status", text));
+    jobsEl.prepend(li);
+    return li;
+  }
+
+  // Zips this page culls itself before uploading (larger ones are sent whole and culled on the server, so a
+  // browser never has to hold a huge zip in memory).
+  const CULL_IN_BROWSER = 400 * 1024 * 1024;
+
+  /**
+   * Cull a zip: keep only its resource files (Word, PowerPoint and pictures that are not icons), from any
+   * subfolder, and pack them into a new zip with the same folders. Returns the File to upload, or null when
+   * nothing in it can be added. A zip with nothing to cull is uploaded as it is.
+   */
+  async function cullBeforeUpload(f) {
+    if (f.size > CULL_IN_BROWSER) return f;
+    const row = noteRow(f.name, "Looking through the zip…");
+    let zip;
+    try {
+      zip = await JSZip.loadAsync(f);
+    } catch {
+      row.remove();
+      rejectRow(f.name, "Not added: this zip could not be opened.");
+      return null;
+    }
+    const { kept, culled, summary } = cullZip(zip, { imageMinBytes: (cfg.imageMinKB || 0) * 1000 });
+    if (!kept.length) {
+      row.remove();
+      rejectRow(f.name, `Not added: no Word, PowerPoint or picture files were found in it.${summary ? ` Culled: ${summary}.` : ""}`);
+      return null;
+    }
+    const status = row.querySelector(".job-status");
+    if (!culled) {
+      status.textContent = `${kept.length} resource file${kept.length === 1 ? "" : "s"}, nothing to cull`;
+      return f;
+    }
+    status.textContent = `Culling ${culled} file${culled === 1 ? "" : "s"}…`;
+    const out = new JSZip();
+    for (const k of kept) out.file(k.path, await k.e.async("uint8array"), { date: k.e.date, binary: true });
+    // Word, PowerPoint and pictures are already compressed: storing them is as small and much faster.
+    const blob = await out.generateAsync({ type: "blob", compression: "STORE" });
+    const saved = f.size - blob.size;
+    status.textContent = `${kept.length} resource file${kept.length === 1 ? "" : "s"} kept · culled ${summary}${saved >= 1048576 ? ` (${mb(saved)} not uploaded)` : ""}`;
+    return new File([blob], f.name, { type: "application/zip" });
+  }
+
   async function enqueue(files) {
     if (!cfg) cfg = await api("GET", "ingest/config");
     const ok = [];
     for (const f of files) {
-      if (!isSource(f)) rejectRow(f.name, "Not added: only .docx, .pptx and .zip files can be added.");
-      else if (isOffice(f.name) && f.size > cfg.maxFileBytes) rejectRow(f.name, `Not added: files can be at most ${Math.floor(cfg.maxFileBytes / 1048576)} MB.`);
-      else ok.push(f);
+      if (!isSource(f)) rejectRow(f.name, "Not added: only Word (.docx), PowerPoint (.pptx), pictures (.png, .jpg, .gif, .webp) and .zip files can be added.");
+      else if ((isOffice(f.name) || isPicture(f.name)) && f.size > cfg.maxFileBytes) rejectRow(f.name, `Not added: files can be at most ${Math.floor(cfg.maxFileBytes / 1048576)} MB.`);
+      else if (extOf(f.name) === "zip") {
+        const z = await cullBeforeUpload(f);
+        if (z) ok.push(z);
+      } else ok.push(f);
     }
     if (!ok.length) return;
 

@@ -36,7 +36,14 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   let width = 0, height = 0;
   const dpr = () => window.devicePixelRatio || 1;
 
-  // Preferences live in this browser only (localStorage may be unavailable, so every access is guarded).
+  // Settings (filters, groups, display, forces) are kept on the server for each account in each vault, and sent a
+  // moment after every change. Until they have arrived, the ones last used in this browser are shown; those are
+  // also what an account starts from the first time it opens this vault's graph. (localStorage may be
+  // unavailable, so every access is guarded.)
+  const settingsApi = wrap.dataset.api || "";
+  const csrf = wrap.dataset.csrf || "";
+  let settingsLoaded = false;
+  let saveTimer = 0;
   function readPref(key, fallback) {
     try {
       const v = localStorage.getItem("vault-share:graph:" + key);
@@ -45,7 +52,25 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   }
   function savePref(key, value) {
     try { localStorage.setItem("vault-share:graph:" + key, JSON.stringify(value)); } catch { /* ignore */ }
+    scheduleSave();
   }
+  function scheduleSave() {
+    if (!settingsApi || !settingsLoaded) return;
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(saveNow, 700);
+  }
+  function saveNow() {
+    saveTimer = 0;
+    fetch(`${settingsApi}/settings`, {
+      method: "PUT",
+      credentials: "same-origin",
+      keepalive: true,
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ settings: collectSettings() }),
+    }).catch(() => { /* kept in this browser; sent again with the next change */ });
+  }
+  // A change made just before leaving the page is still saved.
+  window.addEventListener("pagehide", () => { if (saveTimer) { window.clearTimeout(saveTimer); saveNow(); } });
 
   // ---------- theme ----------
   function readColors() {
@@ -102,9 +127,23 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   }
 
   // ---------- data ----------
-  fetch(wrap.dataset.src, { credentials: "same-origin", headers: { Accept: "application/json" } })
-    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then((d) => { data = d; annotate(d); rebuild(true); })
+  const getJson = (url) => fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } })
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+  // The graph and this account's settings arrive together, so the first layout already uses the settings.
+  const settingsP = settingsApi ? getJson(`${settingsApi}/settings`).catch(() => null) : Promise.resolve(null);
+  Promise.all([getJson(wrap.dataset.src), settingsP])
+    .then(([d, st]) => {
+      data = d;
+      annotate(d);
+      if (st) {
+        presetLists(st);
+        if (st.current) applySettings(st.current, false);
+      }
+      settingsLoaded = !!st;
+      // First visit to this vault's graph: start from what this browser last used, and keep it for this account.
+      if (st && !st.current) scheduleSave();
+      rebuild(true);
+    })
     .catch(() => { statusEl.textContent = "Could not load the graph. Try reloading the page."; });
 
   function rebuild(initial) {
@@ -693,8 +732,8 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
       searchEl.value = ""; query = ""; applySearch(); start();
     }
   });
-  filesEl.addEventListener("change", () => data && rebuild(false));
-  orphansEl.addEventListener("change", () => data && rebuild(false));
+  filesEl.addEventListener("change", () => { scheduleSave(); if (data) rebuild(false); });
+  orphansEl.addEventListener("change", () => { scheduleSave(); if (data) rebuild(false); });
   resetEl.addEventListener("click", () => { fit(); start(); });
 
   // ---------- groups ----------
@@ -713,14 +752,16 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   const groupsList = wrap.querySelector("[data-groups-list]");
   const groupAddEl = wrap.querySelector("[data-group-add]");
 
-  let groups = readPref("groups", []);
-  if (!Array.isArray(groups)) groups = [];
-  groups = groups
-    // Groups saved before there were kinds were searches.
-    .map((g) => (g && typeof g.q === "string" && !g.type ? { type: "search", value: g.q, color: g.color, hidden: false } : g))
-    .filter((g) => g && KINDS.some((k) => k.id === g.type) && typeof g.value === "string" && /^#[0-9a-f]{6}$/i.test(g.color || ""))
-    .map((g) => ({ type: g.type, value: g.value.slice(0, 200), color: g.color, hidden: !!g.hidden }))
-    .slice(0, 20);
+  function normalizeGroups(list) {
+    if (!Array.isArray(list)) return [];
+    return list
+      // Groups saved before there were kinds were searches.
+      .map((g) => (g && typeof g.q === "string" && !g.type ? { type: "search", value: g.q, color: g.color, hidden: false } : g))
+      .filter((g) => g && KINDS.some((k) => k.id === g.type) && typeof g.value === "string" && /^#[0-9a-f]{6}$/i.test(g.color || ""))
+      .map((g) => ({ type: g.type, value: g.value.slice(0, 200), color: g.color, hidden: !!g.hidden }))
+      .slice(0, 20);
+  }
+  let groups = normalizeGroups(readPref("groups", []));
   const saveGroups = () => savePref("groups", groups);
 
   // What groups match on, worked out once per node when the graph loads: its folder, file type and topics (the
@@ -952,9 +993,12 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
   }
 
   // ---------- forces panel ----------
+  // The force ID field (further down) is set up after the sliders; until then only the sliders are synced.
+  var forceIdReady = false; // eslint-disable-line no-var
   const sliders = wrap.querySelectorAll("[data-force]");
   function syncSliders() {
     sliders.forEach((el) => { el.value = String(forces[el.dataset.force]); });
+    if (forceIdReady) showForceId();
   }
   sliders.forEach((el) => {
     el.addEventListener("input", () => {
@@ -1026,6 +1070,281 @@ import { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide
     });
   }
   syncDisplay();
+
+  // ---------- force ID ----------
+  // The four forces as one short code, like a colour's hex code: "centre,repel,link,distance", for example
+  // "0.30,10.0,1.00,60". It can be copied to share a layout's forces, or pasted or typed in to use someone's.
+  const FORCE_ORDER = ["center", "repel", "link", "dist"];
+  const forceIdEl = wrap.querySelector("[data-force-id]");
+  const forceIdHelp = wrap.querySelector("[data-force-id-help]");
+  const forceIdHelpText = forceIdHelp ? forceIdHelp.textContent : "";
+  const sliderFor = (k) => wrap.querySelector(`[data-force="${k}"]`);
+  const decimals = (k) => {
+    const step = sliderFor(k) ? sliderFor(k).step : "1";
+    return step.includes(".") ? step.split(".")[1].length : 0;
+  };
+  function forceId(f = forces) {
+    return FORCE_ORDER.map((k) => Number(f[k]).toFixed(decimals(k))).join(",");
+  }
+  /** The forces a code stands for (clamped to what the sliders allow), or null if it is not four numbers. */
+  function parseForceId(text) {
+    const parts = String(text).trim().replace(/^[[(]|[\])]$/g, "").split(/\s*[,;\s]\s*/).filter(Boolean);
+    if (parts.length !== 4) return null;
+    const out = {};
+    for (let i = 0; i < 4; i++) {
+      const v = Number(parts[i]);
+      if (!Number.isFinite(v)) return null;
+      const el = sliderFor(FORCE_ORDER[i]);
+      const lo = el ? parseFloat(el.min) : -Infinity, hi = el ? parseFloat(el.max) : Infinity;
+      out[FORCE_ORDER[i]] = Math.min(hi, Math.max(lo, v));
+    }
+    return out;
+  }
+  function showForceId() {
+    if (forceIdEl && document.activeElement !== forceIdEl) {
+      forceIdEl.value = forceId();
+      forceIdEl.classList.remove("is-bad");
+    }
+  }
+  let helpTimer = 0;
+  function forceHelp(text, bad = false) {
+    if (!forceIdHelp) return;
+    forceIdHelp.textContent = text;
+    forceIdHelp.classList.toggle("is-bad", bad);
+    window.clearTimeout(helpTimer);
+    helpTimer = window.setTimeout(() => { forceIdHelp.textContent = forceIdHelpText; forceIdHelp.classList.remove("is-bad"); }, 2500);
+  }
+  function useForceId() {
+    const f = parseForceId(forceIdEl.value);
+    if (!f) {
+      forceIdEl.classList.add("is-bad");
+      forceHelp("A force ID is four numbers separated by commas: centre, repel, link, distance.", true);
+      return;
+    }
+    forceIdEl.classList.remove("is-bad");
+    Object.assign(forces, f);
+    savePref("forces", forces);
+    sliders.forEach((el) => { el.value = String(forces[el.dataset.force]); });
+    forceIdEl.value = forceId();
+    applyForces();
+    autoFit = true;
+    reheat(0.6);
+  }
+  if (forceIdEl) {
+    forceIdEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); useForceId(); forceIdEl.select(); }
+      else if (e.key === "Escape") { forceIdEl.value = forceId(); forceIdEl.classList.remove("is-bad"); forceIdEl.blur(); }
+    });
+    forceIdEl.addEventListener("change", useForceId);
+    // A pasted code is used at once.
+    forceIdEl.addEventListener("paste", () => window.setTimeout(() => { if (parseForceId(forceIdEl.value)) useForceId(); }, 0));
+    forceIdEl.addEventListener("focus", () => forceIdEl.select());
+  }
+  const forceCopyEl = wrap.querySelector("[data-force-id-copy]");
+  if (forceCopyEl) {
+    forceCopyEl.addEventListener("click", async () => {
+      const code = forceId();
+      try {
+        await navigator.clipboard.writeText(code);
+      } catch {
+        forceIdEl.value = code;
+        forceIdEl.select();
+        try { document.execCommand("copy"); } catch { /* the code is selected for copying by hand */ }
+      }
+      forceHelp(`Copied ${code}`);
+    });
+  }
+  sliders.forEach((el) => el.addEventListener("input", showForceId));
+  forceIdReady = true;
+  showForceId();
+
+  // ---------- settings: collect and apply ----------
+  function collectSettings() {
+    return {
+      v: 1,
+      filters: { files: filesEl.checked, orphans: orphansEl.checked },
+      groups: groups.map((g) => ({ type: g.type, value: g.value, color: g.color, hidden: !!g.hidden })),
+      display: Object.assign({}, display),
+      forces: Object.assign({}, forces),
+    };
+  }
+
+  /** Use a whole set of settings (saved, or a preset). Anything a preset leaves out goes back to its default. */
+  function applySettings(st, relayout = true) {
+    if (!st || typeof st !== "object") return;
+    const f = st.filters || {};
+    filesEl.checked = typeof f.files === "boolean" ? f.files : false;
+    orphansEl.checked = typeof f.orphans === "boolean" ? f.orphans : true;
+    groups = normalizeGroups(st.groups);
+    Object.assign(display, DISPLAY_DEFAULTS);
+    for (const k of Object.keys(DISPLAY_DEFAULTS)) if (st.display && Number.isFinite(st.display[k])) display[k] = st.display[k];
+    Object.assign(forces, FORCE_DEFAULTS);
+    for (const k of Object.keys(FORCE_DEFAULTS)) if (st.forces && Number.isFinite(st.forces[k])) forces[k] = st.forces[k];
+    try {
+      localStorage.setItem("vault-share:graph:groups", JSON.stringify(groups));
+      localStorage.setItem("vault-share:graph:display", JSON.stringify(display));
+      localStorage.setItem("vault-share:graph:forces", JSON.stringify(forces));
+    } catch { /* ignore */ }
+    renderGroups();
+    syncSliders();
+    syncDisplay();
+    if (arrowsEl) arrowsEl.checked = !!display.arrows;
+    applyForces();
+    if (relayout && data) {
+      rebuild(false);
+      autoFit = true;
+      reheat(0.6);
+    }
+  }
+
+  // ---------- presets ----------
+  // Each account saves named presets of its graph settings for this vault. "Other presets" lists everyone else's
+  // presets for this vault; loading one copies it into your own settings (theirs is not changed).
+  const presetMineEl = wrap.querySelector("[data-preset-mine]");
+  const presetNameEl = wrap.querySelector("[data-preset-name]");
+  const presetSaveEl = wrap.querySelector("[data-preset-save]");
+  const presetDeleteEl = wrap.querySelector("[data-preset-delete]");
+  const presetOthersEl = wrap.querySelector("[data-preset-others]");
+  const presetMenuEl = wrap.querySelector("[data-preset-menu]");
+  const presetStatusEl = wrap.querySelector("[data-preset-status]");
+  let mine = [], others = [];
+
+  const say = (text) => { if (presetStatusEl) presetStatusEl.textContent = text; };
+
+  async function presetApi(method, path, body) {
+    const res = await fetch(`${settingsApi}/${path}`, {
+      method,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf, Accept: "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    let out = null;
+    try { out = await res.json(); } catch { /* not JSON */ }
+    if (!res.ok) throw new Error((out && out.error) || `The server answered ${res.status}.`);
+    return out;
+  }
+
+  function presetLists(st) {
+    mine = Array.isArray(st.mine) ? st.mine : [];
+    others = Array.isArray(st.others) ? st.others : [];
+    renderPresets();
+  }
+
+  async function reloadPresets(selectId) {
+    try {
+      presetLists(await presetApi("GET", "settings"));
+      if (selectId !== undefined && presetMineEl) {
+        presetMineEl.value = String(selectId);
+        presetDeleteEl.disabled = !presetMineEl.value;
+      }
+    } catch (e) { say(`Could not load the presets: ${e.message}`); }
+  }
+
+  function renderPresets() {
+    if (presetMineEl) {
+      const keep = presetMineEl.value;
+      presetMineEl.replaceChildren(new Option(mine.length ? "Choose a preset to load…" : "No presets yet", ""));
+      for (const p of mine) presetMineEl.appendChild(new Option(p.name, String(p.id)));
+      presetMineEl.value = mine.some((p) => String(p.id) === keep) ? keep : "";
+      presetDeleteEl.disabled = !presetMineEl.value;
+    }
+    if (presetOthersEl) presetOthersEl.firstChild.textContent = `Other presets${others.length ? ` (${others.length})` : ""} `;
+    if (!presetMenuEl) return;
+    presetMenuEl.textContent = "";
+    if (!others.length) {
+      presetMenuEl.appendChild(Object.assign(document.createElement("div"), { className: "pm-empty", textContent: "Nobody else has saved a preset for this vault yet." }));
+      return;
+    }
+    let user = null;
+    for (const p of others) {
+      if (p.by !== user) {
+        user = p.by;
+        presetMenuEl.appendChild(Object.assign(document.createElement("div"), { className: "pm-user", textContent: user }));
+      }
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      b.textContent = p.name;
+      b.title = `Load ${p.by}'s preset "${p.name}" (forces ${forceId(Object.assign({}, FORCE_DEFAULTS, p.settings && p.settings.forces))})`;
+      b.addEventListener("click", () => {
+        applySettings(p.settings);
+        scheduleSave();
+        closeMenu();
+        if (presetMineEl) { presetMineEl.value = ""; presetDeleteEl.disabled = true; }
+        if (presetNameEl) presetNameEl.value = p.name;
+        say(`Loaded ${p.by}'s preset "${p.name}". Save it to keep a copy of your own.`);
+      });
+      presetMenuEl.appendChild(b);
+    }
+  }
+
+  function closeMenu() {
+    if (!presetMenuEl || presetMenuEl.hidden) return;
+    presetMenuEl.hidden = true;
+    presetOthersEl.setAttribute("aria-expanded", "false");
+  }
+  if (presetOthersEl && presetMenuEl) {
+    presetOthersEl.addEventListener("click", () => {
+      const open = presetMenuEl.hidden;
+      presetMenuEl.hidden = !open;
+      presetOthersEl.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) { const first = presetMenuEl.querySelector("button"); if (first) first.focus(); }
+    });
+    document.addEventListener("pointerdown", (e) => { if (!presetMenuEl.hidden && !e.target.closest(".preset-others")) closeMenu(); });
+    presetMenuEl.addEventListener("keydown", (e) => {
+      const items = [...presetMenuEl.querySelectorAll("button")];
+      const i = items.indexOf(document.activeElement);
+      if (e.key === "Escape") { closeMenu(); presetOthersEl.focus(); }
+      else if (e.key === "ArrowDown" && items.length) { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+      else if (e.key === "ArrowUp" && items.length) { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    });
+  }
+
+  if (presetMineEl) {
+    presetMineEl.addEventListener("change", () => {
+      const p = mine.find((x) => String(x.id) === presetMineEl.value);
+      presetDeleteEl.disabled = !p;
+      if (!p) return;
+      applySettings(p.settings);
+      scheduleSave();
+      if (presetNameEl) presetNameEl.value = p.name;
+      say(`Loaded "${p.name}".`);
+    });
+  }
+  async function savePreset() {
+    const name = presetNameEl.value.trim();
+    if (!name) { say("Type a name for the preset first."); presetNameEl.focus(); return; }
+    const replacing = mine.some((p) => p.name === name);
+    presetSaveEl.disabled = true;
+    try {
+      const r = await presetApi("POST", "presets", { name, settings: collectSettings() });
+      await reloadPresets(r.id);
+      say(replacing ? `Updated "${r.name}".` : `Saved "${r.name}". Others using this vault can load it too.`);
+    } catch (e) {
+      say(`Not saved: ${e.message}`);
+    } finally {
+      presetSaveEl.disabled = false;
+    }
+  }
+  if (presetSaveEl && presetNameEl) {
+    presetSaveEl.addEventListener("click", savePreset);
+    presetNameEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); savePreset(); } });
+  }
+  if (presetDeleteEl) {
+    presetDeleteEl.addEventListener("click", async () => {
+      const p = mine.find((x) => String(x.id) === presetMineEl.value);
+      if (!p || !window.confirm(`Delete the preset "${p.name}"? Others will no longer be able to load it.`)) return;
+      try {
+        await presetApi("DELETE", `presets/${p.id}`);
+        await reloadPresets("");
+        say(`Deleted "${p.name}".`);
+      } catch (e) { say(`Not deleted: ${e.message}`); }
+    });
+  }
+  if (!settingsApi) {
+    const sec = wrap.querySelector("[data-presets]");
+    if (sec) sec.hidden = true;
+  }
 
   // Read-only snapshot for debugging and measurements: positions in screen pixels.
   wrap.vsDebug = () => ({

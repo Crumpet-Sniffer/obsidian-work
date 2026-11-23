@@ -47,6 +47,7 @@ pub fn asset_version() -> &'static str {
             include_str!("../static/render.js"),
             include_str!("../static/mermaid.js"),
             include_str!("../static/editor.js"),
+            include_str!("../static/ingest.js"),
         ] {
             h.update(f.as_bytes());
         }
@@ -266,6 +267,24 @@ pub struct MsView {
     pub image_min_kb: u32,
     pub folder_indexes: bool,
     pub saved: bool,
+    pub image_modes: Vec<Opt>,
+    /// Models that can read pictures, plus "" for "the filing model sees them itself".
+    pub image_models: Vec<Opt>,
+    pub image_efforts: Vec<Opt>,
+    pub image_claude: bool,
+    pub image_parallel: u32,
+    pub max_image_parallel: u32,
+    pub prompts: Vec<PromptView>,
+}
+
+/// One editable system prompt on the admin page.
+pub struct PromptView {
+    /// Form field name: prompt_file, prompt_plan or prompt_image.
+    pub field: String,
+    pub label: String,
+    pub help: String,
+    pub text: String,
+    pub custom: bool,
 }
 
 #[derive(Template)]

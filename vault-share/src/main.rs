@@ -6,7 +6,9 @@ mod graph;
 mod handlers;
 mod markdown;
 mod security;
+mod prompts;
 mod spend;
+mod stats;
 mod templates;
 mod search;
 mod vault;
@@ -31,7 +33,7 @@ use axum::{
 use tower_http::{catch_panic::CatchPanicLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing_subscriber::EnvFilter;
 
-use handlers::{admin, auth as auth_h, edit, ingest, vaults};
+use handlers::{admin, auth as auth_h, edit, graph as graph_h, ingest, vaults};
 
 pub struct AppInner {
     pub cfg: config::Config,
@@ -43,6 +45,11 @@ pub struct AppInner {
     pub http: reqwest::Client,
     /// When each account last called Claude, for the hourly cap.
     pub ingest_calls: std::sync::Mutex<HashMap<i64, Vec<std::time::Instant>>>,
+    /// The same for calls that read one picture, which have their own (higher) cap.
+    pub image_calls: std::sync::Mutex<HashMap<i64, Vec<std::time::Instant>>>,
+    /// Process id of the running ingest worker (0 when none), for the resource tracker.
+    pub worker_pid: std::sync::atomic::AtomicU32,
+    pub stats: stats::Stats,
     /// Proves a request comes from the ingest worker this process started (new on every start).
     pub worker_token: String,
     /// When the worker last called in (Unix seconds; 0 = never).
@@ -111,6 +118,9 @@ async fn run() -> anyhow::Result<()> {
             .user_agent(concat!("vault-share/", env!("CARGO_PKG_VERSION")))
             .build()?,
         ingest_calls: std::sync::Mutex::new(HashMap::new()),
+        image_calls: std::sync::Mutex::new(HashMap::new()),
+        worker_pid: std::sync::atomic::AtomicU32::new(0),
+        stats: Default::default(),
         worker_token: auth::random_token(32),
         worker_seen: std::sync::atomic::AtomicI64::new(0),
     });
@@ -162,7 +172,8 @@ fn router(state: AppState) -> Router {
     // The call to Claude can take minutes at high effort, so it has no short timeout.
     let claude = Router::new()
         .route("/v/{id}/api/ingest/claude", post(ingest::claude))
-        .layer(DefaultBodyLimit::max(8 * 1024 * 1024));
+        // Pictures shown to the filing model travel in the request (Anthropic takes at most 32 MB).
+        .layer(DefaultBodyLimit::max(34 * 1024 * 1024));
 
     // The ingest worker (loopback, its own token). Progress reports list every file of a batch.
     let worker = Router::new()
@@ -188,6 +199,10 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/ingest/batches", get(handlers::batches::list).post(handlers::batches::create))
         .route("/v/{id}/api/ingest/batches/{bid}/start", post(handlers::batches::start))
         .route("/v/{id}/api/ingest/batches/{bid}/cancel", post(handlers::batches::cancel))
+        .route("/v/{id}/api/graph/settings", get(graph_h::get).put(graph_h::put))
+        .route("/v/{id}/api/graph/presets", post(graph_h::save_preset))
+        .route("/v/{id}/api/graph/presets/{pid}", axum::routing::delete(graph_h::delete_preset))
+        .route("/api/stats", get(stats::stats))
         .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)));
 

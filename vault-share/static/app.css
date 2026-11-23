@@ -252,3 +252,45 @@ form:has(input[name="mode"][value="zip"]:checked) .mode-scratch { display: none;
 .vault-card p { margin: 0; color: var(--muted); font-size: .925rem; }
 .vault-card .meta { margin-top: auto; padding-top: .5rem; font-size: .8rem; color: var(--muted); }
 
+
+/* Admin → Microsidian: pictures and system prompts */
+.ms-pictures { border: 1px solid var(--line); border-radius: 8px; padding: .75rem 1rem 1rem; margin: 0; display: grid; gap: .75rem; }
+.ms-pictures legend { padding: 0 .35rem; font-weight: 600; }
+.ms-pictures [hidden] { display: none; }
+.prompt-field { display: grid; gap: .35rem; margin-top: .75rem; }
+.prompt-field textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem; line-height: 1.45; resize: vertical; }
+.prompt-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1rem; align-items: baseline; }
+
+/* ---------- live resource tracker (top right) ---------- */
+.res-meter { position: relative; }
+.topbar .nav .res-meter { margin-right: .25rem; }
+.res-meter.in-tabbar { margin-left: auto; align-self: center; flex: none; }
+.res-btn { display: inline-flex; align-items: center; gap: .6rem; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; line-height: 1; cursor: pointer; font-variant-numeric: tabular-nums; }
+.res-btn:hover { color: var(--ink); border-color: var(--muted); }
+.rm-group { display: inline-flex; align-items: center; gap: .45rem; }
+.rm-group + .rm-group { padding-left: .6rem; border-left: 1px solid var(--line); }
+.rm-name { font-weight: 650; color: var(--ink); letter-spacing: .02em; }
+.rm { display: inline-flex; align-items: center; gap: 3px; }
+.rm-l { opacity: .8; }
+.rm-bar { position: relative; width: 28px; height: 5px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.rm-bar > span { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: inherit; transition: width .6s ease; }
+.rm.is-mid .rm-bar > span { background: #e9973f; }
+.rm.is-high .rm-bar > span { background: var(--bad, #fb464c); }
+.rm-v { min-width: 2.4em; text-align: right; color: var(--ink); }
+.res-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; width: 300px; padding: .75rem .9rem; background: var(--surface, var(--bg-alt)); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow, 0 6px 24px rgba(0,0,0,.25)); color: var(--ink); font-size: 13px; }
+.res-panel[hidden] { display: none; }
+.res-panel h3 { margin: 0 0 .35rem; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.res-panel h3 + .res-dl { margin-bottom: .75rem; }
+.res-dl { display: grid; grid-template-columns: auto 1fr; gap: .25rem .75rem; margin: 0; }
+.res-dl dt { color: var(--muted); }
+.res-dl dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.res-panel p { margin: .25rem 0 0; }
+@media (max-width: 1100px) {
+  .topbar .rm-bar { display: none; }
+}
+@media (max-width: 760px) {
+  .rm-l, .rm-bar { display: none; }
+  .res-btn { gap: .35rem; padding: 3px 6px; }
+  .res-panel { width: min(300px, calc(100vw - 32px)); }
+}
+@media (max-width: 480px) { .res-meter { display: none; } }

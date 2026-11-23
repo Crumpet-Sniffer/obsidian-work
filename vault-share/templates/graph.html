@@ -24,7 +24,7 @@
       <span class="icon-btn spacer"></span>
     </div>
     <div class="view-content graph-view">
-      <section class="graph-wrap" data-graph data-src="/v/{{ vault_id }}/graph.json" data-focus="{{ focus }}" data-topics="{{ topics_folder }}">
+      <section class="graph-wrap" data-graph data-src="/v/{{ vault_id }}/graph.json" data-focus="{{ focus }}" data-topics="{{ topics_folder }}" data-api="/v/{{ vault_id }}/api/graph" data-csrf="{% if let Some(u) = page.user %}{{ u.csrf }}{% endif %}">
         <canvas role="img" aria-label="Graph of links between notes in {{ vault_name }}. Use the file list to navigate by keyboard."></canvas>
         <div class="graph-controls" data-graph-panel>
           <details class="gc-sec" open>
@@ -38,6 +38,22 @@
               <label class="toggle-row"><span>Orphans</span><input type="checkbox" class="switch" data-graph-orphans checked></label>
             </div>
           </details>
+          <details class="gc-sec" data-presets><summary>Presets</summary><div class="gc-body">
+            <p class="muted small">Your graph settings are saved for you in this vault. Save them as a preset to come back to them, or load someone else's.</p>
+            <label class="slider-row"><span>My presets</span>
+              <select data-preset-mine aria-label="My presets"><option value="">Choose a preset to load…</option></select>
+            </label>
+            <div class="preset-save">
+              <input type="text" data-preset-name placeholder="Preset name" maxlength="60" aria-label="Preset name" spellcheck="false">
+              <button type="button" data-preset-save title="Save the current settings under this name">Save</button>
+              <button type="button" class="icon-btn" data-preset-delete title="Delete the chosen preset" aria-label="Delete the chosen preset" disabled><svg class="ic"><use href="#i-x"/></svg></button>
+            </div>
+            <div class="preset-others">
+              <button type="button" data-preset-others aria-haspopup="true" aria-expanded="false">Other presets <svg class="ic"><use href="#i-chev-down"/></svg></button>
+              <div class="preset-menu" data-preset-menu role="menu" hidden></div>
+            </div>
+            <p class="muted small" data-preset-status aria-live="polite"></p>
+          </div></details>
           <details class="gc-sec"><summary>Groups</summary><div class="gc-body">
             <div class="groups-list" data-groups-list></div>
             <button type="button" class="mod-cta group-add" data-group-add>New group</button>
@@ -54,6 +70,10 @@
             <label class="slider-row"><span>Repel force</span><input type="range" min="0" max="20" step="0.1" data-force="repel"></label>
             <label class="slider-row"><span>Link force</span><input type="range" min="0" max="1" step="0.01" data-force="link"></label>
             <label class="slider-row"><span>Link distance</span><input type="range" min="20" max="300" step="1" data-force="dist"></label>
+            <label class="slider-row"><span>Force ID <span class="muted small">(centre, repel, link, distance)</span></span>
+              <span class="force-id"><input type="text" data-force-id spellcheck="false" autocomplete="off" inputmode="decimal" aria-describedby="force-id-help" maxlength="40"><button type="button" class="icon-btn" data-force-id-copy title="Copy the force ID" aria-label="Copy the force ID"><svg class="ic"><use href="#i-link"/></svg></button></span>
+            </label>
+            <p class="muted small" id="force-id-help" data-force-id-help>Copy it to share these forces, or paste or type one and press Enter.</p>
             <button type="button" data-forces-reset>Reset forces</button>
           </div></details>
         </div>

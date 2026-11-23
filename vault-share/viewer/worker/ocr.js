@@ -33,7 +33,7 @@ async function load() {
 }
 
 /** RGBA pixels of a picture, or null for a format that cannot be decoded here. */
-function decode(path, data) {
+export function decode(path, data) {
   const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
   const b = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   if (ext === "png") {
@@ -103,27 +103,38 @@ export function tidy(text) {
 }
 
 /**
- * Read the text in each picture. Returns a Map of picture path -> text (pictures with no text are left out),
- * plus how many pictures could not be read. `onProgress(done, total)` is called before each picture.
+ * Read the text in each picture, `parallel` at a time (ONNX Runtime sessions take concurrent runs; decoding and
+ * scaling of one picture overlap the recognition of another). Returns a Map of picture path -> text (pictures with
+ * no text are left out), plus how many pictures could not be read. `onProgress(done, total)` is called as each
+ * picture finishes.
  */
-export async function readImageText(images, onProgress = () => {}) {
+export async function readImageText(images, onProgress = () => {}, parallel = 1) {
   const out = new Map();
-  let failed = 0;
+  let failed = 0, done = 0;
   if (!images.length) return { text: out, failed };
   const ocr = await load();
-  for (let i = 0; i < images.length; i++) {
-    await onProgress(i, images.length);
-    try {
-      const px = decode(images[i].path, images[i].data);
-      if (!px) { failed++; continue; }
-      const results = await ocr.recognize(prepare(px));
-      const text = tidy(ocr.processRecognition(results).text);
-      if (text) out.set(images[i].path, text);
-    } catch (e) {
-      console.warn(`OCR failed for ${images[i].path}: ${e && e.message ? e.message : e}`);
-      failed++;
+  let next = 0;
+  const one = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= images.length) return;
+      try {
+        const px = decode(images[i].path, images[i].data);
+        if (!px) failed++;
+        else {
+          const results = await ocr.recognize(prepare(px));
+          const text = tidy(ocr.processRecognition(results).text);
+          if (text) out.set(images[i].path, text);
+        }
+      } catch (e) {
+        console.warn(`OCR failed for ${images[i].path}: ${e && e.message ? e.message : e}`);
+        failed++;
+      }
+      done++;
+      await onProgress(done, images.length);
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(parallel, images.length)) }, one));
   return { text: out, failed };
 }
 

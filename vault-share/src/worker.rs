@@ -62,6 +62,7 @@ pub async fn supervise(st: AppState) {
         match cmd.spawn() {
             Ok(mut child) => {
                 tracing::info!("ingest worker started (pid {:?})", child.id());
+                st.worker_pid.store(child.id().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
                 if let Some(out) = child.stdout.take() {
                     tokio::spawn(async move {
                         let mut lines = BufReader::new(out).lines();
@@ -82,6 +83,7 @@ pub async fn supervise(st: AppState) {
                     Ok(s) => tracing::warn!("ingest worker exited ({s})"),
                     Err(e) => tracing::error!("ingest worker: {e}"),
                 }
+                st.worker_pid.store(0, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => tracing::error!("could not start the ingest worker with {}: {e}", st.cfg.node_bin.display()),
         }

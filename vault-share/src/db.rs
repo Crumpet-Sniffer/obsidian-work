@@ -202,6 +202,31 @@ impl Db {
                  PRAGMA user_version = 4; COMMIT;",
             )?;
         }
+        if version < 5 {
+            // Graph view settings, per account per vault: the settings in use, and named presets anyone can load.
+            // Vaults have no foreign key here (deleting one deletes its rows in delete_vault).
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE graph_state (
+                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     vault_id   TEXT NOT NULL,
+                     settings   TEXT NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (user_id, vault_id)
+                 );
+                 CREATE TABLE graph_presets (
+                     id         INTEGER PRIMARY KEY,
+                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     vault_id   TEXT NOT NULL,
+                     name       TEXT NOT NULL,
+                     settings   TEXT NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     UNIQUE (user_id, vault_id, name)
+                 );
+                 CREATE INDEX graph_presets_vault ON graph_presets(vault_id);
+                 PRAGMA user_version = 5; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -496,7 +521,14 @@ impl Db {
     }
 
     pub async fn delete_vault(&self, id: String) -> Result<()> {
-        self.call(move |c| c.execute("DELETE FROM vaults WHERE id = ?1", [id]).map(|_| ())).await
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            tx.execute("DELETE FROM graph_state WHERE vault_id = ?1", [&id])?;
+            tx.execute("DELETE FROM graph_presets WHERE vault_id = ?1", [&id])?;
+            tx.execute("DELETE FROM vaults WHERE id = ?1", [&id])?;
+            tx.commit()
+        })
+        .await
     }
 
     // ---------- API usage ----------
@@ -801,6 +833,112 @@ impl Db {
             }
             tx.commit()?;
             Ok(ids)
+        })
+        .await
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GraphPreset {
+    pub id: i64,
+    pub user_id: i64,
+    pub username: String,
+    pub name: String,
+    pub settings: String,
+    pub updated_at: i64,
+}
+
+impl Db {
+    // ---------- graph view settings ----------
+
+    pub async fn graph_state(&self, user_id: i64, vault_id: String) -> Result<Option<String>> {
+        self.call(move |c| {
+            c.query_row("SELECT settings FROM graph_state WHERE user_id = ?1 AND vault_id = ?2", params![user_id, vault_id], |r| r.get(0))
+                .optional()
+        })
+        .await
+    }
+
+    pub async fn set_graph_state(&self, user_id: i64, vault_id: String, settings: String) -> Result<()> {
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO graph_state (user_id, vault_id, settings, updated_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (user_id, vault_id) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at",
+                params![user_id, vault_id, settings, now()],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    /// Every preset for a vault, of every account, newest first.
+    pub async fn graph_presets(&self, vault_id: String) -> Result<Vec<GraphPreset>> {
+        self.call(move |c| {
+            let mut st = c.prepare(
+                "SELECT p.id, p.user_id, u.username, p.name, p.settings, p.updated_at
+                 FROM graph_presets p JOIN users u ON u.id = p.user_id
+                 WHERE p.vault_id = ?1 ORDER BY u.username COLLATE NOCASE, p.name COLLATE NOCASE",
+            )?;
+            let rows = st
+                .query_map([vault_id], |r| {
+                    Ok(GraphPreset {
+                        id: r.get(0)?,
+                        user_id: r.get(1)?,
+                        username: r.get(2)?,
+                        name: r.get(3)?,
+                        settings: r.get(4)?,
+                        updated_at: r.get(5)?,
+                    })
+                })?
+                .collect();
+            rows
+        })
+        .await
+    }
+
+    /// Save a preset under a name, replacing the account's own preset of that name. Returns its id, or None
+    /// when the account already has `max` presets for this vault (and none of this name).
+    pub async fn save_graph_preset(&self, user_id: i64, vault_id: String, name: String, settings: String, max: i64) -> Result<Option<i64>> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM graph_presets WHERE user_id = ?1 AND vault_id = ?2 AND name = ?3",
+                    params![user_id, vault_id, name],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let id = match existing {
+                Some(id) => {
+                    tx.execute("UPDATE graph_presets SET settings = ?1, updated_at = ?2 WHERE id = ?3", params![settings, now(), id])?;
+                    id
+                }
+                None => {
+                    let n: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM graph_presets WHERE user_id = ?1 AND vault_id = ?2",
+                        params![user_id, vault_id],
+                        |r| r.get(0),
+                    )?;
+                    if n >= max {
+                        return Ok(None);
+                    }
+                    tx.execute(
+                        "INSERT INTO graph_presets (user_id, vault_id, name, settings, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![user_id, vault_id, name, settings, now()],
+                    )?;
+                    tx.last_insert_rowid()
+                }
+            };
+            tx.commit()?;
+            Ok(Some(id))
+        })
+        .await
+    }
+
+    /// Delete one of the account's own presets. False when there is no such preset.
+    pub async fn delete_graph_preset(&self, user_id: i64, vault_id: String, id: i64) -> Result<bool> {
+        self.call(move |c| {
+            c.execute("DELETE FROM graph_presets WHERE id = ?1 AND user_id = ?2 AND vault_id = ?3", params![id, user_id, vault_id]).map(|n| n > 0)
         })
         .await
     }

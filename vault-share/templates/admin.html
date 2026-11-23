@@ -54,6 +54,39 @@
     <label><span>Filing guidance <span class="muted">(optional)</span></span>
       <textarea name="guidance" rows="4" maxlength="4000" placeholder="Your own rules for filing, in plain words. For example: Do not file worksheets or answer sheets.">{{ ms.guidance }}</textarea>
     </label>
+    <fieldset class="ms-pictures" data-image-settings>
+      <legend>Pictures in sources</legend>
+      <div class="grid-2">
+        <label>How pictures are read
+          <select name="image_mode" data-image-mode>{% for m in ms.image_modes %}<option value="{{ m.value }}"{% if m.selected %} selected{% endif %}>{{ m.label }}</option>{% endfor %}</select>
+        </label>
+        <label>Pictures read at once
+          <input name="image_parallel" value="{{ ms.image_parallel }}" inputmode="numeric" pattern="[0-9]+" maxlength="2" required>
+          <span class="small muted">1 to {{ ms.max_image_parallel }}. OCR uses at most 4 at once.</span>
+        </label>
+      </div>
+      <div class="grid-2" data-image-claude{% if !ms.image_claude %} hidden{% endif %}>
+        <label>Picture model
+          <select name="image_model">{% for m in ms.image_models %}<option value="{{ m.value }}"{% if m.selected %} selected{% endif %}>{{ m.label }}</option>{% endfor %}</select>
+        </label>
+        <label>Picture model effort
+          <select name="image_effort">{% for e in ms.image_efforts %}<option value="{{ e.value }}"{% if e.selected %} selected{% endif %}>{{ e.label }}</option>{% endfor %}</select>
+        </label>
+      </div>
+      <p class="small muted">OCR reads only the words in a picture, on this server, and the pictures are never sent anywhere. With Claude, each picture (scaled down to 1568 px) is sent to Anthropic. A picture model such as Claude Haiku 5.5 reads every picture first, several at a time, and passes the words it finds and a short description of each one on to the filing model: cheap, and fine for batches of any size. Without a picture model, the filing model is shown up to 100 pictures of each file itself, which costs more, and the batch plan sees only the text of the files.</p>
+    </fieldset>
+    <details class="ms-more" id="prompts">
+      <summary>System prompts</summary>
+      <p class="small muted">The instructions Claude is given for each kind of call. Edit them to change how sources are filed; your filing guidance above is added after them either way. Tick "Use the default" (or empty the box) to go back to the built-in prompt, which also picks up later improvements to it.</p>
+      {% for p in ms.prompts %}
+      <div class="prompt-field">
+        <label><span>{{ p.label }}{% if p.custom %} <span class="pill">edited</span>{% endif %}</span>
+          <textarea name="{{ p.field }}" rows="10" maxlength="20000">{{ p.text }}</textarea>
+        </label>
+        <div class="prompt-foot"><span class="small muted">{{ p.help }}</span>{% if p.custom %}<label class="check small"><input type="checkbox" name="reset_{{ p.field }}" value="1"> Use the default</label>{% endif %}</div>
+      </div>
+      {% endfor %}
+    </details>
     <details class="ms-more">
       <summary>Folders and images</summary>
       <div class="grid-2">

@@ -50,9 +50,29 @@ fn valid_id(id: &str) -> bool {
 fn clean_name(raw: &str) -> Option<String> {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or("").trim();
     let name: String = base.chars().filter(|c| !c.is_control()).take(200).collect();
-    let lower = name.to_ascii_lowercase();
-    let ok_ext = lower.ends_with(".docx") || lower.ends_with(".pptx") || lower.ends_with(".zip");
+    let ok_ext = source_ext(&name).is_some();
     (ok_ext && !name.starts_with('.') && !name.starts_with("~$")).then_some(name)
+}
+
+/// Pictures that can be added as sources on their own (each becomes a note of its text and description).
+pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+
+/// The extension of a file that can be uploaded to a batch: Word, PowerPoint, a picture, or a zip of them.
+fn source_ext(name: &str) -> Option<String> {
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    (matches!(ext.as_str(), "docx" | "pptx" | "zip") || IMAGE_EXTS.contains(&ext.as_str())).then_some(ext)
+}
+
+/// Whether a file's first bytes fit its extension.
+fn magic_ok(ext: &str, head: &[u8]) -> bool {
+    match ext {
+        "docx" | "pptx" | "zip" => head.starts_with(b"PK\x03\x04"),
+        "png" => head.starts_with(b"\x89PNG"),
+        "jpg" | "jpeg" => head.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "gif" => head.starts_with(b"GIF8"),
+        "webp" => head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP",
+        _ => false,
+    }
 }
 
 fn batch_json(b: &BatchRow, me: &CurrentUser) -> Value {
@@ -132,7 +152,7 @@ pub async fn upload(
     }
     let raw_name = header_str(&headers, "x-upload-name").unwrap_or("");
     let decoded = percent_encoding::percent_decode_str(raw_name).decode_utf8_lossy();
-    let name = clean_name(&decoded).ok_or_else(|| ApiErr::Bad("Only .docx, .pptx and .zip files can be added.".into()))?;
+    let name = clean_name(&decoded).ok_or_else(|| ApiErr::Bad("Only Word, PowerPoint, picture (.png, .jpg, .gif, .webp) and .zip files can be added.".into()))?;
     let total: u64 = header_str(&headers, "x-upload-size").and_then(|v| v.parse().ok()).ok_or_else(|| ApiErr::Bad("Missing file size.".into()))?;
     let offset: u64 = header_str(&headers, "x-upload-offset").and_then(|v| v.parse().ok()).ok_or_else(|| ApiErr::Bad("Missing upload offset.".into()))?;
     let lower = name.to_ascii_lowercase();
@@ -193,18 +213,28 @@ pub async fn upload(
         return ok(json!({ "received": received }));
     }
 
-    // The whole file is in: check it is a zip container (Word, PowerPoint and zips all are), then keep it.
-    let mut head = [0u8; 4];
-    let is_pk = match tokio::fs::File::open(&part).await {
-        Ok(mut f) => tokio::io::AsyncReadExt::read_exact(&mut f, &mut head).await.is_ok() && &head == b"PK\x03\x04",
+    // The whole file is in: check its first bytes fit its type (Word, PowerPoint and zips are all zip
+    // containers), then keep it.
+    let ext = source_ext(&name).unwrap_or_default();
+    let mut head = [0u8; 12];
+    let fits = match tokio::fs::File::open(&part).await {
+        Ok(mut f) => {
+            let mut n = 0;
+            while n < head.len() {
+                match tokio::io::AsyncReadExt::read(&mut f, &mut head[n..]).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(k) => n += k,
+                }
+            }
+            magic_ok(&ext, &head[..n])
+        }
         Err(_) => false,
     };
-    if !is_pk {
+    if !fits {
         let _ = tokio::fs::remove_file(&part).await;
-        return Err(ApiErr::Bad(format!("{name} is not a Word, PowerPoint or zip file.")));
+        return Err(ApiErr::Bad(format!("{name} is not the kind of file its name says.")));
     }
-    let ext = if is_zip { ".zip" } else if lower.ends_with(".docx") { ".docx" } else { ".pptx" };
-    let stored = format!("{count:04}{ext}");
+    let stored = format!("{count:04}.{ext}");
     tokio::fs::rename(&part, dir.join(&stored)).await.map_err(|e| ApiErr::Internal(e.into()))?;
     if !st.db.add_batch_file(bid.clone(), json!({ "name": name, "stored": stored, "size": total })).await? {
         let _ = tokio::fs::remove_file(dir.join(&stored)).await;

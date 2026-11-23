@@ -15,7 +15,7 @@ use crate::{
     errors::{AppError, AppResult},
     handlers::{auth::CsrfForm, ingest},
     templates::{
-        fmt_bytes, fmt_ts, render, AdminPage, AuditView, BackupView, MessagePage, MsView, Opt, PageCtx, UserView,
+        fmt_bytes, fmt_ts, render, AdminPage, AuditView, BackupView, MessagePage, MsView, Opt, PageCtx, PromptView, UserView,
         VaultAdminPage, VaultAdminView, VaultNewPage,
     },
     vault::{self, is_valid_id, ImportError, Limits},
@@ -85,6 +85,7 @@ pub async fn dashboard(
         })
         .collect();
     let s = ingest::Settings::load(&st.db).await?;
+    let (file_prompt, plan_prompt, image_prompt) = (s.file_prompt().to_string(), s.plan_prompt().to_string(), s.image_prompt().to_string());
     let ms = MsView {
         key_set: s.api_key.is_some(),
         key_from_env: s.api_key.is_some() && !s.key_saved,
@@ -106,6 +107,51 @@ pub async fn dashboard(
         image_min_kb: s.image_min_kb,
         folder_indexes: s.folder_indexes,
         saved: q.saved.as_deref() == Some("microsidian"),
+        image_modes: ingest::IMAGE_MODES
+            .iter()
+            .map(|(id, label)| Opt { value: id.to_string(), label: label.to_string(), selected: *id == s.image_mode })
+            .collect(),
+        image_models: std::iter::once(Opt {
+            value: String::new(),
+            label: "None: the filing model sees the pictures itself".into(),
+            selected: s.image_model.is_empty(),
+        })
+        .chain(ingest::MODELS.iter().map(|(id, label)| Opt {
+            value: id.to_string(),
+            label: format!("{label} reads them first and passes on their text and a description"),
+            selected: *id == s.image_model,
+        }))
+        .collect(),
+        image_efforts: ingest::EFFORTS
+            .iter()
+            .map(|e| Opt { value: e.to_string(), label: e.to_string(), selected: *e == s.image_effort })
+            .collect(),
+        image_claude: s.image_mode == "claude",
+        image_parallel: s.image_parallel,
+        max_image_parallel: ingest::MAX_IMAGE_PARALLEL,
+        prompts: vec![
+            PromptView {
+                field: "prompt_file".into(),
+                label: "Filing one document".into(),
+                help: "Sent with every source: decides its folder, topics and related notes. The answer still has to fit the same form (suitable, folder, topics, new topics, related notes).".into(),
+                custom: !s.prompt_file.trim().is_empty(),
+                text: file_prompt.clone(),
+            },
+            PromptView {
+                field: "prompt_plan".into(),
+                label: "Planning a batch".into(),
+                help: "Sent once for a batch of several files, with all of them: plans new topics and a folder for each.".into(),
+                custom: !s.prompt_plan.trim().is_empty(),
+                text: plan_prompt.clone(),
+            },
+            PromptView {
+                field: "prompt_image".into(),
+                label: "Reading a picture".into(),
+                help: "Used when a picture model reads the pictures: sent with each picture, asks for its text and a description.".into(),
+                custom: !s.prompt_image.trim().is_empty(),
+                text: image_prompt.clone(),
+            },
+        ],
     };
     let spend = crate::spend::view(&st.db, ingest::usd_gbp(&st.db).await?).await?;
     Ok(render(&AdminPage { page: PageCtx::for_user(&user), csrf: user.csrf.clone(), users, vaults, audit, ms, spend }))

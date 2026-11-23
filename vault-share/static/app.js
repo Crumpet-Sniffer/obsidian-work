@@ -526,3 +526,152 @@ if (current) current.scrollIntoView({ block: "center" });
     wrap.addEventListener("pointerleave", hide);
   });
 })();
+
+// ---------- Admin → Microsidian: show the picture-model settings only when Claude reads pictures ----------
+(() => {
+  const mode = document.querySelector("[data-image-mode]");
+  const claude = document.querySelector("[data-image-claude]");
+  if (!mode || !claude) return;
+  mode.addEventListener("change", () => { claude.hidden = mode.value !== "claude"; });
+})();
+
+// ---------- live resource tracker (top right of every page) ----------
+// The machine the site runs on (the NAS: CPU, memory, the disk with the site's data) and the site itself (this
+// server and its ingest worker). Asked for every 3 seconds while the page is visible; click it for the details.
+(() => {
+  "use strict";
+  const signedIn = document.querySelector('form[action="/logout"], [data-csrf]');
+  if (!signedIn) return;
+  const topNav = document.querySelector(".topbar .nav");
+  const tabbar = document.querySelector(".tabbar");
+  const host = topNav || tabbar;
+  if (!host) return;
+
+  const el = document.createElement("div");
+  el.className = "res-meter" + (topNav ? "" : " in-tabbar");
+  el.hidden = true;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "res-btn";
+  btn.setAttribute("aria-expanded", "false");
+  btn.setAttribute("aria-label", "Server resources");
+  const panel = document.createElement("div");
+  panel.className = "res-panel";
+  panel.hidden = true;
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-label", "Server resources");
+  el.append(btn, panel);
+  if (topNav) topNav.prepend(el); else tabbar.appendChild(el);
+
+  const pct = (v) => (v === null || v === undefined || !Number.isFinite(v) ? null : Math.max(0, Math.min(100, v)));
+  const fmt = (n) => {
+    if (n >= 1099511627776) return (n / 1099511627776).toFixed(2) + " TB";
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+    if (n >= 1048576) return Math.round(n / 1048576) + " MB";
+    return Math.round(n / 1024) + " KB";
+  };
+  const level = (p) => (p === null ? "" : p >= 90 ? "is-high" : p >= 70 ? "is-mid" : "");
+
+  // A small labelled bar for the button.
+  function meter(label, p, title, value) {
+    const m = document.createElement("span");
+    m.className = `rm ${level(p)}`;
+    m.title = title;
+    const l = document.createElement("span");
+    l.className = "rm-l";
+    l.textContent = label;
+    const bar = document.createElement("span");
+    bar.className = "rm-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${p === null ? 0 : p}%`;
+    bar.appendChild(fill);
+    const v = document.createElement("span");
+    v.className = "rm-v";
+    v.textContent = value || (p === null ? "…" : `${Math.round(p)}%`);
+    m.append(l, bar, v);
+    return m;
+  }
+
+  function row(dl, k, v) {
+    const dt = document.createElement("dt");
+    dt.textContent = k;
+    const dd = document.createElement("dd");
+    dd.textContent = v;
+    dl.append(dt, dd);
+  }
+
+  function render(s) {
+    const n = s.nas || {}, a = s.app || {};
+    const nasCpu = pct(n.cpu);
+    const nasMem = n.memTotal ? pct((n.memUsed / n.memTotal) * 100) : null;
+    const disk = n.disk && n.disk.total ? pct((n.disk.used / n.disk.total) * 100) : null;
+    const appCpu = pct(a.cpu);
+    const appMemOf = a.memLimit || n.memTotal || 0;
+    const appMemUsed = a.memContainer || a.mem || 0;
+    const appMem = appMemOf ? pct((appMemUsed / appMemOf) * 100) : null;
+
+    const g1 = document.createElement("span");
+    g1.className = "rm-group";
+    g1.append(
+      Object.assign(document.createElement("span"), { className: "rm-name", textContent: "NAS" }),
+      meter("CPU", nasCpu, `NAS CPU: ${nasCpu === null ? "measuring" : Math.round(nasCpu) + "%"} of ${n.cores} cores`),
+      meter("RAM", nasMem, `NAS memory: ${fmt(n.memUsed || 0)} of ${fmt(n.memTotal || 0)}`),
+    );
+    if (disk !== null) g1.append(meter("Disk", disk, `Disk with the site's data: ${fmt(n.disk.used)} of ${fmt(n.disk.total)}`));
+    const g2 = document.createElement("span");
+    g2.className = "rm-group";
+    g2.append(
+      Object.assign(document.createElement("span"), { className: "rm-name", textContent: "Site" }),
+      meter("CPU", appCpu, `Site CPU (server and ingest worker): ${appCpu === null ? "measuring" : Math.round(appCpu) + "%"} of ${a.cpuLimit ? a.cpuLimit + " CPUs allowed" : "the machine"}`),
+      meter("RAM", appMem, `Site memory: ${fmt(appMemUsed)}${appMemOf ? ` of ${fmt(appMemOf)}${a.memLimit ? " allowed" : ""}` : ""}`, fmt(appMemUsed)),
+    );
+    btn.replaceChildren(g1, g2);
+
+    const dl = document.createElement("dl");
+    dl.className = "res-dl";
+    const h1 = Object.assign(document.createElement("h3"), { textContent: "NAS" });
+    row(dl, "CPU", nasCpu === null ? "measuring…" : `${nasCpu.toFixed(1)}% of ${n.cores} cores`);
+    row(dl, "Memory", `${fmt(n.memUsed || 0)} of ${fmt(n.memTotal || 0)}${nasMem === null ? "" : ` (${Math.round(nasMem)}%)`}`);
+    if (n.disk) row(dl, "Data disk", `${fmt(n.disk.used)} used of ${fmt(n.disk.total)} (${fmt(n.disk.total - n.disk.used)} free)`);
+    const dl2 = document.createElement("dl");
+    dl2.className = "res-dl";
+    const h2 = Object.assign(document.createElement("h3"), { textContent: "This site" });
+    row(dl2, "CPU", appCpu === null ? "measuring…" : `${appCpu.toFixed(1)}% of ${a.cpuLimit ? `the ${a.cpuLimit} CPUs it may use` : "the machine"}`);
+    row(dl2, "Memory", `${fmt(a.mem || 0)} in its processes${a.memContainer ? `, ${fmt(a.memContainer)} for the container` : ""}${a.memLimit ? ` (limit ${fmt(a.memLimit)})` : ""}`);
+    row(dl2, "Ingest worker", a.worker ? "running" : "not running");
+    const foot = Object.assign(document.createElement("p"), { className: "small muted", textContent: "Updated every 3 seconds while this page is open." });
+    panel.replaceChildren(h1, dl, h2, dl2, foot);
+    el.hidden = false;
+  }
+
+  let timer = 0, busy = false, failures = 0;
+  async function tick() {
+    timer = 0;
+    if (document.hidden || busy) return schedule();
+    busy = true;
+    try {
+      const r = await fetch("/api/stats", { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (r.status === 401 || r.status === 403 || r.redirected) { el.remove(); return; }
+      if (!r.ok) throw new Error(String(r.status));
+      const s = await r.json();
+      if (s) render(s);
+      failures = 0;
+    } catch {
+      failures++;
+    } finally {
+      busy = false;
+    }
+    schedule();
+  }
+  function schedule() {
+    if (!timer && el.isConnected) timer = window.setTimeout(tick, failures ? Math.min(30000, 3000 * 2 ** failures) : 3000);
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && !busy) { window.clearTimeout(timer); timer = 0; tick(); } });
+  btn.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    btn.setAttribute("aria-expanded", panel.hidden ? "false" : "true");
+  });
+  document.addEventListener("pointerdown", (e) => { if (!panel.hidden && !el.contains(e.target)) { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); btn.focus(); } });
+  tick();
+})();

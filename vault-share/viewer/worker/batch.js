@@ -14,14 +14,20 @@ import { planBatch } from "../../../microsidian/src/ai/plan";
 import { validate } from "../../../microsidian/src/ingest/proposal";
 import { checkPlan, fitToPlan, mergeKnownTopics, planNote } from "../../../microsidian/src/ingest/batch";
 import { applyIngest } from "../../../microsidian/src/vault/apply";
+import { escapeLineStart, escapeMd } from "../../../microsidian/src/convert/text";
 import { internal, ApiError, ServerIO, Session } from "./server.js";
-import { readImageText, withImageText } from "./ocr.js";
+import { readImageText } from "./ocr.js";
+import { directBlocks, readPicturesWithClaude, withPictureReadings } from "./pictures.js";
+import { cullZip } from "./cull.js";
 
-const OFFICE = /\.(docx|pptx)$/i;
+const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
 const basename = (p) => p.split("/").pop();
 const extOf = (p) => (p.includes(".") ? p.slice(p.lastIndexOf(".") + 1).toLowerCase() : "");
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-class Cancelled extends Error {}
+class Cancelled extends Error {
+  constructor() { super("Cancelled"); this.name = "Cancelled"; }
+}
 
 function explain(e) {
   if (e instanceof ApiError) return e.message;
@@ -82,8 +88,9 @@ export async function runBatch(claim) {
     const cfg = await session.api("GET", "ingest/config");
     if (!cfg.configured) throw new Error("No Anthropic API key is set. An admin can add one under Admin → Microsidian.");
 
-    // The uploads: Word and PowerPoint files, and zips, whose Word and PowerPoint files (in any subfolder) are
-    // each a source. A zip is opened once; each file in it is unpacked when it is needed.
+    // The uploads: Word and PowerPoint files, pictures, and zips. A zip is first culled: only its resource files
+    // (Word, PowerPoint and pictures, in any subfolder) are kept, and each is a source; everything else in it is
+    // left out and listed. A zip is opened once; each file in it is unpacked when it is needed.
     const sources = [];
     for (let i = 0; i < claim.files.length; i++) {
       const f = claim.files[i];
@@ -92,15 +99,11 @@ export async function runBatch(claim) {
         p.files.push(row);
         try {
           const zip = await JSZip.loadAsync(await readFile(f.path));
-          // Some tools (Windows PowerShell's Compress-Archive, older Windows zippers) write folder separators as
-          // backslashes, so names are normalised before looking at folders and file names.
-          const entries = Object.values(zip.files)
-            .map((e) => ({ e, path: e.name.replace(/\\/g, "/") }))
-            .filter(({ e, path }) => !e.dir && !path.endsWith("/") && OFFICE.test(path) && !basename(path).startsWith("~$") && !path.split("/").some((s) => s.startsWith(".") || s === "__MACOSX"))
-            .sort((a, b) => a.path.localeCompare(b.path));
-          if (!entries.length) Object.assign(row, { state: "failed", text: "Not added: no .docx or .pptx files were found in this zip." });
-          else Object.assign(row, { state: "done", text: `${entries.length} file${entries.length === 1 ? "" : "s"} found` });
-          for (const { e, path } of entries) sources.push({ key: `${i}:${path}`, name: basename(path), title: path, get: () => e.async("uint8array") });
+          const { kept, culled, summary } = cullZip(zip, { imageMinBytes: cfg.imageMinKB * 1000 });
+          if (!kept.length) Object.assign(row, { state: "failed", text: `Not added: no resource files were found in this zip.${summary ? ` Culled: ${summary}.` : ""}` });
+          else Object.assign(row, { state: "done", text: `${plural(kept.length, "resource file")} kept${culled ? ` · ${plural(culled, "other file")} culled` : ""}` });
+          if (summary) row.detail = `Culled before filing: ${summary}.`;
+          for (const { e, path } of kept) sources.push({ key: `${i}:${path}`, name: basename(path), title: path, get: () => e.async("uint8array") });
         } catch (err) {
           console.warn(`could not open zip ${f.name}: ${err && err.stack ? err.stack : err}`);
           Object.assign(row, { state: "failed", text: "Not added: this zip could not be opened." });
@@ -138,7 +141,7 @@ export async function runBatch(claim) {
       p.steps.read.done = i;
       p.steps.read.note = s.name;
       try {
-        s.doc = await readSource(s, cfg, set, async (f) => { p.steps.read.done = i + f; rep.check(); await rep.push(); });
+        s.doc = await readSource(s, cfg, session, set, async (f) => { p.steps.read.done = i + f; rep.check(); await rep.push(); }, () => rep.check());
         set(s, "waiting", todo.length > 1 ? "Read · waiting for the rest of the batch" : "Read");
       } catch (e) {
         fail(s, e);
@@ -172,6 +175,7 @@ export async function runBatch(claim) {
             effort: cfg.effort,
             catalogue: cat,
             guidance: cfg.guidance,
+            system: cfg.prompts && cfg.prompts.plan,
             documents: ready.map((s) => ({ id: s.id, fileName: s.doc.fileName, text: s.doc.text })),
           });
           plan = checkPlan(out.plan, cat, cfg.layout, ready.map((s) => ({ id: s.id, fileName: s.doc.fileName })), (x) => io.files.has(x));
@@ -238,28 +242,90 @@ export async function runBatch(claim) {
 
 const convertOptions = (cfg) => ({ imageMinBytes: cfg.imageMinKB * 1000, isLogo: () => false, attachmentsDir: cfg.layout.attachments });
 
-// Step 1 for one file: its text, with the words read from its pictures. Only the text is kept.
-async function readSource(s, cfg, set, onFraction) {
+const imageCfg = (cfg) => cfg.images || { mode: "ocr", model: "", parallel: 4 };
+const picturesDirect = (cfg) => imageCfg(cfg).mode === "claude" && !imageCfg(cfg).model;
+
+/**
+ * The pictures of a file, read the way an admin chose: OCR, or Claude's picture model, several at a time. Returns
+ * readings (a Map of path -> { text, description }), how many could not be read, and why reading failed
+ * altogether, if it did. When the filing model is to be shown the pictures itself, nothing is read here.
+ */
+async function readPictures(images, s, cfg, session, set, onFraction, check) {
+  const ic = imageCfg(cfg);
+  const readings = new Map();
+  if (!images.length) return { readings, failed: 0, error: "", how: "" };
+  if (picturesDirect(cfg)) return { readings, failed: 0, error: "", how: "" };
+  const at = Math.min(ic.mode === "claude" ? ic.parallel : Math.min(ic.parallel, 4), images.length);
+  const status = async (done, total) => {
+    set(s, "working", `Reading its pictures (${done} of ${total}${at > 1 ? `, ${at} at a time` : ""})…`, done / total);
+    await onFraction(done / total);
+  };
+  set(s, "working", "Reading its pictures…", 0);
+  try {
+    if (ic.mode === "claude") {
+      const r = await readPicturesWithClaude(images, {
+        fetch: session.claudeImageFetch,
+        effort: "low",
+        system: cfg.prompts && cfg.prompts.image,
+        parallel: at,
+        context: s.title,
+        onProgress: status,
+        check,
+      });
+      for (const [k, v] of r.text) readings.set(k, v);
+      return { readings, failed: r.failed, error: "", how: "read by Claude" };
+    }
+    // OCR already spreads each picture over every core, so more than a few at once only adds memory.
+    const r = await readImageText(images, status, at);
+    for (const [k, v] of r.text) readings.set(k, { text: v, description: "" });
+    return { readings, failed: r.failed, error: "", how: "read by OCR" };
+  } catch (e) {
+    if (e instanceof Cancelled) throw e;
+    console.warn(`the pictures could not be read: ${e && e.stack ? e.stack : e}`);
+    return { readings, failed: 0, error: e && e.message ? e.message : String(e), how: "" };
+  }
+}
+
+// Step 1 for one file: its text, with what was read from its pictures. Only the text is kept.
+async function readSource(s, cfg, session, set, onFraction, check) {
   set(s, "working", "Reading the file…", null);
   const bytes = await s.get();
   if (bytes.byteLength > cfg.maxFileBytes) throw new Error(`Files can be at most ${Math.floor(cfg.maxFileBytes / 1048576)} MB.`);
-  const res = await convertOffice(bytes, extOf(s.name), convertOptions(cfg));
-  let ocr = { text: new Map(), failed: 0 };
-  let ocrError = "";
-  if (res.images.length) {
-    set(s, "working", "Reading the text in its pictures…", 0);
-    try {
-      ocr = await readImageText(res.images, async (done, total) => {
-        set(s, "working", `Reading the text in its pictures (${done + 1} of ${total})…`, done / total);
-        await onFraction(done / total);
-      });
-    } catch (e) {
-      if (e instanceof Cancelled) throw e;
-      console.warn(`OCR could not run: ${e && e.stack ? e.stack : e}`);
-      ocrError = e && e.message ? e.message : String(e);
-    }
+  if (PICTURE.test(s.name)) {
+    // A picture on its own: its note is the picture, its text and its description.
+    const r = await readPictures([{ path: s.name, data: bytes }], s, cfg, session, set, onFraction, check);
+    return {
+      fileName: s.name,
+      picture: true,
+      reading: r.readings.get(s.name) || { text: "", description: "" },
+      text: withPictureReadings(`![[${s.name}]]`, r.readings),
+      pictures: r.readings.size,
+      ocrFailed: r.failed,
+      ocrError: r.error,
+      how: r.how,
+    };
   }
-  return { fileName: s.name, text: withImageText(res.body, ocr.text), pictures: ocr.text.size, ocrFailed: ocr.failed, ocrError };
+  const res = await convertOffice(bytes, extOf(s.name), convertOptions(cfg));
+  const r = await readPictures(res.images, s, cfg, session, set, onFraction, check);
+  return {
+    fileName: s.name,
+    text: withPictureReadings(res.body, r.readings),
+    pictures: r.readings.size,
+    ocrFailed: r.failed,
+    ocrError: r.error,
+    how: r.how,
+  };
+}
+
+/** The converted "body" of a picture added on its own: the picture, its text and its description. */
+function pictureBody(path, reading) {
+  const lines = (t) => t.split("\n").map((l) => escapeLineStart(escapeMd(l))).join("\n");
+  const out = [`![[${path}]]`];
+  if (reading.text) out.push("", "## Text in the picture", "", lines(reading.text));
+  if (reading.description) out.push("", "## Description", "", lines(reading.description));
+  // Never "mostly visual": the picture is the content.
+  const words = Math.max(40, `${reading.text} ${reading.description}`.split(/\s+/).filter(Boolean).length);
+  return { body: out.join("\n"), images: [], imageHashes: [], slideCount: 0, words };
 }
 
 // Step 3 for one file: Claude's connections for it, checked, then the note and the original are written.
@@ -282,9 +348,24 @@ async function fileSource(s, cfg, io, plan, total, set, onFraction) {
     cat = await buildCatalogue(io, layout);
   }
 
+  // Pictures shown to the filing model itself: converted again here (to the same paths as before), so a large
+  // batch does not hold every picture in memory while it is planned.
+  let images, notShown = 0;
+  if (picturesDirect(cfg)) {
+    set(s, "working", "Preparing its pictures for Claude…", null);
+    const pics = doc.picture
+      ? [{ path: doc.fileName, data: await s.get() }]
+      : (await convertOffice(await s.get(), extOf(s.name), convertOptions(cfg))).images;
+    const d = directBlocks(pics);
+    images = d.blocks;
+    notShown = d.left;
+  }
+
   set(s, "working", plan ? "Claude is making its connections…" : "Asking Claude where it belongs…", null);
   await onFraction(0.05);
   const outcome = await callClaude({
+    system: cfg.prompts && cfg.prompts.file,
+    images,
     apiKey: "held-by-the-server",
     fetch: io.s.claudeFetch,
     effort: cfg.effort,
@@ -316,6 +397,7 @@ async function fileSource(s, cfg, io, plan, total, set, onFraction) {
         layout,
         updateFolderIndexes: cfg.updateFolderIndexes,
         convert: async (path) => {
+          if (doc.picture) return pictureBody(path, doc.reading);
           const out = await convertOffice(await io.readBinary(path), ext, { ...convertOptions(cfg), originalPath: path });
           for (const img of out.images) if (!(await io.exists(img.path))) await io.writeBinary(img.path, img.data);
           return out;
@@ -337,11 +419,13 @@ async function fileSource(s, cfg, io, plan, total, set, onFraction) {
     `${report.changed.length} files updated`,
     `${(u.input + u.cacheRead).toLocaleString("en-GB")} tokens in, ${u.output.toLocaleString("en-GB")} out`,
   ];
-  if (doc.pictures) bits.push(`text read from ${doc.pictures} picture${doc.pictures === 1 ? "" : "s"}`);
+  if (doc.pictures) bits.push(`${plural(doc.pictures, "picture")} ${doc.how}`);
+  if (images && images.size) bits.push(`${plural(images.size, "picture")} shown to Claude`);
   if (planned) bits.push("planned with the batch");
   const notes = [...report.warnings];
   if (outcome.fallbackUsed) notes.push("A substitute model was used because the first declined.");
-  if (doc.ocrError) notes.push(`The text in its pictures could not be read (${doc.ocrError}), so Claude saw only the document's own text.`);
+  if (notShown) notes.push(`${plural(notShown, "picture")} could not be shown to Claude (too many or too large for one request).`);
+  if (doc.ocrError) notes.push(`Its pictures could not be read (${doc.ocrError}), so Claude saw only the document's own text.`);
   else if (doc.ocrFailed) notes.push(`${doc.ocrFailed} picture${doc.ocrFailed === 1 ? "" : "s"} could not be read.`);
   if (s.planShortened) notes.push("Its text was shortened for the batch plan, which was too large to send whole; its own connections used all of it.");
   if (planned && report.notePath.slice(0, -3) !== planned.notePath) notes.push(`It was filed at a different path from the one planned (${planned.notePath}), so links to it from this batch may need fixing.`);

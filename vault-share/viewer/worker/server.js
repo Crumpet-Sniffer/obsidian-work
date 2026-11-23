@@ -59,12 +59,17 @@ export class Session {
   }
 
   // The Anthropic SDK's request, sent to the server, which adds the API key, model and effort.
-  claudeFetch = (_url, init = {}) => {
+  claudeFetch = (_url, init = {}) => this.toClaude(init, {});
+
+  // The same, for reading one picture: the server uses the model and effort chosen for pictures.
+  claudeImageFetch = (_url, init = {}) => this.toClaude(init, { "X-Ingest-Purpose": "image" });
+
+  toClaude(init, extra) {
     const beta = new Headers(init.headers || {}).get("anthropic-beta");
-    const headers = { ...this.headers, "Content-Type": "application/json" };
+    const headers = { ...this.headers, ...extra, "Content-Type": "application/json" };
     if (beta) headers["anthropic-beta"] = beta;
     return go(`${this.base}/api/ingest/claude`, { method: "POST", headers, body: init.body, signal: init.signal });
-  };
+  }
 }
 
 // Vault access for Microsidian's code (its VaultIO). Holds the text of every note, fetched in one request, so

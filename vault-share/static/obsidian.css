@@ -506,3 +506,20 @@ input.switch::after { transition: transform .18s var(--ease), background-color .
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Graph presets and force ID */
+.preset-save { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; }
+.preset-save input, .force-id input { min-width: 0; padding: 4px 8px; font-size: 13px; }
+.preset-save .icon-btn, .force-id .icon-btn { width: 26px; height: 26px; }
+.preset-save .icon-btn[disabled] { opacity: .35; cursor: default; }
+.preset-others { position: relative; }
+.preset-others > button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.preset-others > button .ic { width: 14px; height: 14px; }
+.preset-menu { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 6; max-height: 260px; overflow: auto; background: var(--bg-alt); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow); padding: 4px; }
+.preset-menu[hidden] { display: none; }
+.preset-menu .pm-user { padding: 6px 8px 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.preset-menu button { display: block; width: 100%; text-align: left; padding: 5px 8px; border: 0; background: none; border-radius: 4px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.preset-menu button:hover, .preset-menu button:focus-visible { background: var(--hover, rgba(127,127,127,.15)); }
+.preset-menu .pm-empty { padding: 6px 8px; font-size: 13px; color: var(--muted); }
+.force-id { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; font-family: var(--font-mono, ui-monospace, monospace); }
+.force-id input.is-bad { border-color: var(--bad); }
