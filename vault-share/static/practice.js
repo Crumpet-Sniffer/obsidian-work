@@ -109,7 +109,23 @@
     pick.hubTopics = choices("hub-topics", topics, { checked: false, anyHint: "None ticked means any." });
     pick.hubTypes = choices("hub-types", types, { checked: false, anyHint: "None ticked means any." });
     pick.hubMarks = choices("hub-marks", marks, { checked: false, anyHint: "None ticked means any." });
+    const years = [...new Set(meta.papers.map((p) => p.year).filter((y) => y > 0))].sort((a, b) => b - a);
+    pick.hubYears = choices("hub-years", years.map((y) => ({ value: y, label: String(y) })), { checked: false, anyHint: years.length ? "None ticked means any." : "" });
     pick.cardTopics = choices("card-topics", topics);
+    const specLabels = [...new Set(meta.profiles.flatMap((p) => p.fields.map((f) => f.label)))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    pick.hubSpec = choices("hub-spec", specLabels.map((l) => ({ value: l, label: l })), { checked: false, anyHint: specLabels.length ? "None ticked means any. Past questions are tagged when the paper guides are built." : "" });
+    $("[data-choices=hub-spec]").hidden = !specLabels.length;
+    // Questions tab: write for one paper, on some of its specification areas.
+    const paperSel = $("[data-gen-paper]");
+    const keepPaper = paperSel.value;
+    paperSel.replaceChildren(new Option("Any paper (no paper guide)", ""));
+    for (const p of meta.profiles) paperSel.appendChild(new Option(`${p.title}${p.qualification ? ` · ${p.qualification}` : ""}`, String(p.id)));
+    paperSel.value = [...paperSel.options].some((o) => o.value === keepPaper) ? keepPaper : "";
+    $("[data-gen-paper-row]").hidden = !meta.profiles.length;
+    genPaperChanged();
+    $("#pr-quals").replaceChildren(...(meta.qualifications || []).map((q) => new Option(q)));
+    renderDocs();
+    renderGuides();
     const usePapers = $("[data-gen-form] [name=use_papers]");
     usePapers.disabled = !meta.paperQuestions;
     usePapers.checked = !!meta.paperQuestions;
@@ -119,6 +135,14 @@
 
   // ---------- writing questions ----------
   const genForm = $("[data-gen-form]");
+  function genPaperChanged() {
+    const p = meta.profiles.find((x) => String(x.id) === $("[data-gen-paper]").value);
+    const box = $("[data-choices=gen-spec]");
+    box.hidden = !p;
+    pick.genSpec = p ? choices("gen-spec", p.fields.map((f) => ({ value: f.label, label: f.questions ? `${f.label} (${f.questions})` : f.label }))) : () => [];
+    $("[data-gen-paper-hint]").textContent = p ? "Claude follows this paper's format, command words and examiners' advice, and models the questions on its past papers." : "";
+  }
+  $("[data-gen-paper]").addEventListener("change", genPaperChanged);
   async function generate(count) {
     const f = new FormData(genForm);
     const body = {
@@ -128,6 +152,8 @@
       difficulty: f.get("difficulty"),
       count,
       use_papers: !!f.get("use_papers"),
+      profile: f.get("profile") ? Number(f.get("profile")) : null,
+      spec: pick.genSpec ? pick.genSpec() : [],
     };
     const btns = $$("button", genForm);
     btns.forEach((b) => { b.disabled = true; });
@@ -244,6 +270,7 @@
       head.append(make("strong", "", `Question ${n + 1}`));
       head.append(make("span", "pr-tag", plural(q.marks, "mark")), make("span", "pr-tag", typeLabel(q.type)));
       for (const t of q.topics) head.append(make("span", "pr-tag pr-topic", t));
+      for (const t of q.spec || []) head.append(make("span", "pr-tag pr-spec", t));
       if (q.paper) head.append(make("span", "muted small", `${q.paper}${q.number ? ` · Q${q.number}` : ""}`));
       li.appendChild(head);
       const body = make("div", "pr-q-text prose");
@@ -419,12 +446,13 @@
     }
     const wrap = make("div", "table-wrap");
     const t = make("table", "table small");
-    t.innerHTML = "<thead><tr><th>Paper</th><th>Questions</th><th>Added by</th><th></th></tr></thead>";
+    t.innerHTML = "<thead><tr><th>Paper</th><th>Qualification</th><th>Questions</th><th>Added by</th><th></th></tr></thead>";
     const tb = make("tbody");
     for (const p of meta.papers) {
-      sel.appendChild(new Option(p.title, String(p.id)));
+      sel.appendChild(new Option(p.qualification ? `${p.title} · ${p.qualification}` : p.title, String(p.id)));
       const tr = make("tr");
       tr.appendChild(make("td", "", p.title));
+      tr.appendChild(make("td", "muted", p.qualification || ""));
       tr.appendChild(make("td", "", String(p.questions)));
       tr.appendChild(make("td", "", p.by));
       const act = make("td", "actions");
@@ -455,6 +483,8 @@
       topics: pick.hubTopics().join(","),
       types: pick.hubTypes().join(","),
       marks: pick.hubMarks().join(","),
+      years: pick.hubYears().join(","),
+      spec: pick.hubSpec().join("|"),
       source: f.get("source") || "",
       paper: f.get("paper") || "",
     });
@@ -474,6 +504,7 @@
       head.append(c, make("strong", "", q.paper ? `${q.paper}${q.number ? ` · Q${q.number}` : ""}` : "Written by Claude"));
       head.append(make("span", "pr-tag", plural(q.marks, "mark")), make("span", "pr-tag", typeLabel(q.type)));
       for (const t of q.topics) head.append(make("span", "pr-tag pr-topic", t));
+      for (const t of q.spec || []) head.append(make("span", "pr-tag pr-spec", t));
       li.appendChild(head);
       const body = make("div", "pr-q-text prose");
       body.innerHTML = q.html;
@@ -586,6 +617,154 @@
       btn.disabled = false;
     }
   });
+  const zipForm = $("[data-zip-form]");
+  zipForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const file = new FormData(zipForm).get("zip");
+    if (!file || !file.size) return;
+    const btn = zipForm.querySelector("button[type=submit]");
+    btn.disabled = true;
+    const row = make("li", "job");
+    row.append(make("strong", "", file.name), make("span", "job-status", "Uploading…"));
+    jobsEl.prepend(row);
+    let bid = null;
+    try {
+      bid = (await api("POST", "ingest/batches", { kind: "paper", zip: true })).id;
+      await sendFile(bid, file, (sent) => { row.lastChild.textContent = `Uploading… ${pct(sent, file.size)}%`; });
+      await api("POST", `ingest/batches/${bid}/start`);
+      row.remove();
+      zipForm.reset();
+      loadPaperJobs();
+    } catch (err) {
+      if (bid) { try { await api("POST", `ingest/batches/${bid}/cancel`); } catch { /* gone */ } }
+      row.classList.add("is-failed");
+      row.lastChild.textContent = `Not added: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  const specForm = $("[data-spec-form]");
+  specForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(specForm);
+    const file = f.get("spec");
+    if (!file || !file.size) return;
+    if (file.size > meta.maxFileBytes) { alertBox(specForm, `${file.name} is too large.`); return; }
+    const btn = specForm.querySelector("button[type=submit]");
+    btn.disabled = true;
+    const row = make("li", "job");
+    row.append(make("strong", "", file.name), make("span", "job-status", "Uploading…"));
+    jobsEl.prepend(row);
+    let bid = null;
+    try {
+      bid = (await api("POST", "ingest/batches", { kind: "paper", spec: true, title: String(f.get("qualification") || "").trim() })).id;
+      await sendFile(bid, file, (sent) => { row.lastChild.textContent = `Uploading… ${pct(sent, file.size)}%`; });
+      await api("POST", `ingest/batches/${bid}/start`);
+      row.remove();
+      specForm.reset();
+      loadPaperJobs();
+    } catch (err) {
+      if (bid) { try { await api("POST", `ingest/batches/${bid}/cancel`); } catch { /* gone */ } }
+      row.classList.add("is-failed");
+      row.lastChild.textContent = `Not added: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ---------- exam documents and paper guides ----------
+  function renderDocs() {
+    const box = $("[data-docs]");
+    box.replaceChildren();
+    if (!meta.docs.length) { box.appendChild(make("p", "muted small", "No specifications, examiner reports, commentaries or guidance yet.")); return; }
+    const wrap = make("div", "table-wrap");
+    const t = make("table", "table small");
+    t.innerHTML = "<thead><tr><th>Document</th><th>Kind</th><th>Qualification</th><th>Paper / series</th><th></th></tr></thead>";
+    const tb = make("tbody");
+    for (const d of meta.docs) {
+      const tr = make("tr");
+      const name = make("td");
+      name.appendChild(make("strong", "", d.title));
+      if (d.summary) name.appendChild(make("div", "muted", d.summary));
+      tr.appendChild(name);
+      tr.appendChild(make("td", "nowrap", d.kindLabel));
+      tr.appendChild(make("td", "", d.qualification || ""));
+      tr.appendChild(make("td", "nowrap", [d.paperNumber, d.month, d.year || ""].filter(Boolean).join(" ")));
+      const act = make("td", "actions");
+      if (d.url) { const a = make("a", "button", "Open"); a.href = d.url; a.target = "_blank"; act.appendChild(a); }
+      if (d.canDelete) {
+        const b = make("button", "danger", "Remove");
+        b.type = "button";
+        b.addEventListener("click", async () => {
+          if (!window.confirm(`Remove "${d.title}"? Build the guides again afterwards to leave it out of them.`)) return;
+          try { await api("DELETE", `practice/docs/${d.id}`); await loadMeta(); } catch (e) { alertBox(box, e.message); }
+        });
+        act.appendChild(b);
+      }
+      tr.appendChild(act);
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+    wrap.appendChild(t);
+    box.appendChild(wrap);
+  }
+
+  let guidesTimer = 0;
+  function renderGuides() {
+    window.clearTimeout(guidesTimer);
+    const box = $("[data-guides]");
+    const status = $("[data-guides-status]");
+    box.replaceChildren();
+    const building = meta.buildingProfiles || [];
+    const failed = meta.failedProfiles || [];
+    const bits = [];
+    if (building.length) bits.push(`Claude is building the guides for ${building.join(", ")}… (this takes a minute or two)`);
+    for (const f of failed) bits.push(`The guides for ${f.qualification} could not be built: ${f.error}`);
+    status.textContent = bits.join(" ");
+    status.className = `small ${failed.length && !building.length ? "pr-bad" : "muted"}`;
+    if (!meta.profiles.length && !building.length) box.appendChild(make("p", "muted small", "No guides yet. Add a specification or past papers and they are built automatically."));
+    for (const p of meta.profiles) {
+      const d = make("details", "pr-guide");
+      const sum = make("summary");
+      sum.append(make("strong", "", p.title));
+      if (p.qualification) sum.append(make("span", "muted small", p.qualification));
+      sum.append(make("span", "muted small", `${p.fields.length} fields · ${p.fields.reduce((n, f) => n + f.questions, 0)} tagged questions`));
+      d.appendChild(sum);
+      const fields = make("div", "pr-fields");
+      for (const f of p.fields) {
+        const b = make("button", "pr-field", f.label);
+        b.type = "button";
+        b.title = "Show the past questions on this area";
+        b.appendChild(make("span", "muted", String(f.questions)));
+        b.addEventListener("click", () => {
+          $$("[data-choices=hub-spec] .pr-chip input").forEach((c) => { c.checked = c.value === f.label; });
+          const src = hubForm.querySelector("[name=source]");
+          src.value = "";
+          loadHub();
+          hubList.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        fields.appendChild(b);
+      }
+      d.appendChild(fields);
+      const body = make("div", "prose small pr-guide-body");
+      body.innerHTML = p.html;
+      d.appendChild(body);
+      const act = make("div", "pr-actions");
+      const go = make("button", "primary", "Write questions for this paper");
+      go.type = "button";
+      go.addEventListener("click", () => { show("questions"); $("[data-gen-paper]").value = String(p.id); genPaperChanged(); });
+      act.appendChild(go);
+      d.appendChild(act);
+      box.appendChild(d);
+    }
+    $("[data-guides-rebuild]").disabled = !!building.length || !(meta.qualifications || []).length;
+    if (building.length) guidesTimer = window.setTimeout(() => loadMeta().then(() => { if (!$("[data-panel=hub]").hidden) loadHub(); }), 5000);
+  }
+  $("[data-guides-rebuild]").addEventListener("click", async () => {
+    try { await api("POST", "practice/profiles/rebuild", {}); await loadMeta(); } catch (e) { alertBox($("[data-panel=hub]"), e.message); }
+  });
+
   async function loadPaperJobs() {
     window.clearTimeout(jobsTimer);
     let r;
@@ -602,11 +781,32 @@
       if (b.status === "queued") text = "Waiting to start…";
       else if (b.status === "running") {
         active = true;
-        if (steps.plan && steps.plan.state === "working") text = `${steps.plan.note || "Claude is reading the paper"}… (${Math.floor((steps.plan.elapsed || 0) / 60)}:${String((steps.plan.elapsed || 0) % 60).padStart(2, "0")})`;
+        const clock = `${Math.floor((steps.plan && steps.plan.elapsed) / 60 || 0)}:${String(((steps.plan && steps.plan.elapsed) || 0) % 60).padStart(2, "0")}`;
+        if (steps.plan && steps.plan.state === "working") text = `${steps.plan.note || "Claude is reading the paper"}… (${clock})`;
+        else if (b.meta && b.meta.zip && steps.file && steps.file.state === "working") text = `Adding papers and reading documents: ${steps.file.done} of ${steps.file.of} done…`;
         else if (steps.file && steps.file.state === "working") text = "Adding the questions to the hub…";
+        else if (b.meta && b.meta.zip && steps.read && steps.read.state === "working") text = `Looking at each document (${steps.read.done} of ${steps.read.of})…`;
         else text = ((p.files || []).find((f) => f.state === "working") || {}).text || "Reading the files…";
       } else text = p.summary || b.status;
-      li.append(make("strong", "", (b.meta && b.meta.title) || b.files.join(", ")), make("span", "job-status", text));
+      const jobTitle = b.meta && b.meta.spec ? `Specification: ${b.files.join(", ")}` : (b.meta && !b.meta.zip && b.meta.title) || b.files.join(", ");
+      li.append(make("strong", "", jobTitle), make("span", "job-status", text));
+      // A zip: what was found in it, paper by paper.
+      if (b.meta && b.meta.zip && (p.files || []).length > 1) {
+        const d = make("details", "pr-more pr-job-files");
+        d.open = b.status === "running" || openJobs.has(b.id);
+        d.addEventListener("toggle", () => { if (d.open) openJobs.add(b.id); else openJobs.delete(b.id); });
+        d.appendChild(make("summary", "", "What was in the zip"));
+        const ul = make("ul", "small");
+        for (const f of p.files.slice(1)) {
+          const item = make("li", `pr-job-file is-${f.state}`);
+          item.append(make("strong", "", f.name), document.createTextNode(` · ${f.text || ""}`));
+          if (f.detail) item.appendChild(make("div", "muted", f.detail));
+          ul.appendChild(item);
+        }
+        if (p.files[0] && p.files[0].detail) ul.appendChild(make("li", "muted", p.files[0].detail));
+        d.appendChild(ul);
+        li.appendChild(d);
+      }
       if (b.status === "queued" || b.status === "running") {
         const stop = make("button", "linklike small", "Stop");
         stop.type = "button";
@@ -620,6 +820,7 @@
     if (active || recent.some((b) => b.status === "queued")) jobsTimer = window.setTimeout(loadPaperJobs, 3000);
   }
   const seenDone = new Set();
+  const openJobs = new Set();
 
   // ---------- flashcards ----------
   const cardsForm = $("[data-cards-form]");
@@ -793,6 +994,7 @@
         grid.appendChild(d);
       };
       table("Weakest topics", s.topics);
+      table("Specification areas", s.specAreas || []);
       table("Question types", s.types);
       table("Mark levels", s.markLevels);
       stats.appendChild(grid);

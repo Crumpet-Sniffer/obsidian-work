@@ -23,7 +23,14 @@
     <h2>Write me questions</h2>
     <p class="small muted">Claude writes questions from your notes on the topics you choose, then marks your answers: choice and fill-in questions straight away, written answers against a mark scheme. With past papers in the question hub, it copies how your exams word questions and mark schemes.</p>
     <form class="pr-form" data-gen-form>
-      <fieldset class="pr-choices" data-choices="topics"><legend>Topics</legend></fieldset>
+      <div class="pr-row" data-gen-paper-row hidden>
+        <label>Write them for
+          <select name="profile" data-gen-paper><option value="">Any paper (no paper guide)</option></select>
+        </label>
+        <p class="muted small pr-paper-hint" data-gen-paper-hint></p>
+      </div>
+      <fieldset class="pr-choices" data-choices="gen-spec" hidden><legend>Specification areas</legend></fieldset>
+      <fieldset class="pr-choices" data-choices="topics"><legend>Topics (the notes Claude writes from)</legend></fieldset>
       <fieldset class="pr-choices" data-choices="types"><legend>Question types</legend></fieldset>
       <fieldset class="pr-choices" data-choices="marks"><legend>Mark levels</legend></fieldset>
       <div class="pr-row">
@@ -48,22 +55,49 @@
   </section>
 
   <section class="card pr-panel" data-panel="hub" role="tabpanel" hidden>
-    <h2>Add a past paper</h2>
-    <p class="small muted">Upload an exam paper and its mark scheme (PDF, Word or PowerPoint, up to {{ max_file_mb }} MB each). The server reads both, including the text in their pictures, and Claude splits the paper into its questions, each with its marks, type, topics and mark scheme. It takes a few minutes; you can leave the page.</p>
+    <h2>Add past papers and exam documents</h2>
+    <p class="small muted">Put everything you downloaded from the exam board's assessment resources in one .zip (PDF, Word or PowerPoint, in any folders, named however they came): past papers, mark schemes, the course specification, examiner reports, answers and commentaries, and notes and guidance. Claude works out what each file is, matches each paper to its mark scheme, and reads each paper's qualification, paper number, month and year off its cover. Each paper is split into its questions, each with its marks, type, topics and its part of the mark scheme; the other documents are read for their content areas, command words, marking guidance and what examiners found. Then the paper guides below are built from all of it. Anything already in the hub is skipped, so you can upload a bigger zip later. It takes a few minutes per paper; you can leave the page.</p>
+    <form class="pr-upload pr-zip" data-zip-form>
+      <label>Zip of exam papers and documents <input type="file" name="zip" accept=".zip,application/zip" required></label>
+      <div><button type="submit" class="primary">Add everything</button></div>
+    </form>
+    <details class="pr-more pr-one">
+      <summary>Or add files one at a time</summary>
+    <h3 class="pr-h3">A specification</h3>
+    <form class="pr-upload" data-spec-form>
+      <label>Specification <input type="file" name="spec" accept=".pdf,.docx,.pptx" required></label>
+      <label>Qualification <span class="muted">(optional)</span> <input name="qualification" maxlength="150" list="pr-quals" placeholder="Read from the document"></label>
+      <div><button type="submit" class="primary">Add the specification</button></div>
+    </form>
+    <datalist id="pr-quals"></datalist>
+    <h3 class="pr-h3">A past paper and its mark scheme</h3>
     <form class="pr-upload" data-paper-form>
       <label>Name <input name="title" maxlength="150" required placeholder="June 2024 Paper 1"></label>
       <label>Exam paper <input type="file" name="exam" accept=".pdf,.docx,.pptx" required></label>
       <label>Mark scheme <input type="file" name="scheme" accept=".pdf,.docx,.pptx"></label>
       <div><button type="submit" class="primary">Add the paper</button></div>
     </form>
+    </details>
     <ul class="jobs" data-paper-jobs aria-live="polite"></ul>
+
+    <h2 class="pr-h2">Paper guides</h2>
+    <p class="small muted">For each paper of each qualification: the fields (specification areas) it can examine, with how many past questions each has, its format and command words, how marks are earned and what examiners say students get wrong. Built by Claude from the specification, past papers, examiner reports, commentaries and guidance, and used when it writes and marks questions for that paper.</p>
+    <p class="small" data-guides-status aria-live="polite"></p>
+    <div class="pr-guides" data-guides></div>
+    <div class="pr-actions"><button type="button" data-guides-rebuild>Build the guides again</button></div>
+
+    <h2 class="pr-h2">Past papers</h2>
     <div data-papers></div>
+    <h2 class="pr-h2">Exam documents</h2>
+    <div data-docs></div>
 
     <h2 class="pr-h2">Find questions</h2>
     <form class="pr-form" data-hub-form>
       <fieldset class="pr-choices" data-choices="hub-topics"><legend>Topics</legend></fieldset>
       <fieldset class="pr-choices" data-choices="hub-types"><legend>Question types</legend></fieldset>
       <fieldset class="pr-choices" data-choices="hub-marks"><legend>Mark levels</legend></fieldset>
+      <fieldset class="pr-choices" data-choices="hub-years"><legend>Exam years</legend></fieldset>
+      <fieldset class="pr-choices" data-choices="hub-spec"><legend>Specification areas</legend></fieldset>
       <div class="pr-row">
         <label>From
           <select name="source">

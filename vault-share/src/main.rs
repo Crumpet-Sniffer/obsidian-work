@@ -51,6 +51,9 @@ pub struct AppInner {
     /// Process id of the running ingest worker (0 when none), for the resource tracker.
     pub worker_pid: std::sync::atomic::AtomicU32,
     pub stats: stats::Stats,
+    /// Paper guides being built (vault id, a separator, the qualification), and the last error of any that failed.
+    pub profile_jobs: std::sync::Mutex<std::collections::HashSet<String>>,
+    pub profile_errors: std::sync::Mutex<HashMap<String, String>>,
     /// Proves a request comes from the ingest worker this process started (new on every start).
     pub worker_token: String,
     /// When the worker last called in (Unix seconds; 0 = never).
@@ -122,6 +125,8 @@ async fn run() -> anyhow::Result<()> {
         image_calls: std::sync::Mutex::new(HashMap::new()),
         worker_pid: std::sync::atomic::AtomicU32::new(0),
         stats: Default::default(),
+        profile_jobs: Default::default(),
+        profile_errors: Default::default(),
         worker_token: auth::random_token(32),
         worker_seen: std::sync::atomic::AtomicI64::new(0),
     });
@@ -218,6 +223,9 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/practice/decks/{did}", get(practice_h::deck).delete(practice_h::delete_deck))
         .route("/v/{id}/api/practice/decks/{did}/progress", axum::routing::put(practice_h::deck_progress))
         .route("/v/{id}/api/practice/coach/clear", post(practice_h::coach_clear))
+        .route("/v/{id}/api/practice/docs", post(practice_h::add_doc))
+        .route("/v/{id}/api/practice/docs/{did}", axum::routing::delete(practice_h::delete_doc))
+        .route("/v/{id}/api/practice/profiles/rebuild", post(practice_h::rebuild_profiles))
         .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(60)));
 

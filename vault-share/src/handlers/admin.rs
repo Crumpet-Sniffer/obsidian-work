@@ -95,6 +95,27 @@ pub async fn dashboard(
                 text: s.extract_prompt().to_string(),
             },
             PromptView {
+                field: "prompt_match".into(),
+                label: "Sorting a zip of past papers".into(),
+                help: "Used when a zip of papers and mark schemes is added to the question hub: works out which files are papers and which mark scheme goes with each, and each paper's number, month and year.".into(),
+                custom: !s.prompt_match.trim().is_empty(),
+                text: s.match_prompt().to_string(),
+            },
+            PromptView {
+                field: "prompt_digest".into(),
+                label: "Reading a specification or report".into(),
+                help: "Reads a specification, examiner report, answers and commentary, or notes and guidance into notes on content areas, command words, marking guidance and examiners' findings.".into(),
+                custom: !s.prompt_digest.trim().is_empty(),
+                text: s.digest_prompt().to_string(),
+            },
+            PromptView {
+                field: "prompt_profile".into(),
+                label: "Building paper guides".into(),
+                help: "Works out, from the specification, past papers and other documents, the fields each paper can examine, its command words, marking tips and common mistakes, and tags every past question with its fields.".into(),
+                custom: !s.prompt_profile.trim().is_empty(),
+                text: s.profile_prompt().to_string(),
+            },
+            PromptView {
                 field: "prompt_generate".into(),
                 label: "Writing practice questions".into(),
                 help: "Writes quiz and sample exam questions from the chosen topics' notes, in the style of the past papers in the question hub.".into(),

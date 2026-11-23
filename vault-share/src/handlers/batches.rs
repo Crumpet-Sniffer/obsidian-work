@@ -101,6 +101,12 @@ pub struct CreateBody {
     /// For a past paper: what to call it in the question hub.
     #[serde(default)]
     title: String,
+    /// For past papers: one zip of papers and mark schemes, sorted and named by Claude.
+    #[serde(default)]
+    zip: bool,
+    /// For the question hub: a qualification's specification.
+    #[serde(default)]
+    spec: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -143,7 +149,7 @@ pub async fn create(
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let kind = kind_of(&body.kind);
     let title: String = body.title.trim().chars().filter(|c| !c.is_control()).take(150).collect();
-    if kind == "paper" && title.is_empty() {
+    if kind == "paper" && title.is_empty() && !body.zip && !body.spec {
         return Err(ApiErr::Bad("Give the paper a name, such as \"June 2024 Paper 1\".".into()));
     }
     if Settings::load(&st.db).await?.api_key.is_none() {
@@ -151,7 +157,7 @@ pub async fn create(
     }
     let bid = uuid::Uuid::new_v4().simple().to_string();
     tokio::fs::create_dir_all(batch_dir(&st, &bid)).await.map_err(|e| ApiErr::Internal(e.into()))?;
-    st.db.create_batch(bid.clone(), v.id, user.id, user.username.clone(), kind, json!({ "title": title }).to_string()).await?;
+    st.db.create_batch(bid.clone(), v.id, user.id, user.username.clone(), kind, json!({ "title": title, "zip": body.zip, "spec": body.spec }).to_string()).await?;
     ok(json!({ "id": bid }))
 }
 

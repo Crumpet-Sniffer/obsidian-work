@@ -191,6 +191,9 @@ pub fn question_schema(with_number: bool) -> Value {
         "topics": strings(),
         "difficulty": { "type": "string", "enum": ["easy", "medium", "hard"] },
     });
+    if !with_number {
+        props["spec_areas"] = strings();
+    }
     if with_number {
         props["number"] = json!({ "type": "string" });
     }
@@ -218,6 +221,13 @@ pub struct Question {
     pub topics: Vec<String>,
     pub difficulty: String,
     pub created_at: i64,
+    /// The qualification and paper number of its past paper (empty for questions Claude wrote).
+    pub qualification: String,
+    pub paper_number: String,
+    /// Specification areas it examines, as labels ("A1 Digital devices") from its paper's guide.
+    pub spec: Vec<String>,
+    /// For a question Claude wrote for one paper: that paper's guide.
+    pub profile_id: Option<i64>,
 }
 
 impl Question {
@@ -227,6 +237,7 @@ impl Question {
             "id": self.id, "number": self.number, "text": self.text, "type": self.qtype, "options": self.options,
             "correct": self.correct, "blanks": self.blanks, "marks": self.marks, "scheme": self.scheme,
             "topics": self.topics, "difficulty": self.difficulty, "paper": self.paper_title, "source": self.source,
+            "qualification": self.qualification, "paperNumber": self.paper_number, "spec": self.spec, "profile": self.profile_id,
         })
     }
 
@@ -249,6 +260,10 @@ impl Question {
             topics: serde_json::from_value(v.get("topics").cloned().unwrap_or(json!([]))).unwrap_or_default(),
             difficulty: s("difficulty"),
             created_at: 0,
+            qualification: s("qualification"),
+            paper_number: s("paperNumber"),
+            spec: serde_json::from_value(v.get("spec").cloned().unwrap_or(json!([]))).unwrap_or_default(),
+            profile_id: v.get("profile").and_then(Value::as_i64),
         }
     }
 }
@@ -268,7 +283,7 @@ pub fn blank_count(text: &str) -> usize {
 
 /// Check a question Claude wrote or extracted. Topics are matched to the vault's topics (any case); with no topics
 /// in the vault, Claude's own names are kept. Returns None for a question that cannot be used.
-pub fn clean_question(v: &Value, topics: &[String]) -> Option<Question> {
+pub fn clean_question(v: &Value, topics: &[String], spec_allowed: &[String]) -> Option<Question> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("");
     let qtype = s("type");
     if !TYPES.iter().any(|t| t.0 == qtype) {
@@ -334,6 +349,18 @@ pub fn clean_question(v: &Value, topics: &[String]) -> Option<Question> {
         }
     }
     qt.truncate(4);
+    let mut spec: Vec<String> = Vec::new();
+    for t in v.get("spec_areas").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>()).unwrap_or_default() {
+        let t = t.trim();
+        // A label, or just its code ("A1" for "A1 Digital devices").
+        let hit = spec_allowed.iter().find(|x| x.eq_ignore_ascii_case(t) || x.split_whitespace().next().is_some_and(|c| c.eq_ignore_ascii_case(t)));
+        if let Some(h) = hit {
+            if !spec.contains(h) {
+                spec.push(h.clone());
+            }
+        }
+    }
+    spec.truncate(4);
     let difficulty = match s("difficulty") {
         d @ ("easy" | "medium" | "hard") => d.to_string(),
         _ => "medium".into(),
@@ -355,11 +382,16 @@ pub fn clean_question(v: &Value, topics: &[String]) -> Option<Question> {
         topics: qt,
         difficulty,
         created_at: 0,
+        qualification: String::new(),
+        paper_number: String::new(),
+        spec,
+        profile_id: None,
     })
 }
 
 const Q_COLS: &str = "q.id, q.paper_id, COALESCE(p.title, ''), q.source, q.user_id, q.number, q.text, q.qtype, q.options, \
-                      q.answer, q.marks, q.scheme, q.topics, q.difficulty, q.created_at";
+                      q.answer, q.marks, q.scheme, q.topics, q.difficulty, q.created_at, COALESCE(p.qualification, ''), \
+                      COALESCE(p.paper_number, ''), q.spec, q.profile_id";
 
 fn q_row(r: &rusqlite::Row) -> rusqlite::Result<Question> {
     let answer: Value = serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or(json!({}));
@@ -380,13 +412,17 @@ fn q_row(r: &rusqlite::Row) -> rusqlite::Result<Question> {
         topics: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
         difficulty: r.get(13)?,
         created_at: r.get(14)?,
+        qualification: r.get(15)?,
+        paper_number: r.get(16)?,
+        spec: serde_json::from_str(&r.get::<_, String>(17)?).unwrap_or_default(),
+        profile_id: r.get(18)?,
     })
 }
 
 fn insert_q(tx: &rusqlite::Transaction, vault: &str, paper: Option<i64>, source: &str, user: Option<i64>, q: &Question) -> rusqlite::Result<i64> {
     tx.execute(
-        "INSERT INTO questions (vault_id, paper_id, source, user_id, number, text, qtype, options, answer, marks, scheme, topics, difficulty, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        "INSERT INTO questions (vault_id, paper_id, source, user_id, number, text, qtype, options, answer, marks, scheme, topics, difficulty, created_at, spec, profile_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             vault,
             paper,
@@ -401,15 +437,62 @@ fn insert_q(tx: &rusqlite::Transaction, vault: &str, paper: Option<i64>, source:
             q.scheme,
             serde_json::to_string(&q.topics).unwrap_or_default(),
             q.difficulty,
-            now()
+            now(),
+            serde_json::to_string(&q.spec).unwrap_or_default(),
+            q.profile_id
         ],
     )?;
     Ok(tx.last_insert_rowid())
 }
 
+/// What a past paper is, from its cover.
+#[derive(Clone, Debug, Default)]
+pub struct PaperInfo {
+    pub qualification: String,
+    pub paper_number: String,
+    pub month: String,
+    pub year: i64,
+}
+
+const MONTHS: &[&str] = &["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+impl PaperInfo {
+    /// Tidy what Claude read off the cover: a month by its full name, a believable year (or 0).
+    pub fn clean(qualification: &str, paper_number: &str, month: &str, year: i64) -> PaperInfo {
+        let m = month.trim();
+        let first3: String = m.to_lowercase().chars().take(3).collect();
+        let month = MONTHS
+            .iter()
+            .find(|full| first3.chars().count() == 3 && full.to_lowercase().starts_with(&first3))
+            .map(|f| f.to_string())
+            .unwrap_or_else(|| clip(m, 30));
+        PaperInfo {
+            qualification: clip(qualification, 150),
+            paper_number: clip(paper_number, 40),
+            month,
+            year: if (1980..=2100).contains(&year) { year } else { 0 },
+        }
+    }
+
+    /// A name for the paper, such as "June 2024 Paper 1".
+    pub fn title(&self) -> String {
+        let when = [self.month.clone(), if self.year > 0 { self.year.to_string() } else { String::new() }]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        [when, self.paper_number.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
+    }
+
+    pub fn month_index(&self) -> i64 {
+        MONTHS.iter().position(|m| *m == self.month).map(|i| i as i64 + 1).unwrap_or(0)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Paper {
     pub id: i64,
+    pub info: PaperInfo,
     pub user_id: Option<i64>,
     pub username: String,
     pub title: String,
@@ -516,12 +599,14 @@ impl Db {
     // ---------- question hub
 
     /// Add a past paper and the questions taken from it, together.
-    pub async fn add_paper(&self, vault: String, who: Who, title: String, exam: String, scheme: String, qs: Vec<Question>) -> Result<i64> {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_paper(&self, vault: String, who: Who, title: String, info: PaperInfo, exam: String, scheme: String, qs: Vec<Question>) -> Result<i64> {
         self.call(move |c| {
             let tx = c.transaction()?;
             tx.execute(
-                "INSERT INTO hub_papers (vault_id, user_id, username, title, exam_path, scheme_path, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![vault, who.0, who.1, title, exam, scheme, now()],
+                "INSERT INTO hub_papers (vault_id, user_id, username, title, exam_path, scheme_path, created_at, qualification, paper_number, month, year)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![vault, who.0, who.1, title, exam, scheme, now(), info.qualification, info.paper_number, info.month, info.year],
             )?;
             let pid = tx.last_insert_rowid();
             for q in &qs {
@@ -550,13 +635,15 @@ impl Db {
         self.call(move |c| {
             let mut st = c.prepare(
                 "SELECT p.id, p.user_id, p.username, p.title, p.exam_path, p.scheme_path,
-                        (SELECT COUNT(*) FROM questions q WHERE q.paper_id = p.id), p.created_at
-                 FROM hub_papers p WHERE p.vault_id = ?1 ORDER BY p.title COLLATE NOCASE",
+                        (SELECT COUNT(*) FROM questions q WHERE q.paper_id = p.id), p.created_at,
+                        p.qualification, p.paper_number, p.month, p.year
+                 FROM hub_papers p WHERE p.vault_id = ?1",
             )?;
-            let rows = st
+            let rows: rusqlite::Result<Vec<Paper>> = st
                 .query_map([vault], |r| {
                     Ok(Paper {
                         id: r.get(0)?,
+                        info: PaperInfo { qualification: r.get(8)?, paper_number: r.get(9)?, month: r.get(10)?, year: r.get(11)? },
                         user_id: r.get(1)?,
                         username: r.get(2)?,
                         title: r.get(3)?,
@@ -567,7 +654,17 @@ impl Db {
                     })
                 })?
                 .collect();
-            rows
+            // Newest exams first, then by qualification and paper number.
+            rows.map(|mut v| {
+                v.sort_by(|a, b| {
+                    (b.info.year, b.info.month_index())
+                        .cmp(&(a.info.year, a.info.month_index()))
+                        .then(a.info.qualification.to_lowercase().cmp(&b.info.qualification.to_lowercase()))
+                        .then(a.info.paper_number.cmp(&b.info.paper_number))
+                        .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                });
+                v
+            })
         })
         .await
     }
@@ -580,7 +677,8 @@ impl Db {
     pub async fn questions(&self, vault: String) -> Result<Vec<Question>> {
         self.call(move |c| {
             let mut st = c.prepare(&format!(
-                "SELECT {Q_COLS} FROM questions q LEFT JOIN hub_papers p ON p.id = q.paper_id WHERE q.vault_id = ?1 ORDER BY q.paper_id IS NULL, p.title COLLATE NOCASE, q.id"
+                "SELECT {Q_COLS} FROM questions q LEFT JOIN hub_papers p ON p.id = q.paper_id WHERE q.vault_id = ?1
+                 ORDER BY q.paper_id IS NULL, p.year DESC, p.qualification COLLATE NOCASE, p.paper_number, p.title COLLATE NOCASE, q.id"
             ))?;
             let rows = st.query_map([vault], q_row)?.collect();
             rows
@@ -850,10 +948,13 @@ pub fn notes_context(idx: &VaultIndex, s: &Settings, topics: &[String]) -> Strin
 }
 
 /// Past paper questions most like what was asked for, as examples of the course's style.
-pub fn examples(all: &[Question], topics: &[String], types: &[String], marks: &[i64]) -> String {
+pub fn examples(all: &[Question], topics: &[String], types: &[String], marks: &[i64], paper: Option<(&str, &str)>) -> String {
+    let same_paper = |q: &Question| paper.is_none_or(|(qual, num)| q.qualification.eq_ignore_ascii_case(qual) && q.paper_number.eq_ignore_ascii_case(num));
+    // Past questions of the chosen paper, or of any paper when it has none in the hub yet.
+    let any_of_paper = all.iter().any(|q| q.source == "paper" && same_paper(q));
     let mut scored: Vec<(i64, &Question)> = all
         .iter()
-        .filter(|q| q.source == "paper")
+        .filter(|q| q.source == "paper" && (!any_of_paper || same_paper(q)))
         .map(|q| {
             let t = q.topics.iter().filter(|x| topics.iter().any(|y| y.eq_ignore_ascii_case(x))).count() as i64;
             let score = t * 3 + if types.contains(&q.qtype) { 2 } else { 0 } + if marks.contains(&q.marks) { 2 } else { 0 };
@@ -864,7 +965,8 @@ pub fn examples(all: &[Question], topics: &[String], types: &[String], marks: &[
     let mut out = String::new();
     for (_, q) in scored.into_iter().take(EXAMPLES) {
         out.push_str(&format!(
-            "<example marks=\"{}\" type=\"{}\" topics=\"{}\">\n<question>\n{}\n</question>\n<mark_scheme>\n{}\n</mark_scheme>\n</example>\n",
+            "<example paper=\"{}\" marks=\"{}\" type=\"{}\" topics=\"{}\">\n<question>\n{}\n</question>\n<mark_scheme>\n{}\n</mark_scheme>\n</example>\n",
+            format!("{} {}", q.paper_title, q.number).trim().replace('"', "'"),
             q.marks,
             q.qtype,
             q.topics.join(", ").replace('"', "'"),
@@ -923,7 +1025,7 @@ pub fn mark_objective(q: &Question, answer: &Value) -> (i64, Value) {
 }
 
 /// Mark a written answer against its mark scheme with Claude.
-pub async fn mark_written(st: &AppState, who: &Who, vault_id: &str, q: &Question, text: &str) -> Result<(i64, Value), String> {
+pub async fn mark_written(st: &AppState, who: &Who, vault_id: &str, q: &Question, text: &str, guidance: Option<String>) -> Result<(i64, Value), String> {
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
     let scheme = if q.scheme.trim().is_empty() { "(No mark scheme was given: mark as an examiner for this course would.)" } else { &q.scheme };
     let msg = format!(
@@ -940,7 +1042,7 @@ pub async fn mark_written(st: &AppState, who: &Who, vault_id: &str, q: &Question
         "points_missed": strings(),
         "model_answer": { "type": "string" },
     }));
-    let v = ask(st, who, vault_id, "marking", s.mark_prompt(), None, json!([{ "role": "user", "content": msg }]), Some(schema), 8000).await?;
+    let v = ask(st, who, vault_id, "marking", s.mark_prompt(), guidance.map(|g| format!("<paper_guidance>\n{g}\n</paper_guidance>")), json!([{ "role": "user", "content": msg }]), Some(schema), 8000).await?;
     let marks = v.get("marks").and_then(Value::as_i64).unwrap_or(0).clamp(0, q.marks);
     let list = |k: &str| v.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(|x| clip(x, 400)).take(20).collect::<Vec<_>>()).unwrap_or_default();
     Ok((
@@ -965,12 +1067,17 @@ pub async fn mark_session(st: AppState, who: Who, session: Session) {
         }
     };
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(MARK_PARALLEL));
+    // Each paper's marking tips and common mistakes, for answers to its questions.
+    let guides: std::sync::Arc<HashMap<i64, String>> = std::sync::Arc::new(
+        st.db.profiles(session.vault_id.clone()).await.unwrap_or_default().iter().map(|p| (p.id, p.marking_guidance())).filter(|(_, g)| !g.is_empty()).collect(),
+    );
     let mut set = tokio::task::JoinSet::new();
     for a in attempts {
         let st = st.clone();
         let who = who.clone();
         let vault = session.vault_id.clone();
         let sem = sem.clone();
+        let guides = guides.clone();
         set.spawn(async move {
             let q = Question::from_snapshot(&a.question);
             let (marks, feedback) = if q.qtype == "written" {
@@ -979,7 +1086,8 @@ pub async fn mark_session(st: AppState, who: Who, session: Session) {
                     (Some(0), json!({ "feedback": "No answer was given." }))
                 } else {
                     let _permit = sem.acquire().await;
-                    match mark_written(&st, &who, &vault, &q, &text).await {
+                    let guide = q.profile_id.and_then(|id| guides.get(&id).cloned());
+                    match mark_written(&st, &who, &vault, &q, &text, guide).await {
                         Ok((m, f)) => (Some(m), f),
                         Err(e) => (None, json!({ "error": format!("This answer could not be marked: {e}") })),
                     }
@@ -1006,6 +1114,417 @@ pub async fn mark_session(st: AppState, who: Who, session: Session) {
     let _ = st.db.set_session(session.id.clone(), "marked", note, None, Some((score, total))).await;
 }
 
+// ---------------------------------------------------------------- course documents and paper guides
+
+pub const DOC_KINDS: &[(&str, &str)] = &[
+    ("specification", "Specification"),
+    ("examiner_report", "Examiner report"),
+    ("answers_commentary", "Answers and commentary"),
+    ("notes_guidance", "Notes and guidance"),
+    ("mark_scheme", "Mark scheme without its paper"),
+];
+
+/// A specification, examiner report, answers and commentary, or notes and guidance, with what Claude read from it.
+#[derive(Clone, Debug)]
+pub struct Doc {
+    pub id: i64,
+    pub user_id: Option<i64>,
+    pub username: String,
+    pub kind: String,
+    pub title: String,
+    pub path: String,
+    pub info: PaperInfo,
+    pub digest: Value,
+    pub created_at: i64,
+}
+
+/// The guide to one examined paper of a qualification: its fields (specification areas), command words, marking
+/// tips and common mistakes. `profile` holds what Claude wrote, checked.
+#[derive(Clone, Debug)]
+pub struct Profile {
+    pub id: i64,
+    pub qualification: String,
+    pub paper_number: String,
+    pub title: String,
+    pub profile: Value,
+    pub updated_at: i64,
+}
+
+fn list_of(v: &Value, k: &str) -> Vec<Value> {
+    v.get(k).and_then(Value::as_array).cloned().unwrap_or_default()
+}
+fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
+    v.get(k).and_then(Value::as_str).unwrap_or("")
+}
+
+impl Profile {
+    /// The labels of its fields, such as "A1 Digital devices".
+    pub fn labels(&self) -> Vec<String> {
+        list_of(&self.profile, "fields").iter().map(field_label).filter(|l| !l.is_empty()).collect()
+    }
+
+    /// The guide as Markdown: for the page, and for Claude when writing or marking questions for this paper.
+    pub fn markdown(&self) -> String {
+        let p = &self.profile;
+        let mut out = format!("## {}\n\n", self.title);
+        if !self.qualification.is_empty() {
+            out.push_str(&format!("*{}*\n\n", self.qualification));
+        }
+        if !str_of(p, "overview").is_empty() {
+            out.push_str(&format!("{}\n\n", str_of(p, "overview")));
+        }
+        let fields = list_of(p, "fields");
+        if !fields.is_empty() {
+            out.push_str("### Fields this paper examines\n\n");
+            for f in &fields {
+                let marks: Vec<String> = list_of(f, "marks").iter().filter_map(Value::as_i64).map(|m| m.to_string()).collect();
+                let types: Vec<String> = list_of(f, "types").iter().filter_map(Value::as_str).map(|t| TYPES.iter().find(|x| x.0 == t).map(|x| x.1.to_lowercase()).unwrap_or_else(|| t.to_string())).collect();
+                let mut extra = Vec::new();
+                if !marks.is_empty() {
+                    extra.push(format!("{} marks", marks.join(", ")));
+                }
+                if !types.is_empty() {
+                    extra.push(types.join(", "));
+                }
+                out.push_str(&format!(
+                    "- **{}**: {}{}\n",
+                    field_label(f),
+                    str_of(f, "what"),
+                    if extra.is_empty() { String::new() } else { format!(" ({})", extra.join("; ")) }
+                ));
+            }
+            out.push('\n');
+        }
+        let words = list_of(p, "command_words");
+        if !words.is_empty() {
+            out.push_str("### Command words\n\n");
+            for w in &words {
+                let marks = str_of(w, "marks");
+                out.push_str(&format!("- **{}**{}: {}\n", str_of(w, "word"), if marks.is_empty() { String::new() } else { format!(" ({marks})") }, str_of(w, "meaning")));
+            }
+            out.push('\n');
+        }
+        out.push_str(&self.marking_guidance());
+        out
+    }
+
+    /// Marking tips and common mistakes, as Markdown (what the marker is given).
+    pub fn marking_guidance(&self) -> String {
+        let mut out = String::new();
+        for (k, title) in [("marking_tips", "How marks are earned"), ("common_mistakes", "Common mistakes (examiners' reports)")] {
+            let items: Vec<String> = list_of(&self.profile, k).iter().filter_map(Value::as_str).map(str::to_string).collect();
+            if !items.is_empty() {
+                out.push_str(&format!("### {title}\n\n"));
+                for i in items {
+                    out.push_str(&format!("- {i}\n"));
+                }
+                out.push('\n');
+            }
+        }
+        out
+    }
+}
+
+fn field_label(f: &Value) -> String {
+    format!("{} {}", str_of(f, "code").trim(), str_of(f, "title").trim()).trim().to_string()
+}
+
+const DOC_COLS: &str = "id, user_id, username, kind, title, path, qualification, paper_number, month, year, digest, created_at";
+
+fn doc_row(r: &rusqlite::Row) -> rusqlite::Result<Doc> {
+    Ok(Doc {
+        id: r.get(0)?,
+        user_id: r.get(1)?,
+        username: r.get(2)?,
+        kind: r.get(3)?,
+        title: r.get(4)?,
+        path: r.get(5)?,
+        info: PaperInfo { qualification: r.get(6)?, paper_number: r.get(7)?, month: r.get(8)?, year: r.get(9)? },
+        digest: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or(json!({})),
+        created_at: r.get(11)?,
+    })
+}
+
+impl Db {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_doc(&self, vault: String, who: Who, kind: String, title: String, path: String, info: PaperInfo, digest: Value) -> Result<i64> {
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO hub_docs (vault_id, user_id, username, kind, title, path, qualification, paper_number, month, year, digest, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![vault, who.0, who.1, kind, title, path, info.qualification, info.paper_number, info.month, info.year, digest.to_string(), now()],
+            )?;
+            Ok(c.last_insert_rowid())
+        })
+        .await
+    }
+
+    pub async fn docs(&self, vault: String) -> Result<Vec<Doc>> {
+        self.call(move |c| {
+            let mut st = c.prepare(&format!("SELECT {DOC_COLS} FROM hub_docs WHERE vault_id = ?1 ORDER BY qualification COLLATE NOCASE, kind, year DESC, title COLLATE NOCASE"))?;
+            let rows = st.query_map([vault], doc_row)?.collect();
+            rows
+        })
+        .await
+    }
+
+    pub async fn delete_doc(&self, vault: String, id: i64) -> Result<bool> {
+        self.call(move |c| c.execute("DELETE FROM hub_docs WHERE id = ?1 AND vault_id = ?2", params![id, vault]).map(|n| n > 0)).await
+    }
+
+    pub async fn profiles(&self, vault: String) -> Result<Vec<Profile>> {
+        self.call(move |c| {
+            let mut st = c.prepare(
+                "SELECT id, qualification, paper_number, title, profile, updated_at FROM paper_profiles WHERE vault_id = ?1
+                 ORDER BY qualification COLLATE NOCASE, paper_number COLLATE NOCASE",
+            )?;
+            let rows = st
+                .query_map([vault], |r| {
+                    Ok(Profile {
+                        id: r.get(0)?,
+                        qualification: r.get(1)?,
+                        paper_number: r.get(2)?,
+                        title: r.get(3)?,
+                        profile: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or(json!({})),
+                        updated_at: r.get(5)?,
+                    })
+                })?
+                .collect();
+            rows
+        })
+        .await
+    }
+
+    /// Save a qualification's paper guides (keeping the ids of papers that stay, so questions written for them keep
+    /// their guide), drop guides for papers no longer listed, and set the fields of its past questions.
+    pub async fn save_profiles(&self, vault: String, qualification: String, profiles: Vec<(String, String, Value)>, tags: Vec<(i64, Vec<String>)>) -> Result<()> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let keep: Vec<String> = profiles.iter().map(|p| p.0.clone()).collect();
+            for (num, title, json) in &profiles {
+                tx.execute(
+                    "INSERT INTO paper_profiles (vault_id, qualification, paper_number, title, profile, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT (vault_id, qualification, paper_number) DO UPDATE SET title = excluded.title, profile = excluded.profile, updated_at = excluded.updated_at",
+                    params![vault, qualification, num, title, json.to_string(), now()],
+                )?;
+            }
+            let existing: Vec<(i64, String)> = {
+                let mut st = tx.prepare("SELECT id, paper_number FROM paper_profiles WHERE vault_id = ?1 AND qualification = ?2")?;
+                let rows = st.query_map(params![vault, qualification], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            for (id, num) in existing {
+                if !keep.contains(&num) {
+                    tx.execute("DELETE FROM paper_profiles WHERE id = ?1", [id])?;
+                }
+            }
+            for (qid, labels) in tags {
+                tx.execute("UPDATE questions SET spec = ?2 WHERE id = ?1 AND vault_id = ?3", params![qid, serde_json::to_string(&labels).unwrap_or_default(), vault])?;
+            }
+            tx.commit()
+        })
+        .await
+    }
+
+    /// Qualification names in the hub (from papers and documents), for matching new uploads to.
+    pub async fn qualifications(&self, vault: String) -> Result<Vec<String>> {
+        self.call(move |c| {
+            let mut st = c.prepare(
+                "SELECT qualification FROM hub_papers WHERE vault_id = ?1 AND qualification != ''
+                 UNION SELECT qualification FROM hub_docs WHERE vault_id = ?1 AND qualification != '' ORDER BY 1 COLLATE NOCASE",
+            )?;
+            let rows = st.query_map([vault], |r| r.get(0))?.collect();
+            rows
+        })
+        .await
+    }
+}
+
+/// Build (or rebuild) the paper guides of one qualification from its documents and past questions.
+pub async fn build_profiles(st: &AppState, who: &Who, vault: &str, qualification: &str) -> Result<usize, String> {
+    let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
+    let same = |q: &str| q.trim().eq_ignore_ascii_case(qualification.trim());
+    let docs: Vec<Doc> = st.db.docs(vault.to_string()).await.map_err(|e| e.to_string())?.into_iter().filter(|d| same(&d.info.qualification)).collect();
+    let questions: Vec<Question> =
+        st.db.questions(vault.to_string()).await.map_err(|e| e.to_string())?.into_iter().filter(|q| q.source == "paper" && same(&q.qualification)).collect();
+    if docs.is_empty() && questions.is_empty() {
+        return Err("There is nothing in the hub for this qualification yet.".into());
+    }
+    let mut documents = String::new();
+    for d in &docs {
+        let series = [d.info.month.clone(), if d.info.year > 0 { d.info.year.to_string() } else { String::new() }].join(" ").trim().to_string();
+        let block = format!(
+            "<document kind=\"{}\" title=\"{}\" paper=\"{}\" series=\"{}\">\n{}\n</document>\n",
+            d.kind,
+            d.title.replace('"', "'"),
+            d.info.paper_number.replace('"', "'"),
+            series,
+            cut(&d.digest.to_string(), 120_000)
+        );
+        if documents.len() + block.len() > 800_000 {
+            break;
+        }
+        documents.push_str(&block);
+    }
+    let mut past = String::new();
+    for q in &questions {
+        let text: String = q.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        past.push_str(&format!(
+            "{} | {} | {} | Q{} | {} marks | {} | {}\n",
+            q.id,
+            q.paper_title,
+            if q.paper_number.is_empty() { "(no paper number)" } else { &q.paper_number },
+            q.number,
+            q.marks,
+            q.qtype,
+            cut(&text, 220)
+        ));
+    }
+    let msg = format!(
+        "Qualification: {qualification}\n\n<documents>\n{documents}</documents>\n\n<past_questions>\nid | paper | paper number | number | marks | type | text\n{past}</past_questions>"
+    );
+    let field = object(json!({
+        "code": { "type": "string" },
+        "title": { "type": "string" },
+        "what": { "type": "string" },
+        "marks": { "type": "array", "items": { "type": "integer" } },
+        "types": { "type": "array", "items": { "type": "string", "enum": TYPES.iter().map(|t| t.0).collect::<Vec<_>>() } },
+    }));
+    let word = object(json!({ "word": { "type": "string" }, "meaning": { "type": "string" }, "marks": { "type": "string" } }));
+    let profile = object(json!({
+        "paper_number": { "type": "string" },
+        "title": { "type": "string" },
+        "overview": { "type": "string" },
+        "fields": { "type": "array", "items": field },
+        "command_words": { "type": "array", "items": word },
+        "marking_tips": strings(),
+        "common_mistakes": strings(),
+    }));
+    let schema = object(json!({
+        "profiles": { "type": "array", "items": profile },
+        "question_fields": { "type": "array", "items": object(json!({ "id": { "type": "integer" }, "paper_number": { "type": "string" }, "codes": strings() })) },
+    }));
+    let v = ask(st, who, vault, "building paper guides", s.profile_prompt(), None, json!([{ "role": "user", "content": msg }]), Some(schema), 32_000).await?;
+
+    // Check what came back: sensible sizes, one guide per paper number.
+    let short = |x: &Value, n: usize| clip(x.as_str().unwrap_or(""), n);
+    let texts = |x: &Value, k: &str, n: usize, max: usize| -> Vec<Value> { list_of(x, k).iter().map(|t| short(t, n)).filter(|t| !t.is_empty()).take(max).map(Value::String).collect() };
+    let mut saved: Vec<(String, String, Value)> = Vec::new();
+    for p in list_of(&v, "profiles") {
+        let num = short(&p["paper_number"], 40);
+        if saved.iter().any(|x| x.0.eq_ignore_ascii_case(&num)) {
+            continue;
+        }
+        let mut fields: Vec<Value> = Vec::new();
+        for f in list_of(&p, "fields").iter().take(80) {
+            let code = short(&f["code"], 20);
+            let title = short(&f["title"], 150);
+            if code.is_empty() && title.is_empty() {
+                continue;
+            }
+            let marks: Vec<i64> = list_of(f, "marks").iter().filter_map(Value::as_i64).filter(|m| (1..=MAX_MARKS).contains(m)).collect();
+            let types: Vec<String> = list_of(f, "types").iter().filter_map(Value::as_str).filter(|t| TYPES.iter().any(|x| x.0 == *t)).map(str::to_string).collect();
+            fields.push(json!({ "code": code, "title": title, "what": short(&f["what"], 600), "marks": marks, "types": types }));
+        }
+        let words: Vec<Value> = list_of(&p, "command_words")
+            .iter()
+            .take(40)
+            .map(|w| json!({ "word": short(&w["word"], 40), "meaning": short(&w["meaning"], 400), "marks": short(&w["marks"], 40) }))
+            .filter(|w| !w["word"].as_str().unwrap_or("").is_empty())
+            .collect();
+        let title = {
+            let t = short(&p["title"], 200);
+            if t.is_empty() { if num.is_empty() { qualification.to_string() } else { num.clone() } } else { t }
+        };
+        let json = json!({
+            "overview": short(&p["overview"], 2000),
+            "fields": fields,
+            "command_words": words,
+            "marking_tips": texts(&p, "marking_tips", 400, 30),
+            "common_mistakes": texts(&p, "common_mistakes", 400, 30),
+        });
+        saved.push((num, title, json));
+    }
+    if saved.is_empty() {
+        return Err("Claude did not describe any papers. Try again.".into());
+    }
+    // Each past question's fields, as labels of its paper's guide.
+    let labels_of = |num: &str| -> Vec<(String, String)> {
+        saved
+            .iter()
+            .find(|x| x.0.eq_ignore_ascii_case(num))
+            .or(if saved.len() == 1 { saved.first() } else { None })
+            .map(|x| list_of(&x.2, "fields").iter().map(|f| (str_of(f, "code").to_string(), field_label(f))).collect())
+            .unwrap_or_default()
+    };
+    let ids: HashSet<i64> = questions.iter().map(|q| q.id).collect();
+    let mut tags: Vec<(i64, Vec<String>)> = Vec::new();
+    for t in list_of(&v, "question_fields") {
+        let Some(id) = t["id"].as_i64().filter(|i| ids.contains(i)) else { continue };
+        let fields = labels_of(str_of(&t, "paper_number"));
+        let mut labels: Vec<String> = Vec::new();
+        for c in list_of(&t, "codes").iter().filter_map(Value::as_str) {
+            if let Some((_, l)) = fields.iter().find(|(code, label)| code.eq_ignore_ascii_case(c.trim()) || label.eq_ignore_ascii_case(c.trim())) {
+                if !labels.contains(l) {
+                    labels.push(l.clone());
+                }
+            }
+        }
+        labels.truncate(4);
+        tags.push((id, labels));
+    }
+    let n = saved.len();
+    st.db.save_profiles(vault.to_string(), qualification.to_string(), saved, tags).await.map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
+/// Rebuild the guides of these qualifications in the background, one build per qualification at a time.
+pub fn rebuild_in_background(st: &AppState, who: Who, vault: String, qualifications: Vec<String>) -> Vec<String> {
+    let mut started = Vec::new();
+    for q in qualifications {
+        let key = format!("{vault}\u{1f}{}", q.to_lowercase());
+        {
+            let mut jobs = st.profile_jobs.lock().unwrap_or_else(|e| e.into_inner());
+            if !jobs.insert(key.clone()) {
+                continue;
+            }
+        }
+        started.push(q.clone());
+        let (st2, who2, vault2) = (st.clone(), who.clone(), vault.clone());
+        tokio::spawn(async move {
+            let r = build_profiles(&st2, &who2, &vault2, &q).await;
+            {
+                let mut errors = st2.profile_errors.lock().unwrap_or_else(|e| e.into_inner());
+                match &r {
+                    Ok(_) => {
+                        errors.remove(&key);
+                    }
+                    Err(e) => {
+                        tracing::warn!("building paper guides for {q}: {e}");
+                        errors.insert(key.clone(), e.clone());
+                    }
+                }
+            }
+            st2.profile_jobs.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+        });
+    }
+    started
+}
+
+/// Qualifications whose guides are being built, and the last error for any that failed, for a vault.
+pub fn profile_status(st: &AppState, vault: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let prefix = format!("{vault}\u{1f}");
+    let building = st.profile_jobs.lock().unwrap_or_else(|e| e.into_inner()).iter().filter_map(|k| k.strip_prefix(&prefix).map(str::to_string)).collect();
+    let failed = st
+        .profile_errors
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter_map(|(k, e)| k.strip_prefix(&prefix).map(|q| (q.to_string(), e.clone())))
+        .collect();
+    (building, failed)
+}
+
 // ---------------------------------------------------------------- results for the coach
 
 /// Percentages by topic, question type and mark level, flashcard results, and recent answers that lost marks.
@@ -1014,6 +1533,7 @@ pub async fn stats(st: &AppState, user: i64, vault: &str) -> Result<Value> {
     let mut by_topic: HashMap<String, (i64, i64, i64)> = HashMap::new();
     let mut by_type: HashMap<String, (i64, i64, i64)> = HashMap::new();
     let mut by_marks: HashMap<i64, (i64, i64, i64)> = HashMap::new();
+    let mut by_spec: HashMap<String, (i64, i64, i64)> = HashMap::new();
     let (mut got, mut avail) = (0i64, 0i64);
     for a in &attempts {
         let q = Question::from_snapshot(&a.question);
@@ -1032,6 +1552,9 @@ pub async fn stats(st: &AppState, user: i64, vault: &str) -> Result<Value> {
             add(by_topic.entry("(no topic)".into()).or_default());
         }
         add(by_type.entry(q.qtype.clone()).or_default());
+        for t in &q.spec {
+            add(by_spec.entry(t.clone()).or_default());
+        }
         add(by_marks.entry(a.total).or_default());
     }
     let pct = |g: i64, t: i64| if t > 0 { (g as f64 * 1000.0 / t as f64).round() / 10.0 } else { 0.0 };
@@ -1080,6 +1603,7 @@ pub async fn stats(st: &AppState, user: i64, vault: &str) -> Result<Value> {
         "percent": pct(got, avail),
         "topics": rows(by_topic.into_iter().collect()),
         "types": rows(by_type.into_iter().map(|(k, v)| (type_label(&k), v)).collect()),
+        "specAreas": rows(by_spec.into_iter().collect()),
         "markLevels": marks_rows,
         "recentLost": recent,
         "flashcards": cards,
@@ -1090,4 +1614,38 @@ pub async fn stats(st: &AppState, user: i64, vault: &str) -> Result<Value> {
 /// against the vault.
 pub fn render(idx: &VaultIndex, vault_id: &str, md: &str) -> String {
     markdown::render(md, &markdown::RenderCtx { vault_id, index: idx })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paper_info_is_tidied() {
+        let p = PaperInfo::clean(" BTEC IT Unit 1 ", "Paper 1", "jun", 2024);
+        assert_eq!((p.month.as_str(), p.year), ("June", 2024));
+        assert_eq!(p.title(), "June 2024 Paper 1");
+        assert_eq!(PaperInfo::clean("", "", "Été", 99).year, 0);
+        assert_eq!(PaperInfo::clean("", "Paper 2", "", 0).title(), "Paper 2");
+    }
+
+    #[test]
+    fn objective_marking() {
+        let q = |t: &str, marks: i64| Question {
+            id: 1, paper_id: None, paper_title: String::new(), source: String::new(), user_id: None, number: String::new(),
+            text: "The {{1}} runs code and {{2}} stores it.".into(), qtype: t.into(),
+            options: vec!["a".into(), "b".into(), "c".into(), "d".into()], correct: vec![0, 2],
+            blanks: vec![vec!["CPU".into(), "processor".into()], vec!["RAM".into()]], marks, scheme: String::new(),
+            topics: vec![], difficulty: String::new(), created_at: 0,
+            qualification: String::new(), paper_number: String::new(), spec: vec![], profile_id: None,
+        };
+        assert_eq!(mark_objective(&q("multi", 2), &json!({ "choices": [0, 2] })).0, 2);
+        assert_eq!(mark_objective(&q("multi", 2), &json!({ "choices": [0, 1] })).0, 0);
+        assert_eq!(mark_objective(&q("multi", 2), &json!({ "choices": [0] })).0, 1);
+        assert_eq!(mark_objective(&q("fill", 2), &json!({ "blanks": ["The Processor.", "rom"] })).0, 1);
+        let mut single = q("single", 1);
+        single.correct = vec![1];
+        assert_eq!(mark_objective(&single, &json!({ "choice": 1 })).0, 1);
+        assert_eq!(mark_objective(&single, &json!({ "choice": null })).0, 0);
+    }
 }

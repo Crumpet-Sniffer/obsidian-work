@@ -19,7 +19,7 @@ use crate::{
         ingest::Settings,
         vaults::{authorize, index_for},
     },
-    practice::{self, Question, Session, Who, DEFAULT_MARKS, DIFFICULTIES, MAX_MARKS, MAX_QUESTIONS, TYPES},
+    practice::{self, PaperInfo, Profile, Question, Session, Who, DEFAULT_MARKS, DIFFICULTIES, DOC_KINDS, MAX_MARKS, MAX_QUESTIONS, TYPES},
     templates::{render, PageCtx, PracticePage},
     vault::{file_url, VaultIndex},
     AppState,
@@ -68,6 +68,10 @@ pub async fn meta(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
             json!({
                 "id": p.id,
                 "title": p.title,
+                "qualification": p.info.qualification,
+                "paperNumber": p.info.paper_number,
+                "month": p.info.month,
+                "year": p.info.year,
                 "by": p.username,
                 "questions": p.questions,
                 "createdAt": p.created_at,
@@ -77,8 +81,63 @@ pub async fn meta(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
             })
         })
         .collect();
+    let docs = st.db.docs(v.id.clone()).await?;
+    let profiles = st.db.profiles(v.id.clone()).await?;
+    let (building, failed) = practice::profile_status(&st, &v.id);
+    let doc_json: Vec<Value> = docs
+        .iter()
+        .map(|d| {
+            json!({
+                "id": d.id,
+                "kind": d.kind,
+                "kindLabel": DOC_KINDS.iter().find(|k| k.0 == d.kind).map(|k| k.1).unwrap_or("Other"),
+                "title": d.title,
+                "qualification": d.info.qualification,
+                "paperNumber": d.info.paper_number,
+                "month": d.info.month,
+                "year": d.info.year,
+                "summary": d.digest.get("summary").cloned().unwrap_or(json!("")),
+                "url": if d.path.is_empty() { String::new() } else { file_url(&v.id, &d.path) },
+                "by": d.username,
+                "canDelete": user.is_admin || d.user_id == Some(user.id),
+            })
+        })
+        .collect();
+    let (idx2, vid2, profs) = (idx.clone(), v.id.clone(), profiles.clone());
+    let qs_spec: Vec<Vec<String>> = qs.iter().map(|q| q.spec.clone()).collect();
+    let profile_json: Vec<Value> = tokio::task::spawn_blocking(move || {
+        profs
+            .iter()
+            .map(|p| {
+                let fields: Vec<Value> = p
+                    .labels()
+                    .into_iter()
+                    .map(|l| {
+                        let n = qs_spec.iter().filter(|s| s.contains(&l)).count();
+                        json!({ "label": l, "questions": n })
+                    })
+                    .collect();
+                json!({
+                    "id": p.id,
+                    "qualification": p.qualification,
+                    "paperNumber": p.paper_number,
+                    "title": p.title,
+                    "fields": fields,
+                    "html": practice::render(&idx2, &vid2, &p.markdown()),
+                    "updatedAt": p.updated_at,
+                })
+            })
+            .collect()
+    })
+    .await?;
+    let quals = st.db.qualifications(v.id.clone()).await?;
     ok(json!({
         "configured": s.api_key.is_some(),
+        "docs": doc_json,
+        "profiles": profile_json,
+        "qualifications": quals,
+        "buildingProfiles": building,
+        "failedProfiles": failed.into_iter().map(|(q, e)| json!({ "qualification": q, "error": e })).collect::<Vec<_>>(),
         "topics": topics,
         "markLevels": marks,
         "maxMarks": MAX_MARKS,
@@ -108,6 +167,8 @@ fn question_json(idx: &VaultIndex, vault_id: &str, q: &Question, reveal: bool) -
         "html": practice::render(idx, vault_id, &q.text),
         "options": q.options,
         "blanks": q.blanks.len(),
+        "spec": q.spec,
+        "qualification": q.qualification,
     });
     if reveal {
         v["correct"] = json!(q.correct);
@@ -129,6 +190,11 @@ pub struct HubQuery {
     source: String,
     #[serde(default)]
     paper: String,
+    #[serde(default)]
+    years: String,
+    /// Specification area labels, separated by "|" (labels can hold commas).
+    #[serde(default)]
+    spec: String,
 }
 
 fn csv(s: &str) -> Vec<String> {
@@ -143,10 +209,21 @@ pub async fn hub(State(st): State<AppState>, user: CurrentUser, Path(id): Path<S
     let topics = csv(&q.topics);
     let types = csv(&q.types);
     let marks: Vec<i64> = csv(&q.marks).iter().filter_map(|m| m.parse().ok()).collect();
-    let papers: Vec<i64> = csv(&q.paper).iter().filter_map(|m| m.parse().ok()).collect();
+    let mut papers: Vec<i64> = csv(&q.paper).iter().filter_map(|m| m.parse().ok()).collect();
+    let years: Vec<i64> = csv(&q.years).iter().filter_map(|m| m.parse().ok()).collect();
+    if !years.is_empty() {
+        // A year filter is a filter on the papers of those years (and the chosen paper, if one was chosen).
+        let of_years: Vec<i64> = st.db.papers(v.id.clone()).await?.into_iter().filter(|p| years.contains(&p.info.year)).map(|p| p.id).collect();
+        papers = if papers.is_empty() { of_years } else { papers.into_iter().filter(|p| of_years.contains(p)).collect() };
+        if papers.is_empty() {
+            papers.push(-1);
+        }
+    }
+    let spec: Vec<String> = q.spec.split('|').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
     let all = st.db.questions(v.id.clone()).await?;
     let matched: Vec<Question> = all
         .into_iter()
+        .filter(|x| spec.is_empty() || x.spec.iter().any(|t| spec.iter().any(|w| w.eq_ignore_ascii_case(t))))
         .filter(|x| topics.is_empty() || x.topics.iter().any(|t| topics.iter().any(|w| w.eq_ignore_ascii_case(t))))
         .filter(|x| types.is_empty() || types.contains(&x.qtype))
         .filter(|x| marks.is_empty() || marks.contains(&x.marks))
@@ -174,6 +251,14 @@ pub struct PaperBody {
     #[serde(default)]
     scheme_path: String,
     questions: Vec<Value>,
+    #[serde(default)]
+    qualification: String,
+    #[serde(default)]
+    paper_number: String,
+    #[serde(default)]
+    month: String,
+    #[serde(default)]
+    year: i64,
 }
 
 pub async fn add_paper(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<PaperBody>) -> ApiResult {
@@ -182,13 +267,20 @@ pub async fn add_paper(State(st): State<AppState>, user: CurrentUser, Path(id): 
     let s = Settings::load(&st.db).await?;
     let idx = index_for(&st, &v.id).await?;
     let topics = practice::vault_topics(&idx, &s);
-    let qs: Vec<Question> = b.questions.iter().filter_map(|q| practice::clean_question(q, &topics)).collect();
+    let qs: Vec<Question> = b.questions.iter().filter_map(|q| practice::clean_question(q, &topics, &[])).collect();
     if qs.is_empty() {
         return Err(ApiErr::Bad("No usable questions were found in this paper.".into()));
     }
-    let title: String = b.title.trim().chars().filter(|c| !c.is_control()).take(150).collect();
+    let info = PaperInfo::clean(&b.qualification, &b.paper_number, &b.month, b.year);
+    let mut title: String = b.title.trim().chars().filter(|c| !c.is_control()).take(150).collect();
+    if title.is_empty() {
+        title = info.title();
+    }
+    if title.is_empty() {
+        title = "Past paper".into();
+    }
     let n = qs.len();
-    let pid = st.db.add_paper(v.id.clone(), who(&user), title.clone(), b.exam_path, b.scheme_path, qs).await?;
+    let pid = st.db.add_paper(v.id.clone(), who(&user), title.clone(), info, b.exam_path, b.scheme_path, qs).await?;
     st.db.audit(user.audit_id(), None, "paper_added", format!("{}: {title}, {n} questions", v.name)).await;
     ok(json!({ "id": pid, "questions": n, "dropped": b.questions.len() - n }))
 }
@@ -217,6 +309,11 @@ pub struct GenerateBody {
     count: usize,
     #[serde(default)]
     use_papers: bool,
+    /// Write the questions for this paper (its guide's id), on these of its specification areas.
+    #[serde(default)]
+    profile: Option<i64>,
+    #[serde(default)]
+    spec: Vec<String>,
 }
 
 /// Check the choices shared by questions and flashcards: topics must be the vault's.
@@ -266,12 +363,28 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
     if b.count == 0 || b.count > MAX_QUESTIONS {
         return Err(ApiErr::Bad(format!("Ask for 1 to {MAX_QUESTIONS} questions.")));
     }
-    let settings = json!({ "topics": topics, "types": types, "marks": marks, "difficulty": b.difficulty, "count": b.count, "usePapers": b.use_papers });
+    let profile: Option<Profile> = match b.profile {
+        Some(pid) => Some(st.db.profiles(v.id.clone()).await?.into_iter().find(|p| p.id == pid).ok_or_else(|| ApiErr::Bad("That paper's guide no longer exists.".into()))?),
+        None => None,
+    };
+    let spec: Vec<String> = match &profile {
+        Some(p) => {
+            let all = p.labels();
+            let chosen: Vec<String> = all.iter().filter(|l| b.spec.iter().any(|c| c.eq_ignore_ascii_case(l))).cloned().collect();
+            if chosen.is_empty() { all } else { chosen }
+        }
+        None => Vec::new(),
+    };
+    let settings = json!({ "topics": topics, "types": types, "marks": marks, "difficulty": b.difficulty, "count": b.count, "usePapers": b.use_papers, "profile": b.profile, "spec": spec });
+    let mut title = summary_title(b.count, "question", &topics);
+    if let Some(p) = &profile {
+        title = format!("{} · {}", summary_title(b.count, "question", &[]).split(" · ").next().unwrap_or(""), p.title);
+    }
     let session = Session {
         id: new_id(),
         vault_id: v.id.clone(),
         user_id: user.id,
-        title: summary_title(b.count, "question", &topics),
+        title,
         kind: "generated".into(),
         settings: settings.clone(),
         status: "generating".into(),
@@ -287,7 +400,7 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
     let created = session.id.clone();
     tokio::spawn(async move {
         let sid = session.id.clone();
-        match write_questions(&st2, &w, &session.vault_id, &topics, &types, &marks, &b.difficulty, b.count, b.use_papers).await {
+        match write_questions(&st2, &w, &session.vault_id, &topics, &types, &marks, &b.difficulty, b.count, b.use_papers, profile.as_ref(), &spec).await {
             Ok(ids) => {
                 let _ = st2.db.set_session(sid, "ready", String::new(), Some(ids), None).await;
             }
@@ -310,6 +423,8 @@ async fn write_questions(
     difficulty: &str,
     count: usize,
     use_papers: bool,
+    profile: Option<&Profile>,
+    spec: &[String],
 ) -> Result<Vec<i64>, String> {
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
     let idx = index_for(st, vault).await.map_err(|_| "The vault could not be read.".to_string())?;
@@ -320,12 +435,15 @@ async fn write_questions(
     }
     let examples = if use_papers {
         let all = st.db.questions(vault.to_string()).await.map_err(|_| "The question hub could not be read.".to_string())?;
-        practice::examples(&all, topics, types, marks)
+        practice::examples(&all, topics, types, marks, profile.map(|p| (p.qualification.as_str(), p.paper_number.as_str())))
     } else {
         String::new()
     };
     let type_names: Vec<&str> = types.iter().map(|t| TYPES.iter().find(|x| x.0 == t).map(|x| x.1).unwrap_or(t)).collect();
     let mut msg = format!("<notes>\n{notes}</notes>\n\n");
+    if let Some(p) = profile {
+        msg.push_str(&format!("<paper_profile>\n{}\n</paper_profile>\n\n", p.markdown()));
+    }
     if !examples.is_empty() {
         msg.push_str(&format!("<past_paper_examples>\n{examples}</past_paper_examples>\n\n"));
     }
@@ -337,6 +455,9 @@ async fn write_questions(
         marks.iter().map(|m| format!("{m} mark{}", if *m == 1 { "" } else { "s" })).collect::<Vec<_>>().join(", "),
         if topics.is_empty() { "any, from the notes".to_string() } else { topics.join("; ") },
     ));
+    if profile.is_some() {
+        msg.push_str(&format!("\nThe questions are for this paper. Specification areas (use these exact labels in spec_areas): {}.", spec.join("; ")));
+    }
     let schema = json!({
         "type": "object",
         "properties": { "questions": { "type": "array", "items": practice::question_schema(false) } },
@@ -347,8 +468,9 @@ async fn write_questions(
     let qs: Vec<Question> = v
         .get("questions")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|q| practice::clean_question(q, topics)).filter(|q| types.contains(&q.qtype)).take(count).collect())
+        .map(|a| a.iter().filter_map(|q| practice::clean_question(q, topics, spec)).filter(|q| types.contains(&q.qtype)).take(count).collect())
         .unwrap_or_default();
+    let qs: Vec<Question> = qs.into_iter().map(|mut q| { q.profile_id = profile.map(|p| p.id); q }).collect();
     if qs.is_empty() {
         return Err("Claude's questions could not be used. Try again.".into());
     }
@@ -486,7 +608,20 @@ pub async fn submit(State(st): State<AppState>, user: CurrentUser, Path((id, sid
     if !st.db.claim_session(s.id.clone(), "ready", "marking").await? {
         return Err(ApiErr::Bad("These answers have already been handed in. Start the questions again to have another go.".into()));
     }
-    let qs = st.db.questions_by_id(v.id.clone(), s.question_ids.clone()).await?;
+    let mut qs = st.db.questions_by_id(v.id.clone(), s.question_ids.clone()).await?;
+    let profiles = st.db.profiles(v.id.clone()).await?;
+    for q in qs.iter_mut() {
+        if q.profile_id.is_none() && !q.qualification.is_empty() {
+            q.profile_id = profiles
+                .iter()
+                .find(|p| p.qualification.eq_ignore_ascii_case(&q.qualification) && p.paper_number.eq_ignore_ascii_case(&q.paper_number))
+                .or_else(|| {
+                    let same: Vec<&Profile> = profiles.iter().filter(|p| p.qualification.eq_ignore_ascii_case(&q.qualification)).collect();
+                    if same.len() == 1 { Some(same[0]) } else { None }
+                })
+                .map(|p| p.id);
+        }
+    }
     let rows: Vec<(Option<i64>, Value, Value, i64)> =
         qs.iter().map(|q| (Some(q.id), q.snapshot(), clean_answer(q, b.answers.get(&q.id.to_string())), q.marks)).collect();
     st.db.add_attempts(s.id.clone(), user.id, v.id.clone(), rows).await?;
@@ -695,12 +830,16 @@ pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id):
         .skip_while(|(r, _, _)| r != "user")
         .map(|(r, c, _)| json!({ "role": if r == "assistant" { "assistant" } else { "user" }, "content": c }))
         .collect();
-    let context = format!(
+    let mut context = format!(
         "Course: {}. Topics in the student's notes: {}.\n\nThe student's practice results so far (JSON; percentages are of marks available):\n{}",
         v.name,
         if topics.is_empty() { "(none yet)".to_string() } else { topics.join("; ") },
         serde_json::to_string_pretty(&stats).unwrap_or_default()
     );
+    let guides: String = st.db.profiles(v.id.clone()).await?.iter().map(|p| p.markdown()).collect::<Vec<_>>().join("\n");
+    if !guides.is_empty() {
+        context.push_str(&format!("\n\nGuides to the student's exam papers:\n<paper_guides>\n{}\n</paper_guides>", guides.chars().take(60_000).collect::<String>()));
+    }
     let st2 = st.clone();
     let (w, vid, prompt) = (who(&user), v.id.clone(), s.coach_prompt().to_string());
     let task = tokio::spawn(async move {
@@ -722,4 +861,76 @@ pub async fn coach_clear(State(st): State<AppState>, user: CurrentUser, Path(id)
     let v = authorize(&st, &user, &id).await?;
     st.db.clear_coach(user.id, v.id.clone()).await?;
     ok(coach_view(&st, &user, &v.id).await?)
+}
+
+// ---------------------------------------------------------------- course documents and paper guides
+
+/// The ingest worker hands over a specification, examiner report, answers and commentary, or notes and guidance,
+/// with what Claude read from it.
+#[derive(Deserialize)]
+pub struct DocBody {
+    kind: String,
+    title: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    qualification: String,
+    #[serde(default)]
+    paper_number: String,
+    #[serde(default)]
+    month: String,
+    #[serde(default)]
+    year: i64,
+    digest: Value,
+}
+
+pub async fn add_doc(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<DocBody>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    if !DOC_KINDS.iter().any(|k| k.0 == b.kind) {
+        return Err(ApiErr::Bad("Unknown kind of document.".into()));
+    }
+    if !b.digest.is_object() || b.digest.to_string().len() > 400_000 {
+        return Err(ApiErr::Bad("What was read from this document is missing or too large.".into()));
+    }
+    let info = PaperInfo::clean(&b.qualification, &b.paper_number, &b.month, b.year);
+    let title: String = b.title.trim().chars().filter(|c| !c.is_control()).take(200).collect();
+    let did = st.db.add_doc(v.id.clone(), who(&user), b.kind.clone(), if title.is_empty() { "Document".into() } else { title.clone() }, b.path, info, b.digest).await?;
+    st.db.audit(user.audit_id(), None, "course_doc_added", format!("{}: {} ({})", v.name, title, b.kind)).await;
+    ok(json!({ "id": did }))
+}
+
+pub async fn delete_doc(State(st): State<AppState>, user: CurrentUser, Path((id, did)): Path<(String, i64)>, headers: HeaderMap) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let d = st.db.docs(v.id.clone()).await?.into_iter().find(|d| d.id == did).ok_or(ApiErr::NotFound)?;
+    if !user.is_admin && d.user_id != Some(user.id) {
+        return Err(ApiErr::Forbidden("Only the person who added this document, or an admin, can remove it.".into()));
+    }
+    st.db.delete_doc(v.id.clone(), did).await?;
+    st.db.audit(user.audit_id(), None, "course_doc_removed", format!("{}: {}", v.name, d.title)).await;
+    ok(json!({ "ok": true }))
+}
+
+#[derive(Deserialize, Default)]
+pub struct RebuildBody {
+    #[serde(default)]
+    qualifications: Vec<String>,
+}
+
+/// Build the paper guides again (for these qualifications, or all of them), in the background.
+pub async fn rebuild_profiles(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, body: Option<Json<RebuildBody>>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    if Settings::load(&st.db).await?.api_key.is_none() {
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+    }
+    let known = st.db.qualifications(v.id.clone()).await?;
+    let asked = body.map(|Json(b)| b.qualifications).unwrap_or_default();
+    let quals: Vec<String> = if asked.is_empty() { known } else { known.into_iter().filter(|k| asked.iter().any(|a| a.eq_ignore_ascii_case(k))).collect() };
+    if quals.is_empty() {
+        return Err(ApiErr::Bad("Add a specification or past papers first: the guides are built from them.".into()));
+    }
+    let started = practice::rebuild_in_background(&st, who(&user), v.id.clone(), quals);
+    ok(json!({ "building": started }))
 }

@@ -320,6 +320,54 @@ impl Db {
                  PRAGMA user_version = 6; COMMIT;",
             )?;
         }
+        if version < 7 {
+            // Past papers: what the paper is, from its cover (qualification, paper number, month, year).
+            conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE hub_papers ADD COLUMN qualification TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE hub_papers ADD COLUMN paper_number TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE hub_papers ADD COLUMN month TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE hub_papers ADD COLUMN year INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 7; COMMIT;",
+            )?;
+        }
+        if version < 8 {
+            // Course documents for the question hub (specifications, examiner reports, answers and commentaries,
+            // notes and guidance), the guide to each examined paper built from them, and the specification areas
+            // each question examines.
+            conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE questions ADD COLUMN spec TEXT NOT NULL DEFAULT '[]';
+                 ALTER TABLE questions ADD COLUMN profile_id INTEGER;
+                 CREATE TABLE hub_docs (
+                     id            INTEGER PRIMARY KEY,
+                     vault_id      TEXT NOT NULL,
+                     user_id       INTEGER,
+                     username      TEXT NOT NULL DEFAULT '',
+                     kind          TEXT NOT NULL,
+                     title         TEXT NOT NULL,
+                     path          TEXT NOT NULL DEFAULT '',
+                     qualification TEXT NOT NULL DEFAULT '',
+                     paper_number  TEXT NOT NULL DEFAULT '',
+                     month         TEXT NOT NULL DEFAULT '',
+                     year          INTEGER NOT NULL DEFAULT 0,
+                     digest        TEXT NOT NULL DEFAULT '{}',
+                     created_at    INTEGER NOT NULL
+                 );
+                 CREATE INDEX hub_docs_vault ON hub_docs(vault_id);
+                 CREATE TABLE paper_profiles (
+                     id            INTEGER PRIMARY KEY,
+                     vault_id      TEXT NOT NULL,
+                     qualification TEXT NOT NULL,
+                     paper_number  TEXT NOT NULL,
+                     title         TEXT NOT NULL,
+                     profile       TEXT NOT NULL,
+                     updated_at    INTEGER NOT NULL,
+                     UNIQUE (vault_id, qualification, paper_number)
+                 );
+                 PRAGMA user_version = 8; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -618,7 +666,7 @@ impl Db {
             let tx = c.transaction()?;
             tx.execute("DELETE FROM graph_state WHERE vault_id = ?1", [&id])?;
             tx.execute("DELETE FROM graph_presets WHERE vault_id = ?1", [&id])?;
-            for table in ["attempts", "practice_sessions", "questions", "hub_papers", "flash_decks", "coach_messages"] {
+            for table in ["attempts", "practice_sessions", "questions", "hub_papers", "flash_decks", "coach_messages", "hub_docs", "paper_profiles"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE vault_id = ?1"), [&id])?;
             }
             tx.execute("DELETE FROM vaults WHERE id = ?1", [&id])?;

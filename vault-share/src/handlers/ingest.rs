@@ -95,6 +95,9 @@ pub struct Settings {
     pub prompt_mark: String,
     pub prompt_cards: String,
     pub prompt_coach: String,
+    pub prompt_match: String,
+    pub prompt_digest: String,
+    pub prompt_profile: String,
 }
 
 /// A saved prompt, or the default when none is saved.
@@ -123,6 +126,15 @@ impl Settings {
     }
     pub fn cards_prompt(&self) -> &str {
         or_default(&self.prompt_cards, crate::prompts::CARDS)
+    }
+    pub fn digest_prompt(&self) -> &str {
+        or_default(&self.prompt_digest, crate::prompts::DIGEST)
+    }
+    pub fn profile_prompt(&self) -> &str {
+        or_default(&self.prompt_profile, crate::prompts::PROFILE)
+    }
+    pub fn match_prompt(&self) -> &str {
+        or_default(&self.prompt_match, crate::prompts::MATCH)
     }
     pub fn coach_prompt(&self) -> &str {
         or_default(&self.prompt_coach, crate::prompts::COACH)
@@ -163,6 +175,9 @@ impl Settings {
             prompt_mark: get("ms.prompt_mark", ""),
             prompt_cards: get("ms.prompt_cards", ""),
             prompt_coach: get("ms.prompt_coach", ""),
+            prompt_match: get("ms.prompt_match", ""),
+            prompt_digest: get("ms.prompt_digest", ""),
+            prompt_profile: get("ms.prompt_profile", ""),
         })
     }
 
@@ -231,6 +246,15 @@ pub struct SettingsForm {
     #[serde(default)]
     prompt_coach: String,
     reset_prompt_coach: Option<String>,
+    #[serde(default)]
+    prompt_match: String,
+    reset_prompt_match: Option<String>,
+    #[serde(default)]
+    prompt_digest: String,
+    reset_prompt_digest: Option<String>,
+    #[serde(default)]
+    prompt_profile: String,
+    reset_prompt_profile: Option<String>,
 }
 
 /// A prompt as typed: Windows line ends made plain, control characters dropped. The default itself (or nothing, or
@@ -300,6 +324,9 @@ pub async fn save_settings(
     let prompt_generate = clean_prompt(&f.prompt_generate, crate::prompts::GENERATE, f.reset_prompt_generate.is_some())?;
     let prompt_mark = clean_prompt(&f.prompt_mark, crate::prompts::MARK, f.reset_prompt_mark.is_some())?;
     let prompt_cards = clean_prompt(&f.prompt_cards, crate::prompts::CARDS, f.reset_prompt_cards.is_some())?;
+    let prompt_digest = clean_prompt(&f.prompt_digest, crate::prompts::DIGEST, f.reset_prompt_digest.is_some())?;
+    let prompt_profile = clean_prompt(&f.prompt_profile, crate::prompts::PROFILE, f.reset_prompt_profile.is_some())?;
+    let prompt_match = clean_prompt(&f.prompt_match, crate::prompts::MATCH, f.reset_prompt_match.is_some())?;
     let prompt_coach = clean_prompt(&f.prompt_coach, crate::prompts::COACH, f.reset_prompt_coach.is_some())?;
     let custom: Vec<&str> = [
         ("filing", &prompt_file),
@@ -310,6 +337,9 @@ pub async fn save_settings(
         ("marking", &prompt_mark),
         ("flashcards", &prompt_cards),
         ("exam coach", &prompt_coach),
+        ("sorting papers", &prompt_match),
+        ("reading course documents", &prompt_digest),
+        ("paper guides", &prompt_profile),
     ]
         .iter()
         .filter(|(_, p)| !p.is_empty())
@@ -341,6 +371,9 @@ pub async fn save_settings(
         ("ms.prompt_mark", prompt_mark),
         ("ms.prompt_cards", prompt_cards),
         ("ms.prompt_coach", prompt_coach),
+        ("ms.prompt_match", prompt_match),
+        ("ms.prompt_digest", prompt_digest),
+        ("ms.prompt_profile", prompt_profile),
     ];
     let new_key = f.api_key.trim().to_string();
     let mut key_change = "unchanged";
@@ -545,7 +578,7 @@ pub async fn config(State(st): State<AppState>, user: CurrentUser, Path(id): Pat
             "model": if s.image_mode == "claude" { s.image_model.clone() } else { String::new() },
             "parallel": s.image_parallel,
         },
-        "prompts": { "file": s.file_prompt(), "plan": s.plan_prompt(), "image": s.image_prompt(), "extract": s.extract_prompt() },
+        "prompts": { "file": s.file_prompt(), "plan": s.plan_prompt(), "image": s.image_prompt(), "extract": s.extract_prompt(), "match": s.match_prompt(), "digest": s.digest_prompt() },
         "updateFolderIndexes": s.folder_indexes,
         "maxFileBytes": st.cfg.max_file_bytes,
     }))

@@ -9745,9 +9745,9 @@ var require_load = __commonJS({
 var require_lib3 = __commonJS({
   "node_modules/jszip/lib/index.js"(exports, module) {
     "use strict";
-    function JSZip3() {
-      if (!(this instanceof JSZip3)) {
-        return new JSZip3();
+    function JSZip4() {
+      if (!(this instanceof JSZip4)) {
+        return new JSZip4();
       }
       if (arguments.length) {
         throw new Error("The constructor with parameters has been removed in JSZip 3.0, please check the upgrade guide.");
@@ -9756,7 +9756,7 @@ var require_lib3 = __commonJS({
       this.comment = null;
       this.root = "";
       this.clone = function() {
-        var newObj = new JSZip3();
+        var newObj = new JSZip4();
         for (var i in this) {
           if (typeof this[i] !== "function") {
             newObj[i] = this[i];
@@ -9765,16 +9765,16 @@ var require_lib3 = __commonJS({
         return newObj;
       };
     }
-    JSZip3.prototype = require_object();
-    JSZip3.prototype.loadAsync = require_load();
-    JSZip3.support = require_support();
-    JSZip3.defaults = require_defaults();
-    JSZip3.version = "3.10.2";
-    JSZip3.loadAsync = function(content, options) {
-      return new JSZip3().loadAsync(content, options);
+    JSZip4.prototype = require_object();
+    JSZip4.prototype.loadAsync = require_load();
+    JSZip4.support = require_support();
+    JSZip4.defaults = require_defaults();
+    JSZip4.version = "3.10.2";
+    JSZip4.loadAsync = function(content, options) {
+      return new JSZip4().loadAsync(content, options);
     };
-    JSZip3.external = require_external();
-    module.exports = JSZip3;
+    JSZip4.external = require_external();
+    module.exports = JSZip4;
   }
 });
 
@@ -19485,9 +19485,9 @@ var require_load2 = __commonJS({
 var require_lib6 = __commonJS({
   "../../microsidian/node_modules/jszip/lib/index.js"(exports, module) {
     "use strict";
-    function JSZip3() {
-      if (!(this instanceof JSZip3)) {
-        return new JSZip3();
+    function JSZip4() {
+      if (!(this instanceof JSZip4)) {
+        return new JSZip4();
       }
       if (arguments.length) {
         throw new Error("The constructor with parameters has been removed in JSZip 3.0, please check the upgrade guide.");
@@ -19496,7 +19496,7 @@ var require_lib6 = __commonJS({
       this.comment = null;
       this.root = "";
       this.clone = function() {
-        var newObj = new JSZip3();
+        var newObj = new JSZip4();
         for (var i in this) {
           if (typeof this[i] !== "function") {
             newObj[i] = this[i];
@@ -19505,16 +19505,16 @@ var require_lib6 = __commonJS({
         return newObj;
       };
     }
-    JSZip3.prototype = require_object2();
-    JSZip3.prototype.loadAsync = require_load2();
-    JSZip3.support = require_support2();
-    JSZip3.defaults = require_defaults2();
-    JSZip3.version = "3.10.2";
-    JSZip3.loadAsync = function(content, options) {
-      return new JSZip3().loadAsync(content, options);
+    JSZip4.prototype = require_object2();
+    JSZip4.prototype.loadAsync = require_load2();
+    JSZip4.support = require_support2();
+    JSZip4.defaults = require_defaults2();
+    JSZip4.version = "3.10.2";
+    JSZip4.loadAsync = function(content, options) {
+      return new JSZip4().loadAsync(content, options);
     };
-    JSZip3.external = require_external2();
-    module.exports = JSZip3;
+    JSZip4.external = require_external2();
+    module.exports = JSZip4;
   }
 });
 
@@ -29653,8 +29653,8 @@ var init_propagation = __esm({
       * @param carrier carrier to inject context into
       * @param setter Function used to set values on the carrier
       */
-      inject(context3, carrier, setter = defaultTextMapSetter) {
-        return this._getGlobalPropagator().inject(context3, carrier, setter);
+      inject(context3, carrier, setter2 = defaultTextMapSetter) {
+        return this._getGlobalPropagator().inject(context3, carrier, setter2);
       }
       /**
       * Extract context from a carrier
@@ -63335,8 +63335,8 @@ var require_webidl = __commonJS({
       return new TypeError(`${message.header}: ${message.message}`);
     };
     webidl.errors.conversionFailed = function(opts) {
-      const plural2 = opts.types.length === 1 ? "" : " one of";
-      const message = `${opts.argument} could not be converted to${plural2}: ${opts.types.join(", ")}.`;
+      const plural3 = opts.types.length === 1 ? "" : " one of";
+      const message = `${opts.argument} could not be converted to${plural3}: ${opts.types.join(", ")}.`;
       return webidl.errors.exception({
         header: opts.prefix,
         message
@@ -89450,8 +89450,8 @@ var init_propagation2 = __esm({
       * @param carrier carrier to inject context into
       * @param setter Function used to set values on the carrier
       */
-      inject(context3, carrier, setter = defaultTextMapSetter2) {
-        return this._getGlobalPropagator().inject(context3, carrier, setter);
+      inject(context3, carrier, setter2 = defaultTextMapSetter2) {
+        return this._getGlobalPropagator().inject(context3, carrier, setter2);
       }
       /**
       * Extract context from a carrier
@@ -121160,10 +121160,10 @@ var object_set_prototype_of_namespaceFn = /* @__PURE__ */ __webpack_require__.cw
   module.exports = Object.setPrototypeOf || ("__proto__" in {} ? (function() {
     var CORRECT_SETTER = false;
     var test = {};
-    var setter;
+    var setter2;
     try {
-      setter = uncurryThisAccessor(Object.prototype, "__proto__", "set");
-      setter(test, []);
+      setter2 = uncurryThisAccessor(Object.prototype, "__proto__", "set");
+      setter2(test, []);
       CORRECT_SETTER = test instanceof Array;
     } catch (error3) {
     }
@@ -121171,7 +121171,7 @@ var object_set_prototype_of_namespaceFn = /* @__PURE__ */ __webpack_require__.cw
       requireObjectCoercible(O);
       aPossiblePrototype(proto);
       if (!isObject3(O)) return O;
-      if (CORRECT_SETTER) setter(O, proto);
+      if (CORRECT_SETTER) setter2(O, proto);
       else O.__proto__ = proto;
       return O;
     };
@@ -189075,10 +189075,10 @@ var object_set_prototype_of_namespaceFn2 = /* @__PURE__ */ __webpack_require__2.
   module.exports = Object.setPrototypeOf || ("__proto__" in {} ? (function() {
     var CORRECT_SETTER = false;
     var test = {};
-    var setter;
+    var setter2;
     try {
-      setter = uncurryThisAccessor(Object.prototype, "__proto__", "set");
-      setter(test, []);
+      setter2 = uncurryThisAccessor(Object.prototype, "__proto__", "set");
+      setter2(test, []);
       CORRECT_SETTER = test instanceof Array;
     } catch (error3) {
     }
@@ -189086,7 +189086,7 @@ var object_set_prototype_of_namespaceFn2 = /* @__PURE__ */ __webpack_require__2.
       requireObjectCoercible(O);
       aPossiblePrototype(proto);
       if (!isObject3(O)) return O;
-      if (CORRECT_SETTER) setter(O, proto);
+      if (CORRECT_SETTER) setter2(O, proto);
       else O.__proto__ = proto;
       return O;
     };
@@ -213978,7 +213978,7 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
   _updateProperty(type, name, value) {
     const options = this._drawingOptions;
     const savedValue = options[name];
-    const setter = (val) => {
+    const setter2 = (val) => {
       options.updateProperty(name, val);
       const bbox = this._drawOutlines.updateProperty(name, val);
       if (bbox) {
@@ -213992,8 +213992,8 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
       }
     };
     this.addCommands({
-      cmd: setter.bind(this, value),
-      undo: setter.bind(this, savedValue),
+      cmd: setter2.bind(this, value),
+      undo: setter2.bind(this, savedValue),
       post: this._uiManager.updateUI.bind(this._uiManager, this),
       mustExec: true,
       type,
@@ -214007,7 +214007,7 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
     const options = this._drawingOptions;
     const savedColor = options[colorName];
     const savedOpacity = options[opacityName];
-    const setter = (c, op) => {
+    const setter2 = (c, op) => {
       options.updateProperty(colorName, c);
       options.updateProperty(opacityName, op);
       this._drawOutlines.updateProperty(colorName, c);
@@ -214017,8 +214017,8 @@ var DrawingEditor = class _DrawingEditor extends AnnotationEditor {
       this.onUpdatedOpacity();
     };
     this.addCommands({
-      cmd: setter.bind(this, color, opacity),
-      undo: setter.bind(this, savedColor, savedOpacity),
+      cmd: setter2.bind(this, color, opacity),
+      undo: setter2.bind(this, savedColor, savedOpacity),
       post: this._uiManager.updateUI.bind(this._uiManager, this),
       mustExec: true,
       type,
@@ -226678,9 +226678,9 @@ function approxClosedPolyDP(curve, epsilon) {
   return approximated.length >= 3 ? approximated : [...curve];
 }
 function approxOpenPolyDP(curve, epsilon) {
-  const keep = new Uint8Array(curve.length);
-  keep[0] = 1;
-  keep[curve.length - 1] = 1;
+  const keep2 = new Uint8Array(curve.length);
+  keep2[0] = 1;
+  keep2[curve.length - 1] = 1;
   const stack = [[0, curve.length - 1]];
   const epsilonSquared = epsilon * epsilon;
   while (stack.length) {
@@ -226695,12 +226695,12 @@ function approxOpenPolyDP(curve, epsilon) {
       }
     }
     if (maxIndex >= 0 && maxDistance > epsilonSquared) {
-      keep[maxIndex] = 1;
+      keep2[maxIndex] = 1;
       stack.push([start, maxIndex], [maxIndex, end]);
     }
   }
   const approximated = [];
-  for (let index = 0; index < curve.length; index++) if (keep[index]) approximated.push(curve[index]);
+  for (let index = 0; index < curve.length; index++) if (keep2[index]) approximated.push(curve[index]);
   return approximated;
 }
 function removeDuplicateClosingPoint(points) {
@@ -228745,6 +228745,7 @@ async function fileSource(s, cfg, io, plan, total, set, onFraction) {
 }
 
 // worker/paper.js
+var import_jszip3 = __toESM(require_lib3());
 init_sdk2();
 import { readFile as readFile5 } from "node:fs/promises";
 
@@ -234945,7 +234946,9 @@ ${formattedIssues}${suffix}`);
 }
 
 // worker/paper.js
+var PaperDetails = object2({ qualification: string4(), paper_number: string4(), month: string4(), year: number3().int() });
 var Extracted = object2({
+  paper: PaperDetails,
   questions: array2(
     object2({
       number: string4(),
@@ -234961,95 +234964,64 @@ var Extracted = object2({
     })
   )
 });
+var DOC_KINDS = ["specification", "examiner_report", "answers_commentary", "notes_guidance", "mark_scheme"];
+var KIND_LABEL = { specification: "Specification", examiner_report: "Examiner report", answers_commentary: "Answers and commentary", notes_guidance: "Notes and guidance", mark_scheme: "Mark scheme" };
+var Matched = object2({
+  papers: array2(PaperDetails.extend({ exam_file: string4(), scheme_file: string4() })),
+  documents: array2(PaperDetails.extend({ file: string4(), kind: _enum2([...DOC_KINDS, "other"]), reason: string4() }))
+});
+var Digest = PaperDetails.extend({
+  summary: string4(),
+  assessment: array2(object2({ paper_number: string4(), title: string4(), duration: string4(), total_marks: number3().int(), format: string4() })),
+  content_areas: array2(object2({ code: string4(), title: string4(), points: array2(string4()), papers: array2(string4()) })),
+  command_words: array2(object2({ word: string4(), meaning: string4(), marks: string4() })),
+  assessment_objectives: array2(object2({ code: string4(), meaning: string4(), weighting: string4() })),
+  key_points: array2(string4()),
+  marking_guidance: array2(string4()),
+  exemplars: array2(object2({ question: string4(), marks: string4(), comment: string4() }))
+});
 var BUDGET = 16e5;
+var PEEK = 5e3;
+var PAPERS_AT_ONCE = 2;
+var basename5 = (p) => p.split("/").pop();
 var safeName = (s) => s.replace(/[\\/:*?"<>|#^[\]]/g, " ").replace(/\s+/g, " ").trim().slice(0, 100) || "Paper";
-async function runPaper(claim2) {
-  const title = String(claim2.meta && claim2.meta.title || "Past paper");
-  const p = {
-    v: 1,
-    kind: "paper",
-    stage: "read",
-    planned: true,
-    steps: {
-      read: { state: "waiting", done: 0, of: claim2.files.length, note: "" },
-      plan: { state: "waiting", note: "", elapsed: 0 },
-      file: { state: "waiting", done: 0, of: 1, note: "" }
-    },
-    files: claim2.files.map((f, i) => ({ key: `${i}`, name: f.name, state: "waiting", text: i === 0 ? "Exam paper" : "Mark scheme" })),
-    summary: ""
-  };
-  const rep = new Reporter(claim2.id, p);
-  const session = new Session(claim2.vault, claim2.session);
-  let status = "done";
-  try {
-    const cfg = await session.api("GET", "ingest/config");
-    if (!cfg.configured) throw new Error("No Anthropic API key is set. An admin can add one under Admin \u2192 Microsidian.");
-    const readCfg = cfg.images && cfg.images.mode === "claude" && !cfg.images.model ? { ...cfg, images: { ...cfg.images, mode: "ocr" } } : cfg;
-    const io = new ServerIO(session, cfg.layout);
-    await io.load();
-    const folder = `${cfg.layout.originals}/Question Hub/${safeName(title)}`;
-    await rep.push(true);
-    p.steps.read.state = "working";
-    const texts = [];
-    const paths = [];
-    for (let i = 0; i < claim2.files.length; i++) {
-      const f = claim2.files[i];
-      const row = p.files[i];
-      const set = (state, text, bar) => {
-        row.state = state;
-        row.text = text;
-        if (bar === void 0) delete row.bar;
-        else row.bar = bar;
-      };
-      const s = { name: f.name, title: `${title}: ${f.name}`, row };
-      rep.check();
-      p.steps.read.note = f.name;
-      set("working", "Reading the file\u2026", null);
-      const bytes = new Uint8Array(await readFile5(f.path));
-      const res = await convertSource(bytes, f.name, convertOptions(cfg));
-      const r = await readPictures(res.images, s, readCfg, session, (_s, state, text, bar) => set(state, text, bar), async (fr) => {
-        p.steps.read.done = i + fr;
-        rep.check();
-        await rep.push();
-      }, () => rep.check());
-      texts.push(withPictureReadings(res.body, r.readings));
-      set("working", "Saving it in the vault\u2026", null);
-      let path7 = `${folder}/${f.name}`;
-      for (let n = 2; await io.exists(path7); n++) path7 = `${folder}/${f.name.replace(/(\.[^.]+)$/, ` (${n})$1`)}`;
-      await io.writeBinary(path7, bytes);
-      for (const img of res.images) if (!await io.exists(img.path)) await io.writeBinary(img.path, img.data);
-      paths.push(path7);
-      set("done", `${i === 0 ? "Exam paper" : "Mark scheme"} read${r.readings.size ? ` \xB7 ${r.readings.size} picture${r.readings.size === 1 ? "" : "s"} ${r.how}` : ""}`);
-      p.steps.read.done = i + 1;
-      await rep.push(true);
-    }
-    Object.assign(p.steps.read, { state: "done", note: "" });
-    p.stage = "plan";
-    Object.assign(p.steps.plan, { state: "working", note: "Claude is reading the paper and its mark scheme", elapsed: 0 });
-    rep.started = Date.now();
-    await rep.push(true);
-    const meta2 = await session.api("GET", "practice/meta");
-    let paper = texts[0] || "";
-    let scheme = texts[1] || "";
-    if (paper.length + scheme.length > BUDGET) {
-      const half = Math.floor(BUDGET / 2);
-      paper = paper.slice(0, Math.max(half, BUDGET - scheme.length));
-      scheme = scheme.slice(0, BUDGET - paper.length);
-    }
-    const client = new Anthropic2({ apiKey: "held-by-the-server", fetch: session.claudeFetch, dangerouslyAllowBrowser: true });
-    const msg = await client.beta.messages.parse({
-      model: "claude-sonnet-5-5",
-      // the server uses the model an admin chose
-      max_tokens: 16e3,
-      output_config: { effort: "medium", format: zodOutputFormat2(Extracted) },
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      system: cfg.prompts && cfg.prompts.extract ? cfg.prompts.extract : void 0,
-      messages: [
-        {
-          role: "user",
-          content: `<topics>
-${(meta2.topics || []).join("\n")}
+var plural2 = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+var titleOf = (d) => [[d.month, d.year > 0 ? String(d.year) : ""].filter(Boolean).join(" "), d.paper_number].filter(Boolean).join(" ").trim();
+var claude = (session) => new Anthropic2({ apiKey: "held-by-the-server", fetch: session.claudeFetch, dangerouslyAllowBrowser: true });
+async function readDoc(doc, cfg, readCfg, session, set, onFraction, check2) {
+  set("working", "Reading the file\u2026", null);
+  const bytes = doc.bytes || await doc.get();
+  const res = await convertSource(bytes, doc.name, convertOptions(cfg));
+  const r = await readPictures(res.images, { name: doc.name, title: doc.title }, readCfg, session, (_s, state, text, bar) => set(state, text, bar), onFraction, check2);
+  return { bytes, res, text: withPictureReadings(res.body, r.readings), pictures: r.readings.size, how: r.how };
+}
+async function keep(io, folder, name, bytes, images) {
+  let path7 = `${folder}/${name}`;
+  for (let n = 2; await io.exists(path7); n++) path7 = `${folder}/${name.replace(/(\.[^.]+)$/, ` (${n})$1`)}`;
+  await io.writeBinary(path7, bytes);
+  for (const img of images) if (!await io.exists(img.path)) await io.writeBinary(img.path, img.data);
+  return path7;
+}
+async function extract(session, cfg, topics, title, paperText, schemeText) {
+  let paper = paperText || "";
+  let scheme = schemeText || "";
+  if (paper.length + scheme.length > BUDGET) {
+    paper = paper.slice(0, Math.max(Math.floor(BUDGET / 2), BUDGET - scheme.length));
+    scheme = scheme.slice(0, BUDGET - paper.length);
+  }
+  const msg = await claude(session).beta.messages.parse({
+    model: "claude-sonnet-5-5",
+    // the server uses the model an admin chose
+    max_tokens: 16e3,
+    output_config: { effort: "medium", format: zodOutputFormat2(Extracted) },
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    system: cfg.prompts && cfg.prompts.extract ? cfg.prompts.extract : void 0,
+    messages: [
+      {
+        role: "user",
+        content: `<topics>
+${topics.join("\n")}
 </topics>
 
 <exam_paper title="${title.replace(/"/g, "'")}">
@@ -235059,36 +235031,396 @@ ${paper}
 ` + (scheme ? `<mark_scheme>
 ${scheme}
 </mark_scheme>` : "<mark_scheme>\n(No mark scheme was uploaded: write one for each question.)\n</mark_scheme>")
-        }
-      ]
-    });
-    rep.started = 0;
-    if (msg.stop_reason === "refusal") throw new Error("Claude declined to read this paper.");
-    if (msg.stop_reason === "max_tokens") throw new Error("The paper has too many questions to read in one go. Split it into parts and add each one.");
-    if (!msg.parsed_output) throw new Error("Claude's list of questions could not be read. Try again.");
-    const found = msg.parsed_output.questions;
-    const u = msg.usage;
-    Object.assign(p.steps.plan, { state: "done", note: `${found.length} question${found.length === 1 ? "" : "s"} found \xB7 ${(u.input_tokens + (u.cache_read_input_tokens || 0)).toLocaleString("en-GB")} tokens in, ${u.output_tokens.toLocaleString("en-GB")} out` });
-    p.stage = "file";
-    Object.assign(p.steps.file, { state: "working", note: "Adding the questions to the hub" });
-    await rep.push(true);
-    const saved = await session.api("POST", "practice/papers", { json: { title, exam_path: paths[0] || "", scheme_path: paths[1] || "", questions: found } });
-    Object.assign(p.steps.file, { state: "done", done: 1, note: "" });
-    p.summary = `${saved.questions} question${saved.questions === 1 ? "" : "s"} added to the hub${saved.dropped ? ` \xB7 ${saved.dropped} could not be used` : ""}`;
+      }
+    ]
+  });
+  if (msg.stop_reason === "refusal") throw new Error("Claude declined to read this paper.");
+  if (msg.stop_reason === "max_tokens") throw new Error("The paper has too many questions to read in one go. Split it into parts and add each one.");
+  if (!msg.parsed_output) throw new Error("Claude's list of questions could not be read. Try again.");
+  return { ...msg.parsed_output, usage: msg.usage };
+}
+async function addOne({ session, cfg, readCfg, io, topics, title, details, exam, scheme, set, onFraction, check: check2, onClaude }) {
+  const folder = `${cfg.layout.originals}/Question Hub/${safeName(title || titleOf(details || {}) || basename5(exam.name).replace(/\.[^.]+$/, ""))}`;
+  const docs = [exam, scheme].filter(Boolean);
+  const read = [];
+  for (let i = 0; i < docs.length; i++) {
+    const label = i === 0 ? "the paper" : "the mark scheme";
+    const r = await readDoc(docs[i], cfg, readCfg, session, (state, text, bar) => set(state, `${text.replace("the file", label)}`, bar), (f) => onFraction((i + f) / docs.length), check2);
+    set("working", `Saving ${label} in the vault\u2026`, null);
+    r.path = await keep(io, folder, docs[i].name, r.bytes, r.res.images);
+    read.push(r);
+  }
+  check2();
+  set("working", "Claude is splitting the paper into questions\u2026", null);
+  if (onClaude) await onClaude();
+  const out = await extract(session, cfg, topics, title || titleOf(details || {}) || exam.name, read[0].text, read[1] ? read[1].text : "");
+  const d = details && (details.year || details.paper_number || details.month) ? details : out.paper;
+  set("working", "Adding the questions to the hub\u2026", null);
+  const saved = await session.api("POST", "practice/papers", {
+    json: {
+      title: title || "",
+      exam_path: read[0].path,
+      scheme_path: read[1] ? read[1].path : "",
+      qualification: d.qualification || out.paper.qualification || "",
+      paper_number: d.paper_number || "",
+      month: d.month || "",
+      year: d.year || 0,
+      questions: out.questions
+    }
+  });
+  return { ...saved, qualification: d.qualification || out.paper.qualification || "", usage: out.usage, pictures: read.reduce((n, r) => n + r.pictures, 0), how: read.find((r) => r.how)?.how || "" };
+}
+async function addDoc({ session, cfg, readCfg, io, quals, kind, details, doc, set, check: check2 }) {
+  const docCfg = kind === "specification" ? { ...readCfg, images: { mode: "ocr", model: "", parallel: 1 }, imageMinKB: 1e9 } : readCfg;
+  const r = await readDoc(doc, docCfg, docCfg, session, (state, text2, bar) => set(state, text2.replace("the file", "the document"), bar), async () => {
+    check2();
+  }, check2);
+  check2();
+  set("working", "Claude is reading it\u2026", null);
+  let text = r.text;
+  if (text.length > BUDGET) text = text.slice(0, BUDGET);
+  const msg = await claude(session).beta.messages.parse({
+    model: "claude-sonnet-5-5",
+    max_tokens: 16e3,
+    output_config: { effort: "medium", format: zodOutputFormat2(Digest) },
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    system: cfg.prompts && cfg.prompts.digest ? cfg.prompts.digest : void 0,
+    messages: [{
+      role: "user",
+      content: `Kind of document: ${KIND_LABEL[kind] || kind}
+File: ${doc.title}
+
+<known_qualifications>
+${quals.join("\n")}
+</known_qualifications>
+
+<document>
+${text}
+</document>`
+    }]
+  });
+  if (msg.stop_reason === "refusal") throw new Error("Claude declined to read this document.");
+  if (msg.stop_reason === "max_tokens") throw new Error("What Claude took from this document was too long and was cut off.");
+  if (!msg.parsed_output) throw new Error("What Claude read from this document could not be understood. Try again.");
+  const dg = msg.parsed_output;
+  const d = {
+    qualification: details && details.qualification || dg.qualification || "",
+    paper_number: kind === "specification" ? "" : details && details.paper_number || dg.paper_number || "",
+    month: kind === "specification" ? "" : details && details.month || dg.month || "",
+    year: kind === "specification" ? 0 : details && details.year || dg.year || 0
+  };
+  set("working", "Saving it in the vault\u2026", null);
+  const folder = `${cfg.layout.originals}/Question Hub/Resources/${safeName(d.qualification || "General")}`;
+  const path7 = await keep(io, folder, doc.name, r.bytes, kind === "specification" ? [] : r.res.images);
+  await session.api("POST", "practice/docs", {
+    json: { kind, title: doc.name.replace(/\.[^.]+$/, ""), path: path7, ...d, digest: { ...dg, ...d } }
+  });
+  const areas = dg.content_areas.length;
+  set("done", `${KIND_LABEL[kind]} read${areas ? ` \xB7 ${plural2(areas, "content area")}` : ""}${dg.key_points.length ? ` \xB7 ${plural2(dg.key_points.length, "point")} from examiners` : ""}${dg.exemplars.length ? ` \xB7 ${plural2(dg.exemplars.length, "sample answer")}` : ""}`);
+  return d.qualification;
+}
+async function rebuildGuides(session, quals) {
+  const list = [...new Set(quals.filter(Boolean))];
+  if (!list.length) return;
+  try {
+    await session.api("POST", "practice/profiles/rebuild", { json: { qualifications: list } });
+  } catch (e) {
+    console.warn(`could not start building paper guides: ${e.message}`);
+  }
+}
+function newProgress(claim2, files) {
+  return {
+    v: 1,
+    kind: "paper",
+    stage: "read",
+    planned: true,
+    steps: {
+      read: { state: "waiting", done: 0, of: files, note: "" },
+      plan: { state: "waiting", note: "", elapsed: 0 },
+      file: { state: "waiting", done: 0, of: 1, note: "" }
+    },
+    files: [],
+    summary: ""
+  };
+}
+function setter(row) {
+  return (state, text, bar) => {
+    row.state = state;
+    row.text = text;
+    if (bar === void 0 || bar === null) delete row.bar;
+    else row.bar = bar;
+  };
+}
+async function runPaper(claim2) {
+  const zipMode = !!(claim2.meta && claim2.meta.zip);
+  const specMode = !!(claim2.meta && claim2.meta.spec);
+  const p = newProgress(claim2, claim2.files.length);
+  const rep = new Reporter(claim2.id, p);
+  const session = new Session(claim2.vault, claim2.session);
+  let status = "done";
+  try {
+    const cfg = await session.api("GET", "ingest/config");
+    if (!cfg.configured) throw new Error("No Anthropic API key is set. An admin can add one under Admin \u2192 Microsidian.");
+    const readCfg = cfg.images && cfg.images.mode === "claude" && !cfg.images.model ? { ...cfg, images: { ...cfg.images, mode: "ocr" } } : cfg;
+    const io = new ServerIO(session, cfg.layout);
+    await io.load();
+    const meta2 = await session.api("GET", "practice/meta");
+    const topics = meta2.topics || [];
+    const ctx = { session, cfg, readCfg, io, topics, quals: meta2.qualifications || [], check: () => rep.check() };
+    let touched = [];
+    if (zipMode) touched = await runZip(claim2, p, rep, ctx, meta2);
+    else if (specMode) touched = await runSpec(claim2, p, rep, ctx);
+    else touched = await runSingle(claim2, p, rep, ctx);
+    await rebuildGuides(session, touched);
+    if (touched.some(Boolean)) p.summary += " \xB7 the paper guides are being built again";
   } catch (e) {
     if (e instanceof Cancelled) {
       status = "cancelled";
-      p.summary = "Stopped";
+      p.summary = p.summary ? `Stopped \xB7 ${p.summary}` : "Stopped";
     } else {
       status = "failed";
       console.warn(`paper ${claim2.id} failed: ${e && e.stack ? e.stack : e}`);
-      p.summary = `The paper could not be added: ${explain(e)}`;
+      p.summary = `${p.summary ? `${p.summary} \xB7 ` : ""}Nothing more could be added: ${explain(e)}`;
     }
     for (const f of p.files) if (f.state === "waiting" || f.state === "working") Object.assign(f, { state: status === "cancelled" ? "skipped" : "failed" });
     for (const s of Object.values(p.steps)) if (s.state === "working") s.state = "failed";
   }
   p.stage = "done";
   await rep.finish(status);
+}
+async function runSingle(claim2, p, rep, ctx) {
+  const title = String(claim2.meta && claim2.meta.title || "");
+  const row = { key: "0", name: title || claim2.files[0].name, state: "waiting", text: "Waiting\u2026" };
+  p.files.push(row);
+  const doc = (f) => ({ name: f.name, title: `${title}: ${f.name}`, get: async () => new Uint8Array(await readFile5(f.path)) });
+  p.steps.read.state = "working";
+  p.steps.read.of = 1;
+  await rep.push(true);
+  const saved = await addOne({
+    ...ctx,
+    title,
+    details: null,
+    exam: doc(claim2.files[0]),
+    scheme: claim2.files[1] ? doc(claim2.files[1]) : null,
+    set: setter(row),
+    onFraction: async (f) => {
+      p.steps.read.done = f;
+      rep.check();
+      await rep.push();
+    },
+    onClaude: async () => {
+      Object.assign(p.steps.read, { state: "done", done: 1 });
+      p.stage = "plan";
+      Object.assign(p.steps.plan, { state: "working", note: "Claude is reading the paper and its mark scheme", elapsed: 0 });
+      rep.started = Date.now();
+      await rep.push(true);
+    }
+  });
+  rep.started = 0;
+  Object.assign(p.steps.plan, { state: "done", note: "" });
+  Object.assign(p.steps.file, { state: "done", done: 1 });
+  Object.assign(row, { state: "done", text: `${plural2(saved.questions, "question")} added`, link: "" });
+  p.summary = `${plural2(saved.questions, "question")} added to the hub${saved.dropped ? ` \xB7 ${saved.dropped} could not be used` : ""}`;
+  return [saved.qualification];
+}
+async function runSpec(claim2, p, rep, ctx) {
+  const f = claim2.files[0];
+  const row = { key: "0", name: f.name, state: "waiting", text: "Waiting\u2026" };
+  p.files.push(row);
+  p.steps.read.state = "working";
+  p.steps.read.of = 1;
+  await rep.push(true);
+  const name = String(claim2.meta && claim2.meta.title || "");
+  const qual = await addDoc({
+    ...ctx,
+    kind: "specification",
+    details: name ? { qualification: name, paper_number: "", month: "", year: 0 } : null,
+    doc: { name: f.name, title: f.name, get: async () => new Uint8Array(await readFile5(f.path)) },
+    set: setter(row)
+  });
+  Object.assign(p.steps.read, { state: "done", done: 1 });
+  Object.assign(p.steps.plan, { state: "done" });
+  Object.assign(p.steps.file, { state: "done", done: 1 });
+  p.summary = `Specification read${qual ? ` for ${qual}` : ""}`;
+  return [qual];
+}
+async function runZip(claim2, p, rep, ctx, meta2) {
+  const zipRow = { key: "zip", name: claim2.files[0].name, state: "working", text: "Opening the zip\u2026" };
+  p.files.push(zipRow);
+  await rep.push(true);
+  const zip = await import_jszip3.default.loadAsync(await readFile5(claim2.files[0].path));
+  const { kept, culled, summary } = cullZip(zip, { imageMinBytes: Number.MAX_SAFE_INTEGER });
+  const docs = kept.filter((k) => DOCUMENT.test(k.path)).map((k, i) => ({ id: `F${i + 1}`, path: k.path, name: basename5(k.path), title: k.path, get: () => k.e.async("uint8array") }));
+  const left = culled + (kept.length - docs.length);
+  if (!docs.length) throw new Error("There are no PDF, Word or PowerPoint files in this zip.");
+  Object.assign(zipRow, { state: "done", text: `${plural2(docs.length, "document")} found${left ? ` \xB7 ${plural2(left, "other file")} left out` : ""}` });
+  if (summary) zipRow.detail = `Left out: ${summary}.`;
+  p.steps.read.state = "working";
+  p.steps.read.of = docs.length;
+  p.steps.read.note = "Looking at the start of each document";
+  await rep.push(true);
+  for (let i = 0; i < docs.length; i++) {
+    rep.check();
+    const d = docs[i];
+    p.steps.read.done = i;
+    p.steps.read.note = d.name;
+    try {
+      const res = await convertSource(await d.get(), d.name, convertOptions(ctx.cfg));
+      d.peek = res.body.replace(/!\[\[[^\]]*\]\]/g, "").replace(/\n{3,}/g, "\n\n").trim().slice(0, PEEK);
+      if (d.peek.length < 300 && res.images.length) {
+        const r = await readPictures(res.images.slice(0, 2), d, ctx.readCfg, ctx.session, () => {
+        }, async () => {
+        }, ctx.check);
+        d.peek = withPictureReadings(res.body.split("\n\n").slice(0, 6).join("\n\n"), r.readings).slice(0, PEEK);
+      }
+    } catch (e) {
+      if (e instanceof Cancelled) throw e;
+      d.peek = "";
+      d.unreadable = explain(e);
+    }
+    await rep.push();
+  }
+  Object.assign(p.steps.read, { state: "done", done: docs.length, note: "" });
+  p.stage = "plan";
+  Object.assign(p.steps.plan, { state: "working", note: "Claude is matching each paper to its mark scheme", elapsed: 0 });
+  rep.started = Date.now();
+  await rep.push(true);
+  const readable = docs.filter((d) => !d.unreadable);
+  const msg = await claude(ctx.session).beta.messages.parse({
+    model: "claude-sonnet-5-5",
+    max_tokens: 8e3,
+    output_config: { effort: "medium", format: zodOutputFormat2(Matched) },
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    system: ctx.cfg.prompts && ctx.cfg.prompts.match ? ctx.cfg.prompts.match : void 0,
+    messages: [{
+      role: "user",
+      content: `<known_qualifications>
+${ctx.quals.join("\n")}
+</known_qualifications>
+
+${plural2(readable.length, "file")} in this folder.
+
+` + readable.map((d) => `<file id="${d.id}" path="${d.path.replace(/"/g, "'")}">
+${d.peek || "(no text could be read)"}
+</file>`).join("\n\n")
+    }]
+  });
+  rep.started = 0;
+  if (!msg.parsed_output) throw new Error("Claude could not sort the files in this zip. Try again.");
+  const byId = new Map(readable.map((d) => [d.id, d]));
+  const used = /* @__PURE__ */ new Set();
+  const pairs = [];
+  for (const m of msg.parsed_output.papers) {
+    const exam = byId.get(m.exam_file);
+    if (!exam || used.has(exam.id)) continue;
+    used.add(exam.id);
+    let scheme = byId.get(m.scheme_file);
+    if (scheme && used.has(scheme.id)) scheme = null;
+    if (scheme) used.add(scheme.id);
+    pairs.push({ exam, scheme, details: { qualification: m.qualification, paper_number: m.paper_number, month: m.month, year: m.year } });
+  }
+  const resources = [];
+  const haveDocs = new Set((meta2.docs || []).map((d) => `${d.kind}|${d.title.toLowerCase()}`));
+  let docsSkipped = 0;
+  for (const m of msg.parsed_output.documents) {
+    const doc = byId.get(m.file);
+    if (!doc || used.has(doc.id) || m.kind === "other") continue;
+    used.add(doc.id);
+    const key = `${m.kind}|${doc.name.replace(/\.[^.]+$/, "").toLowerCase()}`;
+    if (haveDocs.has(key)) {
+      docsSkipped++;
+      continue;
+    }
+    haveDocs.add(key);
+    resources.push({ doc, kind: m.kind, details: { qualification: m.qualification, paper_number: m.paper_number, month: m.month, year: m.year } });
+  }
+  const others = [
+    ...msg.parsed_output.documents.filter((o) => o.kind === "other" && byId.has(o.file) && !used.has(o.file)).map((o) => `${byId.get(o.file).path} (${o.reason})`),
+    ...readable.filter((d) => !used.has(d.id) && !msg.parsed_output.documents.some((o) => o.file === d.id)).map((d) => `${d.path} (not recognised)`),
+    ...docs.filter((d) => d.unreadable).map((d) => `${d.path} (could not be read: ${d.unreadable})`)
+  ];
+  const have = (meta2.papers || []).map((x) => ({ q: (x.qualification || "").toLowerCase(), t: x.title.toLowerCase() }));
+  const already = (q, t) => have.some((h) => h.t === t && (!h.q || !q || h.q === q));
+  const todo = [];
+  for (const pair of pairs) {
+    const title = titleOf(pair.details) || pair.exam.name.replace(/\.[^.]+$/, "");
+    pair.title = title;
+    pair.row = { key: pair.exam.id, name: `${title}${pair.details.qualification ? ` \xB7 ${pair.details.qualification}` : ""}`, state: "waiting", text: pair.scheme ? `${pair.exam.name} + ${pair.scheme.name}` : `${pair.exam.name} (no mark scheme found)` };
+    p.files.push(pair.row);
+    if (already((pair.details.qualification || "").toLowerCase(), title.toLowerCase())) Object.assign(pair.row, { state: "skipped", text: "Already in the question hub" });
+    else {
+      todo.push(pair);
+      have.push({ q: (pair.details.qualification || "").toLowerCase(), t: title.toLowerCase() });
+    }
+  }
+  for (const r of resources) {
+    const series = [r.details.month, r.details.year > 0 ? String(r.details.year) : "", r.details.paper_number].filter(Boolean).join(" ");
+    r.row = { key: r.doc.id, name: `${KIND_LABEL[r.kind]}${series ? ` \xB7 ${series}` : ""}${r.details.qualification ? ` \xB7 ${r.details.qualification}` : ""}`, state: "waiting", text: r.doc.name };
+    p.files.push(r.row);
+  }
+  if (others.length) p.files.push({ key: "others", name: `${plural2(others.length, "other document")} not used`, state: "skipped", text: "Not a paper, mark scheme or other useful exam document", detail: others.join(" \xB7 ") });
+  const withScheme = pairs.filter((x) => x.scheme).length;
+  Object.assign(p.steps.plan, {
+    state: "done",
+    note: [`${plural2(pairs.length, "paper")} found, ${withScheme} with a mark scheme`, resources.length ? `${plural2(resources.length, "other exam document")} to read` : ""].filter(Boolean).join(" \xB7 ")
+  });
+  if (!pairs.length && !resources.length) throw new Error("Claude found no question papers or other exam documents in this zip.");
+  p.stage = "file";
+  const jobs = [...resources.map((r) => ({ resource: r })), ...todo.map((pair) => ({ pair }))];
+  Object.assign(p.steps.file, { state: "working", done: 0, of: jobs.length, note: "" });
+  await rep.push(true);
+  let added = 0, questions = 0, failed = 0, read = 0, unread = 0;
+  const touched = [];
+  await pool(jobs, PAPERS_AT_ONCE, async (job) => {
+    rep.check();
+    if (job.resource) {
+      const r = job.resource;
+      try {
+        touched.push(await addDoc({ ...ctx, kind: r.kind, details: r.details, doc: r.doc, set: setter(r.row) }));
+        read++;
+      } catch (e) {
+        if (e instanceof Cancelled) throw e;
+        unread++;
+        console.warn(`could not read ${r.doc.path}: ${e && e.stack ? e.stack : e}`);
+        setter(r.row)("failed", `Not read: ${explain(e)}`);
+      }
+      p.steps.file.done = added + failed + read + unread;
+      await rep.push(true);
+      return;
+    }
+    const pair = job.pair;
+    const set = setter(pair.row);
+    try {
+      const saved = await addOne({ ...ctx, title: "", details: pair.details, exam: pair.exam, scheme: pair.scheme, set, onFraction: async () => {
+        rep.check();
+        await rep.push();
+      } });
+      added++;
+      questions += saved.questions;
+      touched.push(saved.qualification);
+      set("done", `${plural2(saved.questions, "question")} added${pair.scheme ? "" : " \xB7 no mark scheme, so Claude wrote one"}${saved.dropped ? ` \xB7 ${saved.dropped} could not be used` : ""}`);
+    } catch (e) {
+      if (e instanceof Cancelled) throw e;
+      failed++;
+      console.warn(`could not add ${pair.title}: ${e && e.stack ? e.stack : e}`);
+      set("failed", `Not added: ${explain(e)}`);
+    }
+    p.steps.file.done = added + failed + read + unread;
+    await rep.push(true);
+  });
+  Object.assign(p.steps.file, { state: "done", note: "" });
+  const skipped = pairs.length - todo.length;
+  p.summary = [
+    `${plural2(added, "paper")} added (${plural2(questions, "question")})`,
+    skipped || docsSkipped ? `${skipped + docsSkipped} already in the hub` : "",
+    failed ? `${failed} could not be added` : "",
+    read ? `${plural2(read, "other exam document")} read` : "",
+    unread ? `${unread} could not be read` : "",
+    others.length ? `${plural2(others.length, "other document")} not used` : ""
+  ].filter(Boolean).join(" \xB7 ");
+  return touched;
 }
 
 // worker/main.js
