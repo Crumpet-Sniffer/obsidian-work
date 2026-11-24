@@ -179,8 +179,11 @@ fn question_json(idx: &VaultIndex, vault_id: &str, q: &Question, reveal: bool) -
         "blanks": q.blanks.len(),
         "spec": q.spec,
         "qualification": q.qualification,
+        "hint": q.hint,
     });
     if reveal {
+        v["explanation"] = json!(q.explanation);
+        v["optionNotes"] = json!(q.option_notes);
         v["correct"] = json!(q.correct);
         v["accepted"] = json!(q.blanks);
         v["schemeHtml"] = json!(practice::render(idx, vault_id, &q.scheme));
@@ -327,6 +330,14 @@ pub struct GenerateBody {
     profile: Option<i64>,
     #[serde(default)]
     spec: Vec<String>,
+    /// The student's own words on what to focus on.
+    #[serde(default)]
+    focus: String,
+}
+
+/// The student's focus request, tidied: at most 1000 characters.
+fn clean_focus(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() || *c == '\n').take(1000).collect::<String>().trim().to_string()
 }
 
 /// Check the choices shared by questions and flashcards: topics must be the vault's.
@@ -388,14 +399,56 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
         }
         None => Vec::new(),
     };
-    let settings = json!({ "topics": topics, "types": types, "marks": marks, "difficulty": b.difficulty, "count": b.count, "usePapers": b.use_papers, "profile": b.profile, "spec": spec });
+    let focus = clean_focus(&b.focus);
     let mut title = summary_title(b.count, "question", &topics);
     if let Some(p) = &profile {
         title = format!("{} · {}", summary_title(b.count, "question", &[]).split(" · ").next().unwrap_or(""), p.title);
     }
+    let job = Generation { topics, types, marks, difficulty: b.difficulty, count: b.count, use_papers: b.use_papers, profile, spec, focus, follow_up: String::new(), avoid: Vec::new() };
+    let created = start_generation(&st, &user, &v.id, title, job).await?;
+    ok(json!({ "id": created }))
+}
+
+/// What to write for one set of questions.
+struct Generation {
+    topics: Vec<String>,
+    types: Vec<String>,
+    marks: Vec<i64>,
+    difficulty: String,
+    count: usize,
+    use_papers: bool,
+    profile: Option<Profile>,
+    spec: Vec<String>,
+    focus: String,
+    /// For a follow-up quiz: the questions the student lost marks on, and what they missed.
+    follow_up: String,
+    /// Question texts not to write again (a follow-up's earlier questions).
+    avoid: Vec<String>,
+}
+
+/// The words of a question, lower-cased, for spotting one written again with small changes.
+fn word_set(t: &str) -> HashSet<String> {
+    t.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 2).map(str::to_string).collect()
+}
+
+/// True when two questions share most of their words (the same question, lightly reworded).
+fn near_copy(a: &HashSet<String>, b: &HashSet<String>) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let shared = a.intersection(b).count() as f64;
+    shared / (a.len().min(b.len()) as f64) >= 0.8
+}
+
+/// Create the session and write its questions in the background. Returns the session's id.
+async fn start_generation(st: &AppState, user: &CurrentUser, vault: &str, title: String, g: Generation) -> Result<String, ApiErr> {
+    let settings = json!({
+        "topics": g.topics, "types": g.types, "marks": g.marks, "difficulty": g.difficulty, "count": g.count, "usePapers": g.use_papers,
+        "profile": g.profile.as_ref().map(|p| p.id), "spec": g.spec, "focus": g.focus, "followUp": !g.follow_up.is_empty(),
+    });
     let session = Session {
         id: new_id(),
-        vault_id: v.id.clone(),
+        vault_id: vault.to_string(),
         user_id: user.id,
         title,
         kind: "generated".into(),
@@ -409,11 +462,11 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
     };
     st.db.create_practice_session(session.clone()).await?;
     let st2 = st.clone();
-    let w = who(&user);
+    let w = who(user);
     let created = session.id.clone();
     tokio::spawn(async move {
         let sid = session.id.clone();
-        match write_questions(&st2, &w, &session.vault_id, &topics, &types, &marks, &b.difficulty, b.count, b.use_papers, profile.as_ref(), &spec).await {
+        match write_questions(&st2, &w, &session.vault_id, &g).await {
             Ok(ids) => {
                 let _ = st2.db.set_session(sid, "ready", String::new(), Some(ids), None).await;
             }
@@ -422,23 +475,12 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
             }
         }
     });
-    ok(json!({ "id": created }))
+    Ok(created)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn write_questions(
-    st: &AppState,
-    who: &Who,
-    vault: &str,
-    topics: &[String],
-    types: &[String],
-    marks: &[i64],
-    difficulty: &str,
-    count: usize,
-    use_papers: bool,
-    profile: Option<&Profile>,
-    spec: &[String],
-) -> Result<Vec<i64>, String> {
+async fn write_questions(st: &AppState, who: &Who, vault: &str, g: &Generation) -> Result<Vec<i64>, String> {
+    let (topics, types, marks, difficulty, count, use_papers, profile, spec) =
+        (&g.topics[..], &g.types[..], &g.marks[..], g.difficulty.as_str(), g.count, g.use_papers, g.profile.as_ref(), &g.spec[..]);
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
     let idx = index_for(st, vault).await.map_err(|_| "The vault could not be read.".to_string())?;
     let (s2, t2) = (s.clone(), topics.to_vec());
@@ -471,6 +513,15 @@ async fn write_questions(
     if profile.is_some() {
         msg.push_str(&format!("\nThe questions are for this paper. Specification areas (use these exact labels in spec_areas): {}.", spec.join("; ")));
     }
+    if !g.follow_up.is_empty() {
+        msg.push_str(&format!(
+            "\n\n<follow_up>\n{}\n</follow_up>\nThe student has already answered every question in <follow_up>. Write {count} completely new questions on the same ideas: a different scenario, wording and angle for each. Never copy or lightly reword a question from <follow_up>.",
+            g.follow_up
+        ));
+    }
+    if !g.focus.is_empty() {
+        msg.push_str(&format!("\n\n<student_request>\n{}\n</student_request>", g.focus.replace("</student_request>", "")));
+    }
     let schema = json!({
         "type": "object",
         "properties": { "questions": { "type": "array", "items": practice::question_schema(false) } },
@@ -481,7 +532,18 @@ async fn write_questions(
     let qs: Vec<Question> = v
         .get("questions")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|q| practice::clean_question(q, topics, spec)).filter(|q| types.contains(&q.qtype)).take(count).collect())
+        .map(|a| {
+            let avoid: Vec<HashSet<String>> = g.avoid.iter().map(|t| word_set(t)).collect();
+            a.iter()
+                .filter_map(|q| practice::clean_question(q, topics, spec))
+                .filter(|q| types.contains(&q.qtype))
+                .filter(|q| {
+                    let w = word_set(&q.text);
+                    !avoid.iter().any(|x| near_copy(x, &w))
+                })
+                .take(count)
+                .collect()
+        })
         .unwrap_or_default();
     let qs: Vec<Question> = qs.into_iter().map(|mut q| { q.profile_id = profile.map(|p| p.id); q }).collect();
     if qs.is_empty() {
@@ -559,7 +621,20 @@ pub async fn session(State(st): State<AppState>, user: CurrentUser, Path((id, si
     if attempts.is_empty() {
         let qs = st.db.questions_by_id(v.id.clone(), s.question_ids.clone()).await?;
         let vid = v.id.clone();
-        let list = tokio::task::spawn_blocking(move || qs.iter().map(|q| question_json(&idx, &vid, q, false)).collect::<Vec<_>>()).await?;
+        let checked = s.settings.get("checked").and_then(Value::as_object).cloned().unwrap_or_default();
+        let list = tokio::task::spawn_blocking(move || {
+            qs.iter()
+                .map(|q| match checked.get(&q.id.to_string()) {
+                    Some(c) => {
+                        let mut j = question_json(&idx, &vid, q, true);
+                        j["check"] = check_json(&idx, &vid, q, c);
+                        j
+                    }
+                    None => question_json(&idx, &vid, q, false),
+                })
+                .collect::<Vec<_>>()
+        })
+        .await?;
         out["items"] = json!(list);
     } else {
         // Answered: show the questions as they were when answered, even if changed or removed since.
@@ -642,6 +717,153 @@ pub async fn submit(State(st): State<AppState>, user: CurrentUser, Path((id, sid
     ok(json!({ "ok": true }))
 }
 
+/// A checked answer as the page shows it: the answer, its marks and the feedback (Markdown rendered).
+fn check_json(idx: &VaultIndex, vault_id: &str, q: &Question, c: &Value) -> Value {
+    let mut fb = c.get("feedback").cloned().unwrap_or(json!({}));
+    for k in ["feedback", "model"] {
+        if let Some(t) = fb.get(k).and_then(Value::as_str).map(str::to_string) {
+            fb[format!("{k}Html")] = json!(practice::render(idx, vault_id, &t));
+        }
+    }
+    json!({ "answer": c.get("answer").cloned().unwrap_or(json!({})), "marks": c.get("marks").cloned().unwrap_or(Value::Null), "total": q.marks, "feedback": fb })
+}
+
+#[derive(Deserialize)]
+pub struct CheckBody {
+    question_id: i64,
+    answer: Value,
+}
+
+/// Check one answer before handing in (one question at a time): choice and fill-in answers at once, a written
+/// answer by Claude. The result is kept with the session, so handing in does not mark it again.
+pub async fn check(State(st): State<AppState>, user: CurrentUser, Path((id, sid)): Path<(String, String)>, headers: HeaderMap, Json(b): Json<CheckBody>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let s = own_session(&st, &user, &v.id, &sid).await?;
+    if s.status != "ready" {
+        return Err(ApiErr::Bad("These answers have already been handed in.".into()));
+    }
+    if !s.question_ids.contains(&b.question_id) {
+        return Err(ApiErr::NotFound);
+    }
+    let mut q = st.db.questions_by_id(v.id.clone(), vec![b.question_id]).await?.pop().ok_or(ApiErr::NotFound)?;
+    let answer = clean_answer(&q, Some(&b.answer));
+    let (marks, feedback) = if q.qtype == "written" {
+        let text = answer.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        if text.is_empty() {
+            return Err(ApiErr::Bad("Write an answer first.".into()));
+        }
+        if Settings::load(&st.db).await?.api_key.is_none() {
+            return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+        }
+        let profiles = st.db.profiles(v.id.clone()).await?;
+        if q.profile_id.is_none() && !q.qualification.is_empty() {
+            q.profile_id = profiles.iter().find(|p| p.qualification.eq_ignore_ascii_case(&q.qualification) && p.paper_number.eq_ignore_ascii_case(&q.paper_number)).map(|p| p.id);
+        }
+        let guide = q.profile_id.and_then(|pid| profiles.iter().find(|p| p.id == pid)).map(|p| p.marking_guidance()).filter(|g| !g.is_empty());
+        let (st2, w, vid, q2) = (st.clone(), who(&user), v.id.clone(), q.clone());
+        // In its own task, so the marking is kept even if the page is closed while waiting.
+        let task = tokio::spawn(async move { practice::mark_written(&st2, &w, &vid, &q2, &text, guide).await });
+        match task.await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => return Err(ApiErr::Bad(e)),
+            Err(e) => return Err(ApiErr::Internal(e.into())),
+        }
+    } else {
+        practice::mark_objective(&q, &answer)
+    };
+    let entry = json!({ "answer": answer, "marks": marks, "feedback": feedback });
+    // Read the settings again just before saving, so checks of other questions made meanwhile are kept.
+    let fresh = st.db.practice_session(s.id.clone()).await?.ok_or(ApiErr::NotFound)?;
+    let mut settings = fresh.settings.clone();
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    if !settings.get("checked").is_some_and(Value::is_object) {
+        settings["checked"] = json!({});
+    }
+    settings["checked"][q.id.to_string()] = entry.clone();
+    st.db.set_session_settings(s.id.clone(), settings).await?;
+    let idx = index_for(&st, &v.id).await?;
+    let vid = v.id.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        let mut j = question_json(&idx, &vid, &q, true);
+        j["check"] = check_json(&idx, &vid, &q, &entry);
+        j
+    })
+    .await?;
+    ok(out)
+}
+
+/// A follow-up quiz: new questions on what the student lost marks on in a marked session.
+pub async fn follow_up(State(st): State<AppState>, user: CurrentUser, Path((id, sid)): Path<(String, String)>, headers: HeaderMap) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let s = own_session(&st, &user, &v.id, &sid).await?;
+    if s.status != "marked" {
+        return Err(ApiErr::Bad("Hand these answers in first.".into()));
+    }
+    let settings = Settings::load(&st.db).await?;
+    if settings.api_key.is_none() {
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+    }
+    let attempts = st.db.attempts(s.id.clone()).await?;
+    let missed: Vec<(Question, &practice::Attempt)> =
+        attempts.iter().filter(|a| a.marks.is_some_and(|m| m < a.total)).map(|a| (Question::from_snapshot(&a.question), a)).collect();
+    if missed.is_empty() {
+        return Err(ApiErr::Bad("You lost no marks on these, so there is nothing to follow up. Try a harder set instead.".into()));
+    }
+    let idx = index_for(&st, &v.id).await?;
+    let all_topics = practice::vault_topics(&idx, &settings);
+    let mut topics: Vec<String> = all_topics.iter().filter(|t| missed.iter().any(|(q, _)| q.topics.iter().any(|x| x.eq_ignore_ascii_case(t)))).cloned().collect();
+    if topics.is_empty() {
+        let earlier: Vec<String> = s.settings.get("topics").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+        topics = all_topics.iter().filter(|t| earlier.iter().any(|x| x.eq_ignore_ascii_case(t))).cloned().collect();
+    }
+    if topics.is_empty() && !all_topics.is_empty() {
+        return Err(ApiErr::Bad("The questions you lost marks on have no topics in this vault to write from.".into()));
+    }
+    let mut types: Vec<String> = Vec::new();
+    let mut marks: Vec<i64> = Vec::new();
+    let mut brief = String::new();
+    for (q, a) in missed.iter().take(15) {
+        if !types.contains(&q.qtype) {
+            types.push(q.qtype.clone());
+        }
+        if !marks.contains(&q.marks) {
+            marks.push(q.marks);
+        }
+        let fb = &a.feedback;
+        let missed_points: Vec<&str> = fb.get("missed").and_then(Value::as_array).map(|x| x.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let text: String = q.text.chars().take(800).collect();
+        brief.push_str(&format!(
+            "<lost marks=\"{}/{}\" type=\"{}\" topics=\"{}\">\n{}\n{}{}</lost>\n",
+            a.marks.unwrap_or(0),
+            a.total,
+            q.qtype,
+            q.topics.join(", ").replace('"', "'"),
+            text,
+            if missed_points.is_empty() { String::new() } else { format!("Missed: {}\n", missed_points.join("; ")) },
+            fb.get("feedback").and_then(Value::as_str).map(|f| format!("Examiner: {}\n", f.chars().take(400).collect::<String>())).unwrap_or_default(),
+        ));
+    }
+    marks.sort_unstable();
+    let profile = match s.settings.get("profile").and_then(Value::as_i64) {
+        Some(pid) => st.db.profiles(v.id.clone()).await?.into_iter().find(|p| p.id == pid),
+        None => None,
+    };
+    let spec = profile.as_ref().map(|p| p.labels()).unwrap_or_default();
+    let count = (missed.len() * 2).clamp(3, 10);
+    let difficulty = s.settings.get("difficulty").and_then(Value::as_str).filter(|d| DIFFICULTIES.contains(d)).unwrap_or("mixed").to_string();
+    let use_papers = st.db.questions(v.id.clone()).await?.iter().any(|q| q.source == "paper");
+    let base = s.title.trim_start_matches("Follow-up · ").trim_end_matches(" (again)").to_string();
+    let title: String = format!("Follow-up · {base}").chars().take(150).collect();
+    let avoid: Vec<String> = attempts.iter().map(|a| Question::from_snapshot(&a.question).text).collect();
+    let job = Generation { topics, types, marks, difficulty, count, use_papers, profile, spec, focus: String::new(), follow_up: brief, avoid };
+    let created = start_generation(&st, &user, &v.id, title, job).await?;
+    ok(json!({ "id": created }))
+}
+
 // ---------------------------------------------------------------- flashcards
 
 #[derive(Deserialize)]
@@ -650,6 +872,8 @@ pub struct DeckBody {
     topics: Vec<String>,
     difficulty: String,
     count: usize,
+    #[serde(default)]
+    focus: String,
 }
 
 pub async fn make_deck(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<DeckBody>) -> ApiResult {
@@ -669,12 +893,13 @@ pub async fn make_deck(State(st): State<AppState>, user: CurrentUser, Path(id): 
     }
     let did = new_id();
     let title = summary_title(b.count, "card", &topics);
-    st.db.create_deck(did.clone(), v.id.clone(), user.id, title, json!({ "topics": topics, "difficulty": b.difficulty, "count": b.count })).await?;
+    let focus = clean_focus(&b.focus);
+    st.db.create_deck(did.clone(), v.id.clone(), user.id, title, json!({ "topics": topics, "difficulty": b.difficulty, "count": b.count, "focus": focus })).await?;
     let st2 = st.clone();
     let w = who(&user);
     let (vid, did2) = (v.id.clone(), did.clone());
     tokio::spawn(async move {
-        match write_cards(&st2, &w, &vid, &topics, &b.difficulty, b.count).await {
+        match write_cards(&st2, &w, &vid, &topics, &b.difficulty, b.count, &focus).await {
             Ok(cards) => {
                 let _ = st2.db.finish_deck(did2, "ready", String::new(), cards).await;
             }
@@ -686,7 +911,7 @@ pub async fn make_deck(State(st): State<AppState>, user: CurrentUser, Path(id): 
     ok(json!({ "id": did }))
 }
 
-async fn write_cards(st: &AppState, who: &Who, vault: &str, topics: &[String], difficulty: &str, count: usize) -> Result<Value, String> {
+async fn write_cards(st: &AppState, who: &Who, vault: &str, topics: &[String], difficulty: &str, count: usize, focus: &str) -> Result<Value, String> {
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
     let idx = index_for(st, vault).await.map_err(|_| "The vault could not be read.".to_string())?;
     let (s2, t2) = (s.clone(), topics.to_vec());
@@ -694,11 +919,14 @@ async fn write_cards(st: &AppState, who: &Who, vault: &str, topics: &[String], d
     if notes.trim().is_empty() {
         return Err("There are no notes on these topics to make cards from.".into());
     }
-    let msg = format!(
+    let mut msg = format!(
         "<notes>\n{notes}</notes>\n\nWrite {count} flashcard{}.\nTopics: {}.\nDifficulty: {difficulty}.",
         if count == 1 { "" } else { "s" },
         if topics.is_empty() { "any, from the notes".to_string() } else { topics.join("; ") }
     );
+    if !focus.is_empty() {
+        msg.push_str(&format!("\n\n<student_request>\n{}\n</student_request>", focus.replace("</student_request>", "")));
+    }
     let schema = json!({
         "type": "object",
         "properties": { "cards": { "type": "array", "items": {
@@ -779,6 +1007,40 @@ pub async fn deck_progress(State(st): State<AppState>, user: CurrentUser, Path((
     ok(json!({ "ok": true }))
 }
 
+#[derive(Deserialize)]
+pub struct CardsBody {
+    cards: Vec<Value>,
+    #[serde(default)]
+    progress: serde_json::Map<String, Value>,
+}
+
+/// Save a deck's cards after editing, adding or deleting cards, with the progress re-numbered to match.
+pub async fn deck_cards(State(st): State<AppState>, user: CurrentUser, Path((id, did)): Path<(String, String)>, headers: HeaderMap, Json(b): Json<CardsBody>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    authorize(&st, &user, &id).await?;
+    let d = own_deck(&st, &user, &did).await?;
+    if d.status != "ready" {
+        return Err(ApiErr::Bad("These cards are still being written.".into()));
+    }
+    let clip = |x: &Value, n: usize| x.as_str().unwrap_or("").chars().filter(|c| !c.is_control() || *c == '\n').take(n).collect::<String>().trim().to_string();
+    let cards: Vec<Value> = b
+        .cards
+        .iter()
+        .take(200)
+        .map(|c| json!({ "front": clip(&c["front"], 600), "back": clip(&c["back"], 1500), "topic": clip(&c["topic"], 120) }))
+        .filter(|c| !c["front"].as_str().unwrap_or("").is_empty() && !c["back"].as_str().unwrap_or("").is_empty())
+        .collect();
+    if cards.is_empty() {
+        return Err(ApiErr::Bad("A deck needs at least one card with a front and a back. Delete the deck instead.".into()));
+    }
+    let n = cards.len();
+    let progress: serde_json::Map<String, Value> =
+        b.progress.into_iter().filter(|(k, v)| k.parse::<usize>().is_ok_and(|i| i < n) && matches!(v.as_str(), Some("known" | "again"))).collect();
+    st.db.set_deck_cards(d.id.clone(), user.id, json!(cards), Value::Object(progress)).await?;
+    let d = own_deck(&st, &user, &did).await?;
+    ok(deck_json(&d, true))
+}
+
 pub async fn delete_deck(State(st): State<AppState>, user: CurrentUser, Path((id, did)): Path<(String, String)>, headers: HeaderMap) -> ApiResult {
     check_csrf(&user, &headers)?;
     authorize(&st, &user, &id).await?;
@@ -801,7 +1063,7 @@ async fn coach_view(st: &AppState, user: &CurrentUser, vault: &str) -> Result<Va
         msgs.iter()
             .map(|(role, content, ts)| {
                 let html = if role == "assistant" { practice::render(&idx, &vid, content) } else { String::new() };
-                json!({ "role": role, "text": if role == "user" { content.clone() } else { String::new() }, "html": html, "at": ts })
+                json!({ "role": role, "text": content, "html": html, "at": ts })
             })
             .collect::<Vec<_>>()
     })
@@ -874,6 +1136,135 @@ pub async fn coach_clear(State(st): State<AppState>, user: CurrentUser, Path(id)
     let v = authorize(&st, &user, &id).await?;
     st.db.clear_coach(user.id, v.id.clone()).await?;
     ok(coach_view(&st, &user, &v.id).await?)
+}
+
+// ---------------------------------------------------------------- study guides and reports
+
+pub const REPORT_KINDS: &[(&str, &str, &str)] = &[
+    ("study_guide", "Study guide", "Key ideas, a short-answer quiz with answers, essay questions and a glossary"),
+    ("briefing", "Briefing document", "The main themes and most important points, with how they connect"),
+    ("cheat_sheet", "Cheat sheet", "One compact page of facts, definitions and comparisons to revise from"),
+    ("glossary", "Glossary", "Every key term, defined, in alphabetical order"),
+    ("faq", "FAQ", "Questions students usually have about these topics, answered"),
+    ("revision_plan", "Revision plan", "What to revise first from your results, with checklists"),
+    ("custom", "Write your own", "Describe what you want: structure, style and length"),
+];
+
+fn report_json(idx: Option<&VaultIndex>, vault_id: &str, r: &practice::Report) -> Value {
+    let label = REPORT_KINDS.iter().find(|k| k.0 == r.kind).map(|k| k.1).unwrap_or("Report");
+    let mut v = json!({ "id": r.id, "kind": r.kind, "kindLabel": label, "title": r.title, "status": r.status, "error": r.error, "createdAt": r.created_at, "settings": r.settings });
+    if let Some(idx) = idx {
+        v["markdown"] = json!(r.content);
+        v["html"] = json!(practice::render(idx, vault_id, &r.content));
+    }
+    v
+}
+
+pub async fn reports(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> ApiResult {
+    let v = authorize(&st, &user, &id).await?;
+    let list = st.db.reports(user.id, v.id.clone()).await?;
+    ok(json!({
+        "reports": list.iter().map(|r| report_json(None, &v.id, r)).collect::<Vec<_>>(),
+        "kinds": REPORT_KINDS.iter().map(|(id, label, about)| json!({ "id": id, "label": label, "about": about })).collect::<Vec<_>>(),
+    }))
+}
+
+async fn own_report(st: &AppState, user: &CurrentUser, vault: &str, rid: &str) -> Result<practice::Report, ApiErr> {
+    let r = st.db.report(rid.to_string()).await?.ok_or(ApiErr::NotFound)?;
+    if r.user_id != user.id {
+        return Err(ApiErr::NotFound);
+    }
+    let _ = vault;
+    Ok(r)
+}
+
+pub async fn report(State(st): State<AppState>, user: CurrentUser, Path((id, rid)): Path<(String, String)>) -> ApiResult {
+    let v = authorize(&st, &user, &id).await?;
+    let r = own_report(&st, &user, &v.id, &rid).await?;
+    let idx = index_for(&st, &v.id).await?;
+    let vid = v.id.clone();
+    ok(tokio::task::spawn_blocking(move || report_json(Some(&idx), &vid, &r)).await?)
+}
+
+pub async fn delete_report(State(st): State<AppState>, user: CurrentUser, Path((id, rid)): Path<(String, String)>, headers: HeaderMap) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    authorize(&st, &user, &id).await?;
+    if !st.db.delete_report(rid, user.id).await? {
+        return Err(ApiErr::NotFound);
+    }
+    ok(json!({ "ok": true }))
+}
+
+#[derive(Deserialize)]
+pub struct ReportBody {
+    kind: String,
+    #[serde(default)]
+    topics: Vec<String>,
+    #[serde(default)]
+    focus: String,
+}
+
+/// Start writing a study guide or other report. Returns at once; it becomes "ready" when Claude has written it.
+pub async fn make_report(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<ReportBody>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let s = Settings::load(&st.db).await?;
+    if s.api_key.is_none() {
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+    }
+    let Some(kind) = REPORT_KINDS.iter().find(|k| k.0 == b.kind) else {
+        return Err(ApiErr::Bad("Choose what to write.".into()));
+    };
+    let focus = clean_focus(&b.focus);
+    if kind.0 == "custom" && focus.is_empty() {
+        return Err(ApiErr::Bad("Describe what you want written.".into()));
+    }
+    let idx = index_for(&st, &v.id).await?;
+    let topics = check_topics(&practice::vault_topics(&idx, &s), &b.topics)?;
+    let rid = new_id();
+    let title = format!("{} · {}", kind.1, summary_title(0, "", &topics).split(" · ").nth(1).unwrap_or("all notes"));
+    st.db.create_report(rid.clone(), v.id.clone(), user.id, kind.0.to_string(), title, json!({ "topics": topics, "focus": focus })).await?;
+    let (st2, w, vid, rid2, kind_id) = (st.clone(), who(&user), v.id.clone(), rid.clone(), kind.0);
+    tokio::spawn(async move {
+        match write_report(&st2, &w, &vid, kind_id, &topics, &focus).await {
+            Ok((title, md)) => {
+                let _ = st2.db.finish_report(rid2, "ready", String::new(), title, md).await;
+            }
+            Err(e) => {
+                let _ = st2.db.finish_report(rid2, "failed", e, None, String::new()).await;
+            }
+        }
+    });
+    ok(json!({ "id": rid }))
+}
+
+async fn write_report(st: &AppState, who: &Who, vault: &str, kind: &str, topics: &[String], focus: &str) -> Result<(Option<String>, String), String> {
+    let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
+    let idx = index_for(st, vault).await.map_err(|_| "The vault could not be read.".to_string())?;
+    let (s2, t2) = (s.clone(), topics.to_vec());
+    let notes = tokio::task::spawn_blocking(move || practice::notes_context(&idx, &s2, &t2)).await.map_err(|_| "The notes could not be read.".to_string())?;
+    if notes.trim().is_empty() {
+        return Err("There are no notes on these topics to write from.".into());
+    }
+    let mut msg = format!(
+        "<notes>\n{notes}</notes>\n\nWrite: {kind}.\nTopics: {}.",
+        if topics.is_empty() { "all of the notes".to_string() } else { topics.join("; ") }
+    );
+    if matches!(kind, "revision_plan" | "custom" | "study_guide") {
+        if let Ok(stats) = practice::stats(st, who.0, vault).await {
+            if stats.get("answers").and_then(Value::as_i64).unwrap_or(0) > 0 {
+                msg.push_str(&format!("\n\n<results>\n{}\n</results>", serde_json::to_string(&stats).unwrap_or_default()));
+            }
+        }
+    }
+    if !focus.is_empty() {
+        msg.push_str(&format!("\n\n<student_request>\n{}\n</student_request>", focus.replace("</student_request>", "")));
+    }
+    let v = practice::ask(st, who, vault, "writing a study guide", s.report_prompt(), None, json!([{ "role": "user", "content": msg }]), None, 16_000).await?;
+    let md = v.as_str().unwrap_or("").trim().to_string();
+    let md = md.strip_prefix("```markdown").or_else(|| md.strip_prefix("```md")).map(|x| x.trim_end().trim_end_matches("```").trim().to_string()).unwrap_or(md);
+    let title = md.lines().find_map(|l| l.strip_prefix("# ")).map(|t| t.trim().chars().take(150).collect::<String>()).filter(|t| !t.is_empty());
+    Ok((title, md))
 }
 
 // ---------------------------------------------------------------- course documents and paper guides

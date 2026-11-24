@@ -95,6 +95,7 @@ pub struct Settings {
     pub prompt_mark: String,
     pub prompt_cards: String,
     pub prompt_coach: String,
+    pub prompt_report: String,
     pub prompt_match: String,
     pub prompt_digest: String,
     pub prompt_profile: String,
@@ -143,6 +144,9 @@ impl Settings {
     pub fn coach_prompt(&self) -> &str {
         or_default(&self.prompt_coach, crate::prompts::COACH)
     }
+    pub fn report_prompt(&self) -> &str {
+        or_default(&self.prompt_report, crate::prompts::REPORT)
+    }
 
     pub async fn load(db: &Db) -> anyhow::Result<Self> {
         let s = db.settings_with_prefix("ms.").await?;
@@ -179,6 +183,7 @@ impl Settings {
             prompt_mark: get("ms.prompt_mark", ""),
             prompt_cards: get("ms.prompt_cards", ""),
             prompt_coach: get("ms.prompt_coach", ""),
+            prompt_report: get("ms.prompt_report", ""),
             prompt_match: get("ms.prompt_match", ""),
             prompt_digest: get("ms.prompt_digest", ""),
             prompt_profile: get("ms.prompt_profile", ""),
@@ -251,6 +256,9 @@ pub struct SettingsForm {
     #[serde(default)]
     prompt_coach: String,
     reset_prompt_coach: Option<String>,
+    #[serde(default)]
+    prompt_report: String,
+    reset_prompt_report: Option<String>,
     #[serde(default)]
     prompt_match: String,
     reset_prompt_match: Option<String>,
@@ -336,6 +344,7 @@ pub async fn save_settings(
     let prompt_profile = clean_prompt(&f.prompt_profile, crate::prompts::PROFILE, f.reset_prompt_profile.is_some())?;
     let prompt_match = clean_prompt(&f.prompt_match, crate::prompts::MATCH, f.reset_prompt_match.is_some())?;
     let prompt_coach = clean_prompt(&f.prompt_coach, crate::prompts::COACH, f.reset_prompt_coach.is_some())?;
+    let prompt_report = clean_prompt(&f.prompt_report, crate::prompts::REPORT, f.reset_prompt_report.is_some())?;
     let prompt_years = clean_prompt(&f.prompt_years, crate::prompts::YEARS, f.reset_prompt_years.is_some())?;
     let custom: Vec<&str> = [
         ("filing", &prompt_file),
@@ -346,6 +355,7 @@ pub async fn save_settings(
         ("marking", &prompt_mark),
         ("flashcards", &prompt_cards),
         ("exam coach", &prompt_coach),
+        ("study guides", &prompt_report),
         ("sorting papers", &prompt_match),
         ("reading course documents", &prompt_digest),
         ("paper guides", &prompt_profile),
@@ -381,6 +391,7 @@ pub async fn save_settings(
         ("ms.prompt_mark", prompt_mark),
         ("ms.prompt_cards", prompt_cards),
         ("ms.prompt_coach", prompt_coach),
+        ("ms.prompt_report", prompt_report),
         ("ms.prompt_match", prompt_match),
         ("ms.prompt_digest", prompt_digest),
         ("ms.prompt_profile", prompt_profile),

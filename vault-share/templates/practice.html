@@ -15,6 +15,7 @@
     <button type="button" role="tab" data-tab="questions" aria-selected="true">Questions</button>
     <button type="button" role="tab" data-tab="hub" aria-selected="false">Question hub</button>
     <button type="button" role="tab" data-tab="cards" aria-selected="false">Flashcards</button>
+    <button type="button" role="tab" data-tab="guides" aria-selected="false">Study guides</button>
     <button type="button" role="tab" data-tab="history" aria-selected="false">History</button>
     <button type="button" role="tab" data-tab="coach" aria-selected="false">Exam coach</button>
   </nav>
@@ -47,6 +48,9 @@
         </label>
         <label class="check pr-papers"><input type="checkbox" name="use_papers" checked> Model them on the past papers in the hub</label>
       </div>
+      <label class="pr-focus"><span>What should they focus on? <span class="muted small">(optional)</span></span>
+        <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: scenario questions about a small business, or the differences between symmetric and asymmetric encryption"></textarea>
+      </label>
       <div class="pr-actions">
         <button type="submit" class="primary" data-gen-submit>Write the questions</button>
         <button type="button" data-gen-one>Just one question</button>
@@ -149,9 +153,44 @@
         </label>
         <label>Number of cards <input type="number" name="count" min="1" max="60" value="20" required></label>
       </div>
+      <label class="pr-focus"><span>What should they focus on? <span class="muted small">(optional)</span></span>
+        <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: definitions of key terms, or the laws and their penalties"></textarea>
+      </label>
       <div class="pr-actions"><button type="submit" class="primary">Make the cards</button></div>
     </form>
     <div data-decks></div>
+  </section>
+
+  <section class="card pr-panel" data-panel="guides" role="tabpanel" hidden>
+    <h2>Write me a study guide</h2>
+    <p class="small muted">Claude writes revision material from your notes on the topics you choose. Read it here, listen to it, save it into the vault as a note, or download it.</p>
+    <form class="pr-form" data-report-form>
+      <fieldset class="pr-choices"><legend>What to write</legend><div class="pr-kinds" data-report-kinds role="radiogroup" aria-label="What to write"></div></fieldset>
+      <fieldset class="pr-choices" data-choices="report-topics"><legend>Topics</legend></fieldset>
+      <label class="pr-focus"><span data-report-focus-label>Anything to add? <span class="muted small">(optional)</span></span>
+        <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: keep it to one page, or write it for a 12-mark question"></textarea>
+      </label>
+      <div class="pr-actions"><button type="submit" class="primary">Write it</button></div>
+    </form>
+    <div data-reports></div>
+  </section>
+
+  <section class="card pr-panel pr-report" data-panel="report" role="tabpanel" hidden>
+    <div class="pr-quiz-head">
+      <button type="button" class="linklike" data-report-back>&larr; Back</button>
+      <h2 data-report-title></h2>
+    </div>
+    <div class="pr-actions pr-report-tools" data-report-tools>
+      <button type="button" data-report-listen aria-pressed="false">&#9654; Listen</button>
+      <button type="button" data-report-save>Save to vault</button>
+      <button type="button" data-report-copy>Copy</button>
+      <button type="button" data-report-download>Download</button>
+      <button type="button" data-report-print>Print</button>
+      <button type="button" data-report-quiz>Quiz me on these topics</button>
+      <button type="button" class="danger" data-report-delete>Delete</button>
+    </div>
+    <p class="small muted" data-report-status aria-live="polite"></p>
+    <article class="prose pr-report-body" data-report-body></article>
   </section>
 
   <section class="card pr-panel" data-panel="history" role="tabpanel" hidden>
@@ -165,6 +204,7 @@
     <p class="small muted">Claude looks at everything you have answered here and your flashcards, tells you where you are losing marks, and what would help. Only you can see this conversation.</p>
     <div class="pr-stats" data-stats></div>
     <div class="pr-chat" data-chat aria-live="polite"></div>
+    <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
     <form class="pr-chat-form" data-chat-form>
       <textarea name="message" rows="2" maxlength="4000" placeholder="Ask anything, or try: Where am I losing the most marks?"></textarea>
       <div class="pr-actions">
@@ -181,14 +221,29 @@
       <span class="pr-score" data-quiz-score></span>
     </div>
     <p class="muted" data-quiz-status aria-live="polite"></p>
+    <div class="pr-summary" data-quiz-summary hidden></div>
+    <div class="pr-quiz-tools" data-quiz-tools hidden>
+      <div class="pr-seg" role="group" aria-label="How to show the questions">
+        <button type="button" data-quiz-mode="all" aria-pressed="true">All on one page</button>
+        <button type="button" data-quiz-mode="one" aria-pressed="false">One at a time</button>
+      </div>
+      <span class="muted small" data-quiz-progress></span>
+    </div>
+    <ol class="pr-dots" data-quiz-dots hidden></ol>
     <form data-quiz-form>
       <ol class="pr-questions" data-quiz-items></ol>
+      <div class="pr-actions pr-step" data-quiz-step hidden>
+        <button type="button" data-quiz-prev>&larr; Previous</button>
+        <button type="button" data-quiz-next>Next &rarr;</button>
+      </div>
       <div class="pr-actions" data-quiz-actions>
         <button type="submit" class="primary" data-quiz-submit>Hand in for marking</button>
       </div>
     </form>
     <div class="pr-actions" data-quiz-after hidden>
-      <button type="button" data-quiz-again>Try these again</button>
+      <button type="button" class="primary" data-quiz-followup>Make me a follow-up quiz</button>
+      <button type="button" data-quiz-missed>Retake the ones I lost marks on</button>
+      <button type="button" data-quiz-again>Try them all again</button>
       <button type="button" data-quiz-coach>Ask the coach about this</button>
     </div>
   </section>
@@ -199,6 +254,22 @@
       <h2 data-study-title></h2>
       <span class="pr-score" data-study-score></span>
     </div>
+    <div class="pr-study-bar">
+      <span class="small muted" data-card-counts></span>
+      <span class="pr-actions">
+        <button type="button" class="small" data-card-timer aria-pressed="false" title="Time how long you take">&#9201; <span data-card-clock>Timer</span></button>
+        <button type="button" class="small" data-card-explain>Explain this card</button>
+        <button type="button" class="small" data-card-edit>Edit</button>
+        <button type="button" class="small" data-card-add>Add a card</button>
+        <button type="button" class="small danger" data-card-delete>Delete card</button>
+      </span>
+    </div>
+    <form class="pr-card-editor" data-card-editor hidden>
+      <label>Front (question or term) <textarea name="front" rows="2" maxlength="600" required></textarea></label>
+      <label>Back (answer) <textarea name="back" rows="3" maxlength="1500" required></textarea></label>
+      <label>Topic <input name="topic" maxlength="120"></label>
+      <div class="pr-actions"><button type="submit" class="primary">Save the card</button><button type="button" data-card-editor-cancel>Cancel</button></div>
+    </form>
     <div class="pr-card" data-card tabindex="0" role="button" aria-label="Flashcard: press to turn over">
       <div class="pr-card-face" data-card-face></div>
       <div class="pr-card-hint muted small" data-card-hint>Click or press Space to turn over</div>
@@ -212,7 +283,10 @@
     <div class="pr-actions">
       <label class="check small"><input type="checkbox" data-card-only-again> Only cards marked Again</label>
       <button type="button" data-card-shuffle>Shuffle</button>
+      <button type="button" data-card-restart>Start again</button>
+      <button type="button" data-card-download>Download</button>
     </div>
+    <p class="small muted pr-keys">Keys: Space or Enter turns over &middot; &larr; &rarr; move &middot; 1 Again &middot; 2 Got it</p>
   </section>
 </div>
 {% endblock %}

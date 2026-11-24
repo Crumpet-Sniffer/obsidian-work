@@ -150,6 +150,13 @@ pub async fn dashboard(
                 custom: !s.prompt_coach.trim().is_empty(),
                 text: s.coach_prompt().to_string(),
             },
+            PromptView {
+                field: "prompt_report".into(),
+                label: "Writing study guides".into(),
+                help: "Writes study guides, briefings, cheat sheets, glossaries, FAQs and revision plans from the chosen topics' notes.".into(),
+                custom: !s.prompt_report.trim().is_empty(),
+                text: s.report_prompt().to_string(),
+            },
     ];
     let ms = MsView {
         key_set: s.api_key.is_some(),

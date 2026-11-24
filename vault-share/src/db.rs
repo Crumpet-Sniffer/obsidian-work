@@ -386,6 +386,27 @@ impl Db {
                  PRAGMA user_version = 9; COMMIT;",
             )?;
         }
+        if version < 10 {
+            // Study guides, briefings, glossaries and other reports written from a vault's notes.
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE practice_reports (
+                     id         TEXT PRIMARY KEY,
+                     vault_id   TEXT NOT NULL,
+                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     kind       TEXT NOT NULL,
+                     title      TEXT NOT NULL,
+                     settings   TEXT NOT NULL DEFAULT '{}',
+                     status     TEXT NOT NULL,
+                     error      TEXT NOT NULL DEFAULT '',
+                     content    TEXT NOT NULL DEFAULT '',
+                     created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX practice_reports_user ON practice_reports(user_id, vault_id, created_at);
+                 PRAGMA user_version = 10; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -684,7 +705,7 @@ impl Db {
             let tx = c.transaction()?;
             tx.execute("DELETE FROM graph_state WHERE vault_id = ?1", [&id])?;
             tx.execute("DELETE FROM graph_presets WHERE vault_id = ?1", [&id])?;
-            for table in ["attempts", "practice_sessions", "questions", "hub_papers", "flash_decks", "coach_messages", "hub_docs", "paper_profiles", "hub_years"] {
+            for table in ["attempts", "practice_sessions", "questions", "hub_papers", "flash_decks", "coach_messages", "hub_docs", "paper_profiles", "hub_years", "practice_reports"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE vault_id = ?1"), [&id])?;
             }
             tx.execute("DELETE FROM vaults WHERE id = ?1", [&id])?;

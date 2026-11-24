@@ -180,6 +180,8 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/ingest/claude", post(ingest::claude))
         // The exam coach waits for Claude's reply.
         .route("/v/{id}/api/practice/coach", get(practice_h::coach).post(practice_h::coach_send))
+        // Checking one written answer waits for Claude to mark it.
+        .route("/v/{id}/api/practice/sessions/{sid}/check", post(practice_h::check))
         // Pictures shown to the filing model travel in the request (Anthropic takes at most 32 MB).
         .layer(DefaultBodyLimit::max(34 * 1024 * 1024));
 
@@ -219,6 +221,10 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/practice/sessions", get(practice_h::sessions).post(practice_h::from_hub))
         .route("/v/{id}/api/practice/sessions/{sid}", get(practice_h::session))
         .route("/v/{id}/api/practice/sessions/{sid}/submit", post(practice_h::submit))
+        .route("/v/{id}/api/practice/sessions/{sid}/followup", post(practice_h::follow_up))
+        .route("/v/{id}/api/practice/decks/{did}/cards", axum::routing::put(practice_h::deck_cards))
+        .route("/v/{id}/api/practice/reports", get(practice_h::reports).post(practice_h::make_report))
+        .route("/v/{id}/api/practice/reports/{rid}", get(practice_h::report).delete(practice_h::delete_report))
         .route("/v/{id}/api/practice/decks", get(practice_h::decks).post(practice_h::make_deck))
         .route("/v/{id}/api/practice/decks/{did}", get(practice_h::deck).delete(practice_h::delete_deck))
         .route("/v/{id}/api/practice/decks/{did}/progress", axum::routing::put(practice_h::deck_progress))

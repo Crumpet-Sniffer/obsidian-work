@@ -193,6 +193,9 @@ pub fn question_schema(with_number: bool) -> Value {
     });
     if !with_number {
         props["spec_areas"] = strings();
+        props["hint"] = json!({ "type": "string" });
+        props["explanation"] = json!({ "type": "string" });
+        props["option_feedback"] = strings();
     }
     if with_number {
         props["number"] = json!({ "type": "string" });
@@ -228,6 +231,12 @@ pub struct Question {
     pub spec: Vec<String>,
     /// For a question Claude wrote for one paper: that paper's guide.
     pub profile_id: Option<i64>,
+    /// A nudge shown before answering, without giving the answer away (questions Claude wrote).
+    pub hint: String,
+    /// Why the right answer is right, shown once it has been answered.
+    pub explanation: String,
+    /// For choice questions: one note per option on why it is right or wrong.
+    pub option_notes: Vec<String>,
 }
 
 impl Question {
@@ -238,6 +247,7 @@ impl Question {
             "correct": self.correct, "blanks": self.blanks, "marks": self.marks, "scheme": self.scheme,
             "topics": self.topics, "difficulty": self.difficulty, "paper": self.paper_title, "source": self.source,
             "qualification": self.qualification, "paperNumber": self.paper_number, "spec": self.spec, "profile": self.profile_id,
+            "hint": self.hint, "explanation": self.explanation, "optionNotes": self.option_notes,
         })
     }
 
@@ -264,6 +274,9 @@ impl Question {
             paper_number: s("paperNumber"),
             spec: serde_json::from_value(v.get("spec").cloned().unwrap_or(json!([]))).unwrap_or_default(),
             profile_id: v.get("profile").and_then(Value::as_i64),
+            hint: s("hint"),
+            explanation: s("explanation"),
+            option_notes: serde_json::from_value(v.get("optionNotes").cloned().unwrap_or(json!([]))).unwrap_or_default(),
         }
     }
 }
@@ -361,6 +374,14 @@ pub fn clean_question(v: &Value, topics: &[String], spec_allowed: &[String]) -> 
         }
     }
     spec.truncate(4);
+    let mut option_notes: Vec<String> = if options.is_empty() {
+        Vec::new()
+    } else {
+        v.get("option_feedback").and_then(Value::as_array).map(|a| a.iter().map(|o| clip(o.as_str().unwrap_or(""), 600)).take(options.len()).collect()).unwrap_or_default()
+    };
+    if option_notes.iter().all(String::is_empty) {
+        option_notes.clear();
+    }
     let difficulty = match s("difficulty") {
         d @ ("easy" | "medium" | "hard") => d.to_string(),
         _ => "medium".into(),
@@ -386,6 +407,9 @@ pub fn clean_question(v: &Value, topics: &[String], spec_allowed: &[String]) -> 
         paper_number: String::new(),
         spec,
         profile_id: None,
+        hint: clip(s("hint"), 600),
+        explanation: clip(s("explanation"), 3000),
+        option_notes,
     })
 }
 
@@ -416,6 +440,9 @@ fn q_row(r: &rusqlite::Row) -> rusqlite::Result<Question> {
         paper_number: r.get(16)?,
         spec: serde_json::from_str(&r.get::<_, String>(17)?).unwrap_or_default(),
         profile_id: r.get(18)?,
+        hint: answer.get("hint").and_then(Value::as_str).unwrap_or("").to_string(),
+        explanation: answer.get("explanation").and_then(Value::as_str).unwrap_or("").to_string(),
+        option_notes: serde_json::from_value(answer.get("optionNotes").cloned().unwrap_or(json!([]))).unwrap_or_default(),
     })
 }
 
@@ -432,7 +459,7 @@ fn insert_q(tx: &rusqlite::Transaction, vault: &str, paper: Option<i64>, source:
             q.text,
             q.qtype,
             serde_json::to_string(&q.options).unwrap_or_default(),
-            json!({ "correct": q.correct, "blanks": q.blanks }).to_string(),
+            json!({ "correct": q.correct, "blanks": q.blanks, "hint": q.hint, "explanation": q.explanation, "optionNotes": q.option_notes }).to_string(),
             q.marks,
             q.scheme,
             serde_json::to_string(&q.topics).unwrap_or_default(),
@@ -579,6 +606,36 @@ pub struct Deck {
     pub cards: Value,
     pub progress: Value,
     pub created_at: i64,
+}
+
+/// A study guide, briefing, glossary or other report Claude wrote from the notes.
+#[derive(Clone, Debug)]
+pub struct Report {
+    pub id: String,
+    pub user_id: i64,
+    pub kind: String,
+    pub title: String,
+    pub settings: Value,
+    pub status: String,
+    pub error: String,
+    pub content: String,
+    pub created_at: i64,
+}
+
+const R_COLS: &str = "id, user_id, kind, title, settings, status, error, content, created_at";
+
+fn r_row(r: &rusqlite::Row) -> rusqlite::Result<Report> {
+    Ok(Report {
+        id: r.get(0)?,
+        user_id: r.get(1)?,
+        kind: r.get(2)?,
+        title: r.get(3)?,
+        settings: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or(json!({})),
+        status: r.get(5)?,
+        error: r.get(6)?,
+        content: r.get(7)?,
+        created_at: r.get(8)?,
+    })
 }
 
 const D_COLS: &str = "id, user_id, title, settings, status, error, cards, progress, created_at";
@@ -754,6 +811,11 @@ impl Db {
         .await
     }
 
+    /// Replace a session's settings (they also hold answers already checked one at a time).
+    pub async fn set_session_settings(&self, id: String, settings: Value) -> Result<()> {
+        self.call(move |c| c.execute("UPDATE practice_sessions SET settings = ?2, updated_at = ?3 WHERE id = ?1", params![id, settings.to_string(), now()]).map(|_| ())).await
+    }
+
     pub async fn add_attempts(&self, session: String, user: i64, vault: String, rows: Vec<(Option<i64>, Value, Value, i64)>) -> Result<()> {
         self.call(move |c| {
             let tx = c.transaction()?;
@@ -829,6 +891,56 @@ impl Db {
             c.execute("UPDATE flash_decks SET progress = ?3, updated_at = ?4 WHERE id = ?1 AND user_id = ?2", params![id, user, progress.to_string(), now()]).map(|n| n > 0)
         })
         .await
+    }
+
+    /// Replace a deck's cards (after editing, adding or deleting cards) and its progress.
+    pub async fn set_deck_cards(&self, id: String, user: i64, cards: Value, progress: Value) -> Result<bool> {
+        self.call(move |c| {
+            c.execute("UPDATE flash_decks SET cards = ?3, progress = ?4, updated_at = ?5 WHERE id = ?1 AND user_id = ?2", params![id, user, cards.to_string(), progress.to_string(), now()])
+                .map(|n| n > 0)
+        })
+        .await
+    }
+
+    // ---------- study guides and reports
+
+    pub async fn create_report(&self, id: String, vault: String, user: i64, kind: String, title: String, settings: Value) -> Result<()> {
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO practice_reports (id, vault_id, user_id, kind, title, settings, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'generating', ?7, ?7)",
+                params![id, vault, user, kind, title, settings.to_string(), now()],
+            )
+            .map(|_| ())
+        })
+        .await
+    }
+
+    pub async fn finish_report(&self, id: String, status: &'static str, error: String, title: Option<String>, content: String) -> Result<()> {
+        self.call(move |c| {
+            c.execute("UPDATE practice_reports SET status = ?2, error = ?3, content = ?4, updated_at = ?5 WHERE id = ?1", params![id, status, error, content, now()])?;
+            if let Some(t) = title {
+                c.execute("UPDATE practice_reports SET title = ?2 WHERE id = ?1", params![id, t])?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn reports(&self, user: i64, vault: String) -> Result<Vec<Report>> {
+        self.call(move |c| {
+            let mut st = c.prepare(&format!("SELECT {R_COLS} FROM practice_reports WHERE user_id = ?1 AND vault_id = ?2 ORDER BY created_at DESC, rowid DESC LIMIT 100"))?;
+            let rows = st.query_map(params![user, vault], r_row)?.collect();
+            rows
+        })
+        .await
+    }
+
+    pub async fn report(&self, id: String) -> Result<Option<Report>> {
+        self.call(move |c| c.query_row(&format!("SELECT {R_COLS} FROM practice_reports WHERE id = ?1"), [id], r_row).optional()).await
+    }
+
+    pub async fn delete_report(&self, id: String, user: i64) -> Result<bool> {
+        self.call(move |c| c.execute("DELETE FROM practice_reports WHERE id = ?1 AND user_id = ?2", params![id, user]).map(|n| n > 0)).await
     }
 
     pub async fn delete_deck(&self, id: String, user: i64) -> Result<bool> {
@@ -1074,8 +1186,12 @@ pub async fn mark_session(st: AppState, who: Who, session: Session) {
     let guides: std::sync::Arc<HashMap<i64, String>> = std::sync::Arc::new(
         st.db.profiles(session.vault_id.clone()).await.unwrap_or_default().iter().map(|p| (p.id, p.marking_guidance())).filter(|(_, g)| !g.is_empty()).collect(),
     );
+    // Written answers already marked with "Check" (one question at a time), unchanged since: keep that marking.
+    let checked: std::sync::Arc<serde_json::Map<String, Value>> =
+        std::sync::Arc::new(session.settings.get("checked").and_then(Value::as_object).cloned().unwrap_or_default());
     let mut set = tokio::task::JoinSet::new();
     for a in attempts {
+        let checked = checked.clone();
         let st = st.clone();
         let who = who.clone();
         let vault = session.vault_id.clone();
@@ -1085,8 +1201,13 @@ pub async fn mark_session(st: AppState, who: Who, session: Session) {
             let q = Question::from_snapshot(&a.question);
             let (marks, feedback) = if q.qtype == "written" {
                 let text = a.answer.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                let earlier = a.question.get("id").and_then(Value::as_i64).and_then(|id| checked.get(&id.to_string())).filter(|c| {
+                    c.pointer("/answer/text").and_then(Value::as_str).map(str::trim) == Some(text.as_str()) && c.get("marks").and_then(Value::as_i64).is_some()
+                });
                 if text.is_empty() {
                     (Some(0), json!({ "feedback": "No answer was given." }))
+                } else if let Some(c) = earlier {
+                    (c.get("marks").and_then(Value::as_i64).map(|m| m.clamp(0, q.marks)), c.get("feedback").cloned().unwrap_or(json!({})))
                 } else {
                     let _permit = sem.acquire().await;
                     let guide = q.profile_id.and_then(|id| guides.get(&id).cloned());
@@ -1812,6 +1933,7 @@ mod tests {
             blanks: vec![vec!["CPU".into(), "processor".into()], vec!["RAM".into()]], marks, scheme: String::new(),
             topics: vec![], difficulty: String::new(), created_at: 0,
             qualification: String::new(), paper_number: String::new(), spec: vec![], profile_id: None,
+            hint: String::new(), explanation: String::new(), option_notes: vec![],
         };
         assert_eq!(mark_objective(&q("multi", 2), &json!({ "choices": [0, 2] })).0, 2);
         assert_eq!(mark_objective(&q("multi", 2), &json!({ "choices": [0, 1] })).0, 0);
