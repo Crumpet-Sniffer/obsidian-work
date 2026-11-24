@@ -235032,6 +235032,7 @@ var safeName = (s) => s.replace(/[\\/:*?"<>|#^[\]]/g, " ").replace(/\s+/g, " ").
 var plural2 = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 var titleOf = (d) => [[d.month, d.year > 0 ? String(d.year) : ""].filter(Boolean).join(" "), d.paper_number].filter(Boolean).join(" ").trim();
 var ALTERNATIVE = /\bmodified\b|enlarged|large[- ]?print|braille|\b\d{2}\s?pt\b/i;
+var sampleSet = (month) => !!month && !/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(month.trim());
 var accountProblem = (e) => outOfCredit(e) || !!e && (e.status === 401 || e.status === 403);
 var claude = (session) => new Anthropic2({ apiKey: "held-by-the-server", fetch: session.claudeFetch, dangerouslyAllowBrowser: true });
 async function readDoc(doc, cfg, readCfg, session, set, onFraction, check2) {
@@ -235130,7 +235131,7 @@ ${r.text}` : r.text).join("\n\n");
       qualification: d.qualification || out.paper.qualification || "",
       paper_number: d.paper_number || "",
       month: d.month || "",
-      year: d.year || 0,
+      year: sampleSet(d.month) ? 0 : d.year || 0,
       questions: out.questions
     }
   });
@@ -235174,7 +235175,8 @@ ${text}
     qualification: details && details.qualification || dg.qualification || "",
     paper_number: kind === "specification" ? "" : details && details.paper_number || dg.paper_number || "",
     month: kind === "specification" ? "" : details && details.month || dg.month || "",
-    year: kind === "specification" ? 0 : details && details.year || dg.year || 0
+    // A sample or specimen set (named, not a month) has no exam year, whatever date the document shows.
+    year: kind === "specification" || sampleSet(details && details.month) ? 0 : details && details.year || dg.year || 0
   };
   set("working", "Saving it in the vault\u2026", null);
   const folder = `${cfg.layout.originals}/Question Hub/Resources/${safeName(d.qualification || "General")}`;
@@ -235413,8 +235415,8 @@ ${d.peek || "(no text could be read)"}
     g.scheme = g.schemes[0] || null;
     for (const extra of g.schemes.slice(1)) others.push(`${extra.path} (another copy of the mark scheme for ${g.title})`);
     const ins = [...g.inserts.values()].filter((v) => !used.has(v.doc.id));
-    const standard = ins.filter((v) => !v.modified);
-    g.insertDocs = (standard.length ? standard : ins.slice(0, 1)).map((v) => v.doc);
+    g.insertDocs = ins.filter((v) => !v.modified).map((v) => v.doc);
+    g.modifiedInsert = g.insertDocs.length ? null : (ins[0] || {}).doc || null;
     g.otherInserts = ins.filter((v) => !g.insertDocs.includes(v.doc)).map((v) => v.doc);
   }
   for (const g of pairs) for (const d of [...g.insertDocs, ...g.otherInserts]) used.add(d.id);
@@ -235447,7 +235449,9 @@ ${d.peek || "(no text could be read)"}
     const files = [first.name, g.scheme ? g.scheme.name : "", ...g.insertDocs.map((d) => d.name)].filter(Boolean).join(" + ");
     const notes = [];
     if (g.copies.length > 1) notes.push(`Other versions of this paper, read only if the first cannot be: ${g.copies.slice(1).map((c) => c.exam.name).join(", ")}.`);
-    if (g.otherInserts.length) notes.push(`Other versions of its insert, not needed: ${g.otherInserts.map((d) => d.name).join(", ")}.`);
+    if (g.otherInserts.length) {
+      notes.push(g.modifiedInsert ? `Inserts of the modified versions only (the standard paper prints this material itself), read only with a modified version: ${g.otherInserts.map((d) => d.name).join(", ")}.` : `Other versions of its insert, not needed: ${g.otherInserts.map((d) => d.name).join(", ")}.`);
+    }
     g.row = { key: first.id, name: `${g.title}${g.details.qualification ? ` \xB7 ${g.details.qualification}` : ""}`, state: "waiting", text: g.scheme ? files : `${files} (no mark scheme found)` };
     if (notes.length) g.row.detail = notes.join(" ");
     p.files.push(g.row);
@@ -235523,7 +235527,8 @@ ${d.peek || "(no text could be read)"}
     for (let i = 0; i < g.copies.length; i++) {
       const exam = g.copies[i].exam;
       try {
-        const saved = await addOne({ ...ctx, title: "", details: g.details, exam, scheme: g.scheme, inserts: g.insertDocs, cache, set, onFraction: async () => {
+        const inserts = g.copies[i].modified && g.modifiedInsert ? [g.modifiedInsert] : g.insertDocs;
+        const saved = await addOne({ ...ctx, title: "", details: g.details, exam, scheme: g.scheme, inserts, cache, set, onFraction: async () => {
           rep.check();
           await rep.push();
         } });
@@ -235533,7 +235538,7 @@ ${d.peek || "(no text could be read)"}
         const bits = [`${plural2(saved.questions, "question")} added`];
         if (i > 0) bits.push(`from ${exam.name}`);
         if (!g.scheme) bits.push("no mark scheme, so Claude wrote one");
-        if (g.insertDocs.length) bits.push(`with ${g.insertDocs.length === 1 ? "its insert" : plural2(g.insertDocs.length, "insert")}`);
+        if (inserts.length) bits.push(`with ${inserts.length === 1 ? "its insert" : plural2(inserts.length, "insert")}`);
         if (saved.dropped) bits.push(`${saved.dropped} could not be used`);
         set("done", bits.join(" \xB7 "));
         lastErr = null;

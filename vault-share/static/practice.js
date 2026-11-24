@@ -946,13 +946,29 @@
         li.appendChild(stop);
       }
       jobsEl.appendChild(li);
-      if (b.status === "done" && !seenDone.has(b.id)) { seenDone.add(b.id); if (seenDone.ready) { loadMeta().then(loadHub); } }
+      const finished = ["done", "failed", "cancelled"].includes(b.status);
+      if (finished && !seenDone.has(b.id)) { seenDone.add(b.id); if (seenDone.ready) { loadMeta().then(loadHub); } }
+      // While a zip is being added, show each paper and document in the lists as it is saved.
+      const done = (steps.file && steps.file.done) || 0;
+      if (b.status === "running" && done > (seenProgress.get(b.id) || 0)) {
+        seenProgress.set(b.id, done);
+        if (Date.now() - listsRefreshed > 10000) { listsRefreshed = Date.now(); refreshLists(); }
+      }
     }
     seenDone.ready = true;
     if (active || recent.some((b) => b.status === "queued")) jobsTimer = window.setTimeout(loadPaperJobs, 3000);
   }
   const seenDone = new Set();
+  const seenProgress = new Map();
+  let listsRefreshed = 0;
   const openJobs = new Set();
+  /** Redraw the papers, documents and guides from the server without resetting the filters being used. */
+  async function refreshLists() {
+    try { meta = await api("GET", "practice/meta"); } catch { return; }
+    renderDocs();
+    renderGuides();
+    renderPapers();
+  }
 
   // ---------- flashcards ----------
   const cardsForm = $("[data-cards-form]");
