@@ -527,7 +527,7 @@ if (current) current.scrollIntoView({ block: "center" });
   });
 })();
 
-// ---------- Admin → Microsidian: show the picture-model settings only when Claude reads pictures ----------
+// ---------- Admin → Claude settings: show the picture-model settings only when Claude reads pictures ----------
 (() => {
   const mode = document.querySelector("[data-image-mode]");
   const claude = document.querySelector("[data-image-claude]");
@@ -542,13 +542,17 @@ if (current) current.scrollIntoView({ block: "center" });
   "use strict";
   const signedIn = document.querySelector('form[action="/logout"], [data-csrf]');
   if (!signedIn) return;
+  // Only admins look after the server; students do not need to see it.
+  if (!document.body.dataset.admin) return;
   const topNav = document.querySelector(".topbar .nav");
+  // On note pages the bottom status bar has room; the tab bar is kept for tabs.
+  const statusBar = document.querySelector(".status-bar");
   const tabbar = document.querySelector(".tabbar");
-  const host = topNav || tabbar;
+  const host = topNav || statusBar || tabbar;
   if (!host) return;
 
   const el = document.createElement("div");
-  el.className = "res-meter" + (topNav ? "" : " in-tabbar");
+  el.className = "res-meter" + (topNav ? "" : statusBar ? " in-status" : " in-tabbar");
   el.hidden = true;
   const btn = document.createElement("button");
   btn.type = "button";
@@ -561,7 +565,7 @@ if (current) current.scrollIntoView({ block: "center" });
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-label", "Server resources");
   el.append(btn, panel);
-  if (topNav) topNav.prepend(el); else tabbar.appendChild(el);
+  if (topNav || statusBar) host.prepend(el); else tabbar.appendChild(el);
 
   const pct = (v) => (v === null || v === undefined || !Number.isFinite(v) ? null : Math.max(0, Math.min(100, v)));
   const fmt = (n) => {
@@ -674,4 +678,21 @@ if (current) current.scrollIntoView({ block: "center" });
   document.addEventListener("pointerdown", (e) => { if (!panel.hidden && !el.contains(e.target)) { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); } });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); btn.focus(); } });
   tick();
+})();
+
+// ---------- drop-down menus (the account menu, a note's "More options"): close on Escape or a click elsewhere ----------
+(() => {
+  "use strict";
+  const MENUS = "details.account[open], details.more[open]";
+  document.addEventListener("click", (e) => {
+    document.querySelectorAll(MENUS).forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    document.querySelectorAll(MENUS).forEach((d) => {
+      d.open = false;
+      const s = d.querySelector("summary");
+      if (s && d.contains(document.activeElement)) s.focus();
+    });
+  });
 })();

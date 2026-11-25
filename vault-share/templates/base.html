@@ -14,26 +14,33 @@
 <script src="/static/panels.js?v={{ page.asset_v }}" defer></script>
 {% block head %}{% endblock %}
 </head>
-<body class="{% block body_class %}{% endblock %}">
+<body class="{% block body_class %}{% endblock %}"{% if let Some(u) = page.user %}{% if u.is_admin %} data-admin="1"{% endif %}{% endif %}>
 {% include "_icons.html" %}
+<a class="skip-link" href="#main">Skip to content</a>
 {% block topbar %}<header class="topbar">
-  <a class="brand" href="/"><span class="logo" aria-hidden="true"></span>{{ page.site_name }}</a>
+  <a class="brand" href="/"><span class="logo" aria-hidden="true"></span><span class="brand-name">{{ page.site_name }}</span></a>
   {% if let Some(u) = page.user %}
-  <nav class="nav">
+  <nav class="nav" aria-label="Site">
     {% if !u.must_change %}
-    <a href="/">Vaults</a>
-    {% if u.is_admin %}<a href="/admin">Admin</a>{% endif %}
-    <a href="/account/password">Password</a>
+    <a class="nav-link" href="/"><svg class="ic"><use href="#i-grid"/></svg><span>Vaults</span></a>
+    {% if u.is_admin %}<a class="nav-link" href="/admin"><svg class="ic"><use href="#i-settings"/></svg><span>Admin</span></a>{% endif %}
     {% endif %}
-    <form method="post" action="/logout" class="inline">
-      <input type="hidden" name="csrf" value="{{ u.csrf }}">
-      <button type="submit" class="linklike">Sign out <span class="muted">({{ u.username }})</span></button>
-    </form>
+    <details class="account">
+      <summary class="account-btn" aria-label="Account: {{ u.username }}"><svg class="ic"><use href="#i-user"/></svg><span class="account-name">{{ u.username }}</span><svg class="ic chev"><use href="#i-chev-down"/></svg></summary>
+      <div class="account-menu">
+        <p class="account-who">Signed in as <strong>{{ u.username }}</strong>{% if u.is_admin %} <span class="pill">admin</span>{% endif %}</p>
+        {% if !u.must_change %}<a href="/account/password">Change password</a>{% endif %}
+        <form method="post" action="/logout">
+          <input type="hidden" name="csrf" value="{{ u.csrf }}">
+          <button type="submit" class="linklike">Sign out</button>
+        </form>
+      </div>
+    </details>
   </nav>
   {% endif %}
 </header>{% endblock %}
 {% block body %}
-<main class="container">
+<main class="container" id="main">
 {% block content %}{% endblock %}
 </main>
 {% endblock %}

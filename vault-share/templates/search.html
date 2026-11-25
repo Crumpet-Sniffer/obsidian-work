@@ -5,7 +5,7 @@
 {% block body %}
 <div class="app" id="app">
 {% include "_sidebar.html" %}
-<div class="main">
+<div class="main" id="main">
   <div class="tabbar">
     <button type="button" class="icon-btn tabbar-toggle" data-toggle-sidebar aria-controls="sidebar" aria-label="Toggle sidebar" title="Toggle sidebar"><svg class="ic"><use href="#i-panel-left"/></svg></button>
     <div class="tab is-active">
@@ -14,6 +14,7 @@
       <a class="tab-close" href="/v/{{ vault_id }}" title="Close" aria-label="Close tab"><svg class="ic"><use href="#i-x"/></svg></a>
     </div>
     <a class="icon-btn tab-new" href="/v/{{ vault_id }}" title="New tab" aria-label="New tab"><svg class="ic"><use href="#i-plus"/></svg></a>
+    {% include "_wslinks.html" %}
   </div>
   <div class="view">
     <div class="navbar">

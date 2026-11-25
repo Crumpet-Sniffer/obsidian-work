@@ -56,7 +56,7 @@ pub async fn ask(
     max_tokens: u64,
 ) -> Result<Value, String> {
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
-    let key = s.api_key.clone().ok_or("No Anthropic API key is set. An admin can add one under Admin → Microsidian.")?;
+    let key = s.api_key.clone().ok_or("No Anthropic API key is set. An admin can add one under Admin → Claude settings.")?;
     if !ingest::allow_call(st, who.0, false) {
         return Err("Too many calls to Claude from this account in the last hour. Try again later.".into());
     }
@@ -136,7 +136,7 @@ pub async fn ask(
     if !status.is_success() {
         let msg = reply.pointer("/error/message").and_then(Value::as_str).unwrap_or("no details");
         return Err(match status.as_u16() {
-            401 => "The Anthropic API key was rejected. An admin can fix it under Admin → Microsidian.".into(),
+            401 => "The Anthropic API key was rejected. An admin can fix it under Admin → Claude settings.".into(),
             429 => "Anthropic's rate limit was reached. Wait a minute and try again.".into(),
             529 | 503 => "Claude is overloaded at the moment. Try again in a few minutes.".into(),
             s => format!("The Anthropic API returned an error ({s}): {msg}"),
@@ -974,7 +974,7 @@ impl Db {
 
 // ---------------------------------------------------------------- notes as context
 
-/// The vault's topics: the notes in its topics folder (Admin → Microsidian), by name, without the topics index.
+/// The vault's topics: the notes in its topics folder (Admin → Claude settings), by name, without the topics index.
 pub fn vault_topics(idx: &VaultIndex, s: &Settings) -> Vec<String> {
     let prefix = format!("{}/", s.topics.trim_end_matches('/'));
     let mut out: Vec<String> = idx

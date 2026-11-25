@@ -5,7 +5,7 @@
       <button type="button" class="icon-btn" data-panel="search" title="Search (Ctrl+Shift+F)" aria-label="Search"><svg class="ic"><use href="#i-search"/></svg></button>
       <button type="button" class="icon-btn" data-panel="bookmarks" title="Bookmarks" aria-label="Bookmarks"><svg class="ic"><use href="#i-bookmark"/></svg></button>
       <a class="icon-btn" href="/v/{{ vault_id }}/graph" title="Graph view" aria-label="Graph view"><svg class="ic"><use href="#i-graph"/></svg></a>
-      <a class="icon-btn" href="/v/{{ vault_id }}/sources" title="Sources (add Word and PowerPoint files)" aria-label="Sources"><svg class="ic"><use href="#i-plus"/></svg></a>
+      <a class="icon-btn" href="/v/{{ vault_id }}/sources" title="Add sources (Word, PowerPoint, PDF files and pictures)" aria-label="Add sources"><svg class="ic"><use href="#i-upload"/></svg></a>
       <a class="icon-btn" href="/v/{{ vault_id }}/practice" title="Practice: questions, flashcards, past papers and the exam coach" aria-label="Practice"><svg class="ic"><use href="#i-practice"/></svg></a>
     </div>
     <button type="button" class="icon-btn" data-toggle-sidebar aria-controls="sidebar" aria-label="Collapse sidebar" title="Collapse"><svg class="ic"><use href="#i-panel-left"/></svg></button>
@@ -42,8 +42,9 @@
   </div>
   <div class="vault-bar">
     <a class="vault-switch" href="/" title="All vaults"><svg class="ic"><use href="#i-updown"/></svg><span>{{ vault_name }}</span></a>
-    <a class="icon-btn" href="/" title="Vaults" aria-label="Vaults"><svg class="ic"><use href="#i-help"/></svg></a>
-    <a class="icon-btn" href="/account/password" title="Account" aria-label="Account"><svg class="ic"><use href="#i-settings"/></svg></a>
+    <a class="icon-btn" href="/" title="All vaults" aria-label="All vaults"><svg class="ic"><use href="#i-grid"/></svg></a>
+    {% if let Some(u) = page.user %}{% if u.is_admin %}<a class="icon-btn" href="/admin" title="Admin" aria-label="Admin"><svg class="ic"><use href="#i-settings"/></svg></a>{% endif %}{% endif %}
+    <a class="icon-btn" href="/account/password" title="Change password" aria-label="Change password"><svg class="ic"><use href="#i-user"/></svg></a>
     {% if let Some(u) = page.user %}
     <form method="post" action="/logout" class="inline">
       <input type="hidden" name="csrf" value="{{ u.csrf }}">

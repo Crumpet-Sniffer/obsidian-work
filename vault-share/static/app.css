@@ -253,7 +253,7 @@ form:has(input[name="mode"][value="zip"]:checked) .mode-scratch { display: none;
 .vault-card .meta { margin-top: auto; padding-top: .5rem; font-size: .8rem; color: var(--muted); }
 
 
-/* Admin → Microsidian: pictures and system prompts */
+/* Admin → Claude settings: pictures and system prompts */
 .ms-pictures { border: 1px solid var(--line); border-radius: 8px; padding: .75rem 1rem 1rem; margin: 0; display: grid; gap: .75rem; }
 .ms-pictures legend { padding: 0 .35rem; font-weight: 600; }
 .ms-pictures [hidden] { display: none; }
@@ -518,3 +518,98 @@ input.pr-find { width: 14rem; max-width: 100%; padding: .25rem .6rem; font-size:
   .topbar, .crumbs, .page-head, .pr-tabs, .pr-report-tools, [data-report-back], .pr-toast { display: none !important; }
   body, .card { background: #fff !important; color: #000 !important; box-shadow: none !important; border: 0 !important; }
 }
+
+/* ---------- site navigation: top bar, account menu, vault navigation ---------- */
+.skip-link { position: absolute; left: .5rem; top: -3rem; z-index: 100; padding: .5rem .9rem; border-radius: 8px; background: var(--accent); color: var(--accent-ink); text-decoration: none; font-weight: 600; }
+.skip-link:focus { top: .5rem; }
+.brand { min-width: 0; white-space: nowrap; }
+.brand-name { overflow: hidden; text-overflow: ellipsis; }
+.nav { flex-wrap: nowrap; gap: .25rem; }
+.nav-link { display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .6rem; border-radius: 8px; color: var(--ink); text-decoration: none; font-size: .925rem; }
+.nav-link:hover { background: var(--hover, rgba(255,255,255,.06)); color: var(--ink); }
+.nav-link .ic { width: 16px; height: 16px; color: var(--muted); }
+.account { position: relative; }
+.account > summary { list-style: none; }
+.account > summary::-webkit-details-marker { display: none; }
+.account-btn { display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .55rem; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; font-size: .9rem; color: var(--ink); }
+.account-btn:hover { border-color: var(--accent); }
+.account-btn .ic { width: 16px; height: 16px; }
+.account-btn .chev { width: 14px; height: 14px; color: var(--muted); transition: transform .15s; }
+.account[open] .chev { transform: rotate(180deg); }
+.account-name { max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; min-width: 220px; padding: .4rem; background: var(--bg-alt, var(--surface)); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-lg, var(--shadow)); display: grid; gap: 2px; }
+.account-menu a, .account-menu button.linklike { display: block; width: 100%; padding: .45rem .7rem; border-radius: 6px; color: var(--ink); text-decoration: none; text-align: left; font-size: .9rem; }
+.account-menu a:hover, .account-menu button.linklike:hover { background: var(--hover, rgba(255,255,255,.06)); color: var(--ink); }
+.account-menu form { margin: 0; }
+.account-who { margin: 0 0 .25rem; padding: .35rem .7rem .5rem; border-bottom: 1px solid var(--line); font-size: .825rem; color: var(--muted); }
+.account-who .pill { margin-left: .25rem; font-size: .7rem; }
+
+.vault-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; margin: -.75rem 0 1.25rem; padding-bottom: .75rem; border-bottom: 1px solid var(--line); }
+.vault-nav-name { display: inline-flex; align-items: center; gap: .45rem; min-width: 0; color: var(--ink); text-decoration: none; font-weight: 650; }
+.vault-nav-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vault-nav-name .ic { color: var(--accent); }
+.vault-nav-name:hover span { text-decoration: underline; text-underline-offset: 3px; }
+.vault-tabs { display: flex; gap: .2rem; overflow-x: auto; scrollbar-width: none; max-width: 100%; }
+.vault-tabs::-webkit-scrollbar { display: none; }
+.vault-tabs a { display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .7rem; border-radius: 999px; color: var(--muted); text-decoration: none; font-size: .9rem; white-space: nowrap; }
+.vault-tabs a .ic { width: 15px; height: 15px; }
+.vault-tabs a:hover { color: var(--ink); background: var(--hover, rgba(255,255,255,.06)); }
+.vault-tabs a[aria-current="page"] { color: var(--ink); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+/* Workspace (notes) tab bar: Practice and Add sources always in reach. */
+.ws-links { display: flex; align-items: center; gap: 2px; margin-left: auto; align-self: center; flex: none; }
+.ws-links a { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: 13px; }
+.ws-links a:hover { background: var(--hover); color: var(--ink); }
+.ws-links .ic { width: 15px; height: 15px; }
+.ws-links ~ .res-meter.in-tabbar { margin-left: 8px; }
+
+/* Home: each vault with its main destinations. */
+.vault-card { display: flex; flex-direction: column; gap: .75rem; }
+.vault-card:hover { transform: none; }
+.vault-card-main { display: flex; flex-direction: column; gap: .4rem; color: var(--ink); text-decoration: none; }
+.vault-card-main:hover h2 { color: var(--accent); }
+.vault-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: auto; }
+.vault-actions .button { padding: .4rem .75rem; font-size: .875rem; }
+.vault-actions .ic { width: 15px; height: 15px; }
+.empty .button { margin-top: .5rem; }
+
+details.how { margin: .25rem 0 1rem; }
+details.how > div { margin-top: .4rem; }
+details.how p { margin: .4rem 0; }
+
+@media (max-width: 760px) {
+  .topbar { gap: .5rem; padding: .5rem .85rem; }
+  .nav-link span, .account-name { display: none; }
+  .nav-link { padding: .4rem; }
+  .account-btn { padding: .35rem .45rem; }
+  .container { padding: 1.25rem 1rem 3rem; }
+  .vault-nav { margin-top: -.25rem; }
+  .vault-tabs { width: 100%; }
+}
+@media (max-width: 560px) {
+  .ws-links span { display: none; }
+  .ws-links a { padding: 0 7px; }
+}
+
+/* The server meter in a note page's status bar (admins only): left-aligned, opening upwards. */
+.res-meter.in-status { margin-right: auto; }
+.res-meter.in-status .res-btn { padding: 1px 6px; border-color: transparent; }
+.res-meter.in-status .res-panel { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
+.res-meter.in-tabbar .rm-bar { display: none; }
+.status-bar { justify-content: flex-end; }
+.res-meter.in-status .rm-bar { display: none; }
+.status-bar > span { white-space: nowrap; }
+@media (max-width: 760px) {
+  .card { padding: 1rem .9rem; }
+  .pr-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .pr-tabs::-webkit-scrollbar { display: none; }
+  .pr-tabs button { flex: none; }
+  .page-head h1 { font-size: 1.5rem; }
+}
+
+/* In-page section menu (Admin). */
+.section-nav { position: sticky; top: 52px; z-index: 10; display: flex; gap: .3rem; overflow-x: auto; scrollbar-width: none; margin: -.25rem 0 1rem; padding: .4rem 0; background: var(--bg); }
+.section-nav::-webkit-scrollbar { display: none; }
+.section-nav a { flex: none; padding: .3rem .75rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); text-decoration: none; font-size: .875rem; }
+.section-nav a:hover { color: var(--ink); border-color: var(--accent); }
+section[id] { scroll-margin-top: 110px; }

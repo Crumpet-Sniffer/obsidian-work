@@ -367,7 +367,7 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
     let v = authorize(&st, &user, &id).await?;
     let s = Settings::load(&st.db).await?;
     if s.api_key.is_none() {
-        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
     let idx = index_for(&st, &v.id).await?;
     let topics = check_topics(&practice::vault_topics(&idx, &s), &b.topics)?;
@@ -754,7 +754,7 @@ pub async fn check(State(st): State<AppState>, user: CurrentUser, Path((id, sid)
             return Err(ApiErr::Bad("Write an answer first.".into()));
         }
         if Settings::load(&st.db).await?.api_key.is_none() {
-            return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+            return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
         }
         let profiles = st.db.profiles(v.id.clone()).await?;
         if q.profile_id.is_none() && !q.qualification.is_empty() {
@@ -805,7 +805,7 @@ pub async fn follow_up(State(st): State<AppState>, user: CurrentUser, Path((id, 
     }
     let settings = Settings::load(&st.db).await?;
     if settings.api_key.is_none() {
-        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
     let attempts = st.db.attempts(s.id.clone()).await?;
     let missed: Vec<(Question, &practice::Attempt)> =
@@ -881,7 +881,7 @@ pub async fn make_deck(State(st): State<AppState>, user: CurrentUser, Path(id): 
     let v = authorize(&st, &user, &id).await?;
     let s = Settings::load(&st.db).await?;
     if s.api_key.is_none() {
-        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
     let idx = index_for(&st, &v.id).await?;
     let topics = check_topics(&practice::vault_topics(&idx, &s), &b.topics)?;
@@ -1092,7 +1092,7 @@ pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id):
     }
     let s = Settings::load(&st.db).await?;
     if s.api_key.is_none() {
-        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
     st.db.add_coach_message(user.id, v.id.clone(), "user", text).await?;
     let stats = practice::stats(&st, user.id, &v.id).await?;
@@ -1210,7 +1210,7 @@ pub async fn make_report(State(st): State<AppState>, user: CurrentUser, Path(id)
     let v = authorize(&st, &user, &id).await?;
     let s = Settings::load(&st.db).await?;
     if s.api_key.is_none() {
-        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
     let Some(kind) = REPORT_KINDS.iter().find(|k| k.0 == b.kind) else {
         return Err(ApiErr::Bad("Choose what to write.".into()));
@@ -1387,7 +1387,7 @@ pub async fn rebuild_profiles(State(st): State<AppState>, user: CurrentUser, Pat
     check_csrf(&user, &headers)?;
     let v = authorize(&st, &user, &id).await?;
     if Settings::load(&st.db).await?.api_key.is_none() {
-        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
     let known = st.db.qualifications(v.id.clone()).await?;
     let asked = body.map(|Json(b)| b.qualifications).unwrap_or_default();

@@ -5,7 +5,7 @@
 {% block body %}
 <div class="app" id="app">
 {% include "_sidebar.html" %}
-<div class="main">
+<div class="main" id="main">
   <div class="tabbar">
     <button type="button" class="icon-btn tabbar-toggle" data-toggle-sidebar aria-controls="sidebar" aria-label="Toggle sidebar" title="Toggle sidebar"><svg class="ic"><use href="#i-panel-left"/></svg></button>
     <div class="tab is-active">
@@ -14,6 +14,7 @@
       <a class="tab-close" href="/v/{{ vault_id }}" title="Close" aria-label="Close tab"><svg class="ic"><use href="#i-x"/></svg></a>
     </div>
     <a class="icon-btn tab-new" href="/v/{{ vault_id }}/new-tab" title="New tab" aria-label="New tab"><svg class="ic"><use href="#i-plus"/></svg></a>
+    {% include "_wslinks.html" %}
   </div>
   <div class="view">
     <div class="navbar">
@@ -28,6 +29,8 @@
           <li><button type="button" class="linklike" data-empty-action="new">Create new note</button></li>
           <li><button type="button" class="linklike" data-empty-action="goto">Go to file</button> <span class="muted">(Ctrl+O)</span></li>
           <li><a href="/v/{{ vault_id }}/graph">Open graph view</a></li>
+          <li><a href="/v/{{ vault_id }}/practice">Practise: questions, flashcards and study guides</a></li>
+          <li><a href="/v/{{ vault_id }}/sources">Add sources</a></li>
           <li><button type="button" class="linklike" data-empty-action="close">Close</button></li>
         </ul>
         <h4 class="muted">Recent files</h4>

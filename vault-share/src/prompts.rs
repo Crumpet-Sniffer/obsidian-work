@@ -1,4 +1,4 @@
-//! Default system prompts for filing sources. An admin can replace each one under Admin → Microsidian; an empty
+//! Default system prompts for filing sources. An admin can replace each one under Admin → Claude settings; an empty
 //! setting means the default below. They are copies of the Obsidian plugin's prompts (../microsidian/src/ai), and a
 //! test checks they still match.
 

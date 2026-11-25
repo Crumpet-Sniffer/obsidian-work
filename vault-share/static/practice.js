@@ -133,6 +133,9 @@
     $$("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== name; });
     const tab = TABS.includes(name) ? name : PARENT[name] !== undefined ? PARENT[name] || location.hash.slice(1) : "";
     $$("[data-tab]").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false"));
+    // On a phone the tab row scrolls sideways: keep the chosen tab in view.
+    const sel = $(`[data-tab="${tab}"]`);
+    if (sel && sel.parentElement.scrollWidth > sel.parentElement.clientWidth) sel.parentElement.scrollTo({ left: sel.offsetLeft - 16, behavior: "smooth" });
     if (TABS.includes(name) && location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
     if (name === "history") loadHistory();
     if (name === "cards") loadDecks();

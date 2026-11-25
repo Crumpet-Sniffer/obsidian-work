@@ -159,7 +159,7 @@ pub async fn create(
         return Err(ApiErr::Bad("Unknown kind of file for this paper.".into()));
     }
     if Settings::load(&st.db).await?.api_key.is_none() {
-        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Microsidian.".into()));
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
     let bid = uuid::Uuid::new_v4().simple().to_string();
     tokio::fs::create_dir_all(batch_dir(&st, &bid)).await.map_err(|e| ApiErr::Internal(e.into()))?;

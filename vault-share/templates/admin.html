@@ -5,6 +5,13 @@
   <h1>Admin</h1>
   <a class="button primary" href="/vaults/new">New vault</a>
 </div>
+<nav class="section-nav" aria-label="Admin sections">
+  <a href="#vaults">Vaults</a>
+  <a href="#microsidian">Claude settings</a>
+  <a href="#spend">API spend</a>
+  <a href="#users">Accounts</a>
+  <a href="#audit">Activity log</a>
+</nav>
 
 <section class="card" id="vaults">
   <h2>Vaults</h2>
@@ -31,8 +38,8 @@
 </section>
 
 <section class="card" id="microsidian">
-  <h2>Microsidian</h2>
-  <p class="small muted">Settings for adding Word and PowerPoint files to a vault as sources. Each source is converted to a note and filed by Claude, using the key, model and effort chosen here.</p>
+  <h2>Claude settings <span class="muted small">(Microsidian)</span></h2>
+  <p class="small muted">The Anthropic key, model and effort used everywhere Claude is: filing sources (Word, PowerPoint, PDF files and pictures) into notes, and the Practice page (questions, marking, flashcards, study guides, the question hub and the exam coach).</p>
   {% if ms.saved %}<p class="alert ok">Microsidian settings saved.</p>{% endif %}
   <form method="post" action="/admin/microsidian" class="stack" autocomplete="off">
     <input type="hidden" name="csrf" value="{{ csrf }}">
