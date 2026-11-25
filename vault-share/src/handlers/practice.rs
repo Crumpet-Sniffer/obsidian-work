@@ -61,6 +61,16 @@ pub async fn meta(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
         }
     }
     marks.sort_unstable();
+    // The question styles the paper guides found in the exams, most used first.
+    let mut style_counts: Vec<(String, usize)> = Vec::new();
+    for q in qs.iter().filter(|q| !q.style.is_empty()) {
+        match style_counts.iter_mut().find(|(s, _)| s.eq_ignore_ascii_case(&q.style)) {
+            Some(x) => x.1 += 1,
+            None => style_counts.push((q.style.clone(), 1)),
+        }
+    }
+    style_counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let styles: Vec<&str> = style_counts.iter().map(|(s, _)| s.as_str()).collect();
     let papers = st.db.papers(v.id.clone()).await?;
     let paper_json: Vec<Value> = papers
         .iter()
@@ -155,6 +165,7 @@ pub async fn meta(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
         "difficulties": DIFFICULTIES,
         "papers": paper_json,
         "paperQuestions": qs.iter().filter(|q| q.source == "paper").count(),
+        "styles": styles,
         "generatedQuestions": qs.iter().filter(|q| q.source == "generated").count(),
         "maxFileBytes": st.cfg.max_file_bytes,
     }))
@@ -180,6 +191,7 @@ fn question_json(idx: &VaultIndex, vault_id: &str, q: &Question, reveal: bool) -
         "spec": q.spec,
         "qualification": q.qualification,
         "hint": q.hint,
+        "style": q.style,
     });
     if reveal {
         v["explanation"] = json!(q.explanation);
@@ -208,6 +220,9 @@ pub struct HubQuery {
     /// Specification area labels, separated by "|" (labels can hold commas).
     #[serde(default)]
     spec: String,
+    /// Question styles from the paper guides ("Multiple choice", "25-mark essay"), separated by "|".
+    #[serde(default)]
+    styles: String,
     /// Words to look for in the question, its number or its paper's name.
     #[serde(default)]
     q: String,
@@ -233,6 +248,7 @@ enum Facet {
     Marks,
     Years,
     Spec,
+    Styles,
 }
 
 /// The question hub, like a shop's catalogue: filtered by topic, question type, mark level, exam year and
@@ -248,6 +264,7 @@ pub async fn hub(State(st): State<AppState>, user: CurrentUser, Path(id): Path<S
     let papers: Vec<i64> = csv(&q.paper).iter().filter_map(|m| m.parse().ok()).collect();
     let years: Vec<i64> = csv(&q.years).iter().filter_map(|m| m.parse().ok()).collect();
     let spec: Vec<String> = q.spec.split('|').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+    let styles: Vec<String> = q.styles.split('|').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
     let words: Vec<String> = q.q.to_lowercase().split_whitespace().take(12).map(str::to_string).collect();
     let year_of: HashMap<i64, i64> = st.db.papers(v.id.clone()).await?.into_iter().map(|p| (p.id, p.info.year)).collect();
     let all = st.db.questions(v.id.clone()).await?;
@@ -275,11 +292,12 @@ pub async fn hub(State(st): State<AppState>, user: CurrentUser, Path(id): Path<S
             && (!on(Facet::Types) || types.is_empty() || types.contains(&x.qtype))
             && (!on(Facet::Marks) || marks.is_empty() || marks.contains(&x.marks))
             && (!on(Facet::Years) || years.is_empty() || year(x).is_some_and(|y| years.contains(&y)))
+            && (!on(Facet::Styles) || styles.is_empty() || styles.iter().any(|w| w.eq_ignore_ascii_case(&x.style)))
     };
 
     let pool: Vec<&Question> = all.iter().filter(|x| base(x)).collect();
     let mut counts: HashMap<&'static str, HashMap<String, usize>> = HashMap::new();
-    for (name, facet) in [("topics", Facet::Topics), ("types", Facet::Types), ("marks", Facet::Marks), ("years", Facet::Years), ("spec", Facet::Spec)] {
+    for (name, facet) in [("topics", Facet::Topics), ("types", Facet::Types), ("marks", Facet::Marks), ("years", Facet::Years), ("spec", Facet::Spec), ("styles", Facet::Styles)] {
         let c = counts.entry(name).or_default();
         for x in pool.iter().filter(|x| passes(x, Some(facet))) {
             let keys: Vec<String> = match facet {
@@ -288,6 +306,7 @@ pub async fn hub(State(st): State<AppState>, user: CurrentUser, Path(id): Path<S
                 Facet::Marks => vec![x.marks.to_string()],
                 Facet::Years => year(x).map(|y| vec![y.to_string()]).unwrap_or_default(),
                 Facet::Spec => x.spec.clone(),
+                Facet::Styles => if x.style.is_empty() { Vec::new() } else { vec![x.style.clone()] },
             };
             for k in keys {
                 *c.entry(k).or_default() += 1;
@@ -600,7 +619,15 @@ async fn write_questions(st: &AppState, who: &Who, vault: &str, g: &Generation) 
                 .collect()
         })
         .unwrap_or_default();
-    let qs: Vec<Question> = qs.into_iter().map(|mut q| { q.profile_id = profile.map(|p| p.id); q }).collect();
+    let allowed: Vec<String> = profile.map(|p| p.styles()).unwrap_or_default();
+    let qs: Vec<Question> = qs
+        .into_iter()
+        .map(|mut q| {
+            q.profile_id = profile.map(|p| p.id);
+            q.style = allowed.iter().find(|s| s.eq_ignore_ascii_case(q.style.trim())).cloned().unwrap_or_default();
+            q
+        })
+        .collect();
     if qs.is_empty() {
         return Err("Claude's questions could not be used. Try again.".into());
     }

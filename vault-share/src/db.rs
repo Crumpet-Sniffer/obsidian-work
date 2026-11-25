@@ -407,6 +407,15 @@ impl Db {
                  PRAGMA user_version = 10; COMMIT;",
             )?;
         }
+        if version < 11 {
+            // Each question's type as its exam names it ("Multiple choice", "Calculation", "25-mark essay"), from the
+            // paper guides.
+            conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE questions ADD COLUMN style TEXT NOT NULL DEFAULT '';
+                 PRAGMA user_version = 11; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 

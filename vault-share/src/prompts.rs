@@ -112,8 +112,9 @@ pub const PROFILE: &str = r#"You build a guide to each examined paper of a quali
 - command_words: the command words this paper uses, with what an answer must do for each, and the marks they usually carry.
 - marking_tips: how to earn the marks on this paper, from the mark schemes, examiner reports, commentaries and guidance (each one sentence).
 - common_mistakes: what examiners say students get wrong on this paper (each one sentence, naming the content area or question style).
+- question_styles: the kinds of question this paper sets, as a student revising for it would name them, from the past questions and the specification: for example "Multiple choice", "Short answer", "Calculation", "Data response", "9-mark analysis", "16-mark evaluation" or "25-mark essay". Usually 3 to 8. Name each by its format and, where the paper's long questions differ by their marks or command word, by those too; never by topic. For each, about: one sentence on what it asks for and how many marks it carries.
 
-2. question_fields: for every past question given, its id, the paper_number of its profile, and the codes of the fields it examines (one to three; exact codes from that profile's fields).
+2. question_fields: for every past question given, its id, the paper_number of its profile, the codes of the fields it examines (one to three; exact codes from that profile's fields), style: the exact name of the one question style of that profile it is, and topics: the topics from <topics> it tests, by exact name (one to three; empty if <topics> has none).
 
 Base everything on the documents and questions given; where they say nothing, leave the list short rather than guess."#;
 
@@ -148,6 +149,7 @@ For each question:
 - topics: the topics it covers, by exact name from the chosen topics.
 - difficulty: the chosen difficulty, or for "mixed", easy, medium or hard.
 - spec_areas: with a paper profile, the labels of the specification areas it covers; otherwise empty.
+- style: with a paper profile, the exact name of the one question style from its list that the question is; otherwise empty.
 - hint: one short sentence that points the student towards the answer without giving it away (for example, which idea from the notes to think about, or what the command word asks for).
 - explanation: two or three sentences, shown after answering, on why the right answer is right, drawing on the notes.
 - option_feedback: for single and multi questions, one short sentence per option, in the same order as the options, on why that option is right or wrong (the page already marks each option as right or wrong, so do not start with "Correct" or "Wrong"); otherwise empty.

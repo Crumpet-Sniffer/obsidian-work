@@ -68,17 +68,18 @@
       <label class="pr-filter-select">Show
         <select name="source">
           <option value="paper">Past paper questions</option>
-          <option value="generated">Questions Claude wrote</option>
+          <option value="generated">Questions Claude wrote (for anyone)</option>
           <option value="mine">Questions Claude wrote for me</option>
           <option value="">Everything</option>
         </select>
       </label>
       <label class="pr-filter-select">Paper <select name="paper" data-paper-filter><option value="">Any paper</option></select></label>
       <details class="pr-facet" open><summary>Exam year</summary><fieldset class="pr-choices" data-choices="hub-years"><legend class="sr-only">Exam years</legend></fieldset></details>
-      <details class="pr-facet" open><summary>Question type</summary><fieldset class="pr-choices" data-choices="hub-types"><legend class="sr-only">Question types</legend></fieldset></details>
+      <details class="pr-facet" open><summary>Question type</summary><fieldset class="pr-choices" data-choices="hub-styles"><legend class="sr-only">Question types, as the exams set them</legend></fieldset></details>
       <details class="pr-facet" open><summary>Marks</summary><fieldset class="pr-choices" data-choices="hub-marks"><legend class="sr-only">Mark levels</legend></fieldset></details>
       <details class="pr-facet" open data-facet-spec><summary>Specification area</summary><fieldset class="pr-choices" data-choices="hub-spec"><legend class="sr-only">Specification areas</legend></fieldset></details>
       <details class="pr-facet" open><summary>Topic</summary><fieldset class="pr-choices" data-choices="hub-topics"><legend class="sr-only">Topics</legend></fieldset></details>
+      <details class="pr-facet"><summary>Answer format</summary><fieldset class="pr-choices" data-choices="hub-types"><legend class="sr-only">How it is answered</legend></fieldset></details>
       <div class="pr-filter-done"><button type="button" class="primary" data-filters-close>Show the questions</button></div>
     </form>
     <div class="pr-store-main">
@@ -88,6 +89,7 @@
           <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
           <input type="search" data-hub-q placeholder="Search the questions…" maxlength="200" autocomplete="off">
         </label>
+        <button type="button" class="pr-refresh" data-hub-refresh title="Claude reads every past question again and re-sorts it by question type, specification area and topic"><svg class="ic"><use href="#i-rotate"/></svg>Refresh filters</button>
         <label class="pr-store-sort">Sort
           <select data-hub-sort>
             <option value="">Paper order</option>
@@ -97,6 +99,7 @@
           </select>
         </label>
       </div>
+      <p class="small pr-refresh-status" data-hub-refresh-status aria-live="polite" hidden></p>
       <div class="pr-active" data-hub-active aria-label="Filters in use"></div>
       <div class="pr-hub-bar">
         <span class="muted small" data-hub-count aria-live="polite"></span>

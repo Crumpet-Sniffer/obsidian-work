@@ -696,3 +696,12 @@ section[id] { scroll-margin-top: 110px; }
 .pr-year-notes li[hidden] { display: none; }
 /* A filter with nothing to choose from is left out. */
 .pr-store-filters .pr-facet:not(:has(.pr-chip)) { display: none; }
+
+/* The exam's own name for a question's type ("25-mark essay"). */
+.pr-style { color: #d08b2c; background: color-mix(in srgb, #e9973f 15%, transparent); }
+.pr-refresh { gap: .4rem; }
+.pr-refresh .ic { width: 15px; height: 15px; }
+.pr-refresh[hidden] { display: none; }
+.pr-refresh-status { margin: 0; padding: .5rem .75rem; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 0 6px 6px 0; }
+.pr-refresh-status[hidden] { display: none; }
+.pr-refresh-status.pr-bad { border-left-color: var(--bad); background: var(--bad-soft); }

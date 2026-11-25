@@ -165,6 +165,8 @@
     const box = $(`[data-choices="${name}"]`);
     if (!box) return () => [];
     const legend = box.querySelector("legend");
+    const before = $$(".pr-chip input", box);
+    const wasTicked = new Set(before.filter((c) => c.checked).map((c) => c.value));
     box.replaceChildren(legend);
     if (!values.length) {
       box.appendChild(make("p", "muted small", name.includes("topics") ? "This vault has no topic pages yet, so questions cover all of its notes." : "Nothing to choose from yet."));
@@ -180,7 +182,7 @@
       const c = make("input");
       c.type = "checkbox";
       c.value = String(v.value);
-      c.checked = checked;
+      c.checked = before.length ? wasTicked.has(String(v.value)) : checked;
       l.append(c, make("span", "pr-chip-label", ` ${v.label}`), make("span", "pr-n"));
       list.appendChild(l);
       return c;
@@ -230,6 +232,7 @@
     pick.marks = choices("marks", marks);
     pick.hubTopics = choices("hub-topics", topics, { checked: false });
     pick.hubTypes = choices("hub-types", types, { checked: false });
+    pick.hubStyles = choices("hub-styles", (meta.styles || []).map((s) => ({ value: s, label: s })), { checked: false });
     pick.hubMarks = choices("hub-marks", marks, { checked: false });
     const years = [...new Set(meta.papers.map((p) => p.year).filter((y) => y > 0))].sort((a, b) => b - a);
     pick.hubYears = choices("hub-years", years.map((y) => ({ value: y, label: String(y) })), { checked: false });
@@ -434,7 +437,9 @@
     li.id = `pr-q-${n + 1}`;
     const head = make("div", "pr-q-head");
     head.append(make("strong", "", `Question ${n + 1}`));
-    head.append(make("span", "pr-tag", plural(q.marks, "mark")), make("span", "pr-tag", typeLabel(q.type)));
+    head.append(make("span", "pr-tag", plural(q.marks, "mark")));
+    if (q.style) head.append(make("span", "pr-tag pr-style", q.style));
+    head.append(make("span", "pr-tag", typeLabel(q.type)));
     for (const t of q.topics) head.append(make("span", "pr-tag pr-topic", t));
     for (const t of q.spec || []) head.append(make("span", "pr-tag pr-spec", t));
     if (q.paper) head.append(make("span", "muted small", `${q.paper}${q.number ? ` · Q${q.number}` : ""}`));
@@ -960,7 +965,7 @@
   const hubQ = $("[data-hub-q]");
   const hubSort = $("[data-hub-sort]");
   const hubMore = $("[data-hub-more]");
-  const FACETS = { "hub-topics": "topics", "hub-types": "types", "hub-marks": "marks", "hub-years": "years", "hub-spec": "spec" };
+  const FACETS = { "hub-styles": "styles", "hub-topics": "topics", "hub-types": "types", "hub-marks": "marks", "hub-years": "years", "hub-spec": "spec" };
   const hubState = { shown: 0, total: 0, seq: 0 };
 
   /** Put each filter value's count next to it, and dim the ones that would give nothing. */
@@ -1036,7 +1041,9 @@
     c.addEventListener("change", () => { if (c.checked) selected.add(q.id); else selected.delete(q.id); li.classList.toggle("is-picked", c.checked); updateHubBar(); });
     li.classList.toggle("is-picked", c.checked);
     head.append(c, make("strong", "", q.paper ? `${q.paper}${q.number ? ` · Q${q.number}` : ""}` : "Written by Claude"));
-    head.append(make("span", "pr-tag pr-marks", plural(q.marks, "mark")), make("span", "pr-tag", typeLabel(q.type)));
+    head.append(make("span", "pr-tag pr-marks", plural(q.marks, "mark")));
+    if (q.style) head.append(make("span", "pr-tag pr-style", q.style));
+    head.append(make("span", "pr-tag", typeLabel(q.type)));
     for (const t of q.topics) head.append(make("span", "pr-tag pr-topic", t));
     for (const t of q.spec || []) head.append(make("span", "pr-tag pr-spec", t));
     li.appendChild(head);
@@ -1079,6 +1086,7 @@
       marks: pick.hubMarks().join(","),
       years: pick.hubYears().join(","),
       spec: pick.hubSpec().join("|"),
+      styles: pick.hubStyles().join("|"),
       source: f.get("source") || "",
       paper: f.get("paper") || "",
       q: hubQ.value.trim(),
@@ -1160,6 +1168,47 @@
     $$(".pr-store-filters .pr-chip input").forEach((c) => { c.checked = false; });
     hubQ.value = "";
   }
+  // Refresh filters: Claude reads every past question again (with the specification and examiners' documents) and
+  // sorts each by question type, specification area and topic. It is the same job as building the paper guides.
+  const refreshBtn = $("[data-hub-refresh]");
+  const refreshStatus = $("[data-hub-refresh-status]");
+  let wasRefreshing = false;
+  function drawRefresh(building, failed) {
+    const canRefresh = !!(meta.qualifications || []).length;
+    refreshBtn.hidden = !canRefresh;
+    refreshBtn.disabled = !!building.length;
+    refreshBtn.lastChild.nodeValue = building.length ? "Refreshing…" : "Refresh filters";
+    if (building.length) {
+      refreshStatus.hidden = false;
+      refreshStatus.className = "small pr-refresh-status";
+      refreshStatus.textContent = `Claude is reading every past question of ${building.join(", ")} again to sort them by question type, specification area and topic. This takes a minute or two; the filters update when it is done.`;
+      wasRefreshing = true;
+    } else if (failed.length) {
+      refreshStatus.hidden = false;
+      refreshStatus.className = "small pr-refresh-status pr-bad";
+      refreshStatus.textContent = `The filters could not be refreshed: ${failed.map((f) => f.error).join(" ")}`;
+    } else if (wasRefreshing) {
+      wasRefreshing = false;
+      refreshStatus.hidden = false;
+      refreshStatus.className = "small pr-refresh-status";
+      refreshStatus.textContent = "The filters are up to date.";
+      setTimeout(() => { refreshStatus.hidden = true; }, 6000);
+    } else {
+      refreshStatus.hidden = true;
+    }
+  }
+  refreshBtn.addEventListener("click", async () => {
+    if (!window.confirm("Refresh the filters? Claude reads every past question in the hub again and sorts each by question type, specification area and topic. It takes a minute or two and uses your Claude credit.")) return;
+    refreshBtn.disabled = true;
+    try {
+      await api("POST", "practice/profiles/rebuild", {});
+      await refreshLists();
+    } catch (e) {
+      toast(e.message, "error");
+      refreshBtn.disabled = false;
+    }
+  });
+
   $("[data-hub-all]").addEventListener("click", () => {
     const boxes = $$("input[type=checkbox]", hubList);
     const on = boxes.some((b) => !b.checked);
@@ -1348,6 +1397,8 @@
   }
 
   let guidesTimer = 0;
+  /** A qualification as it is printed (the server reports the ones being built in lower case). */
+  const qualName = (q) => (meta.qualifications || []).find((x) => x.toLowerCase() === String(q).toLowerCase()) || q;
   function renderGuides() {
     window.clearTimeout(guidesTimer);
     const box = $("[data-guides]");
@@ -1356,7 +1407,7 @@
     const building = meta.buildingProfiles || [];
     const failed = meta.failedProfiles || [];
     const bits = [];
-    if (building.length) bits.push(`Claude is building the guides for ${building.join(", ")}… (this takes a minute or two)`);
+    if (building.length) bits.push(`Claude is building the guides for ${building.map(qualName).join(", ")}… (this takes a minute or two)`);
     for (const f of failed) bits.push(`The guides for ${f.qualification} could not be built: ${f.error}`);
     status.textContent = bits.join(" ");
     status.className = `small ${failed.length && !building.length ? "pr-bad" : "muted"}`;
@@ -1395,6 +1446,7 @@
       box.appendChild(d);
     }
     $("[data-guides-rebuild]").disabled = !!building.length || !(meta.qualifications || []).length;
+    drawRefresh(building.map(qualName), failed);
     if (building.length) guidesTimer = window.setTimeout(() => loadMeta().then(() => { if (!$("[data-panel=hub]").hidden) loadHub(); }), 5000);
   }
   $("[data-guides-rebuild]").addEventListener("click", async () => {
