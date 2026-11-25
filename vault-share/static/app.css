@@ -638,7 +638,7 @@ section[id] { scroll-margin-top: 110px; }
 .pr-store-filters .pr-all, .pr-store-filters .pr-count { display: none; }
 .pr-store-filters .pr-choice-top { margin: 0 0 .35rem; }
 .pr-store-filters input.pr-find { width: 100%; }
-.pr-store-filters .pr-choice-list { display: grid; gap: 1px; max-height: 280px; }
+.pr-store-filters .pr-choice-list { display: grid; gap: 1px; max-height: none; overflow: visible; }
 .pr-store-filters .pr-chip { display: flex; align-items: center; gap: .55rem; padding: .28rem .4rem; border: 0; border-radius: 6px; font-size: .875rem; white-space: normal; background: none; }
 .pr-store-filters .pr-chip:hover { background: var(--hover, rgba(255,255,255,.06)); }
 .pr-store-filters .pr-chip:has(input:checked) { background: color-mix(in srgb, var(--accent) 14%, transparent); border: 0; }

@@ -75,16 +75,16 @@ pub async fn meta(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
         }
     }
     marks.sort_unstable();
-    // The question styles the paper guides found in the exams, most used first.
-    let mut style_counts: Vec<(String, usize)> = Vec::new();
-    for q in qs.iter().filter(|q| !q.style.is_empty()) {
-        match style_counts.iter_mut().find(|(s, _)| s.eq_ignore_ascii_case(&q.style)) {
-            Some(x) => x.1 += 1,
-            None => style_counts.push((q.style.clone(), 1)),
+    // The kinds of question in the hub, marks and type together ("9-mark evaluation"), fewest marks first.
+    let mut kinds: Vec<(i64, String)> = Vec::new();
+    for q in &qs {
+        let k = question_kind(q);
+        if !kinds.iter().any(|(_, s)| s.eq_ignore_ascii_case(&k)) {
+            kinds.push((q.marks, k));
         }
     }
-    style_counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let styles: Vec<&str> = style_counts.iter().map(|(s, _)| s.as_str()).collect();
+    kinds.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    let styles: Vec<&str> = kinds.iter().map(|(_, s)| s.as_str()).collect();
     let papers = st.db.papers(v.id.clone()).await?;
     let paper_json: Vec<Value> = papers
         .iter()
@@ -248,6 +248,26 @@ pub struct HubQuery {
     offset: usize,
 }
 
+/// A question's marks and type as one label, for the hub's Question type filter: "9-mark evaluation",
+/// "1-mark multiple choice", "4-mark written answer". The type is the exam's own name for it (from the paper guides)
+/// when there is one, else how it is answered; the marks are always the question's own.
+fn question_kind(q: &Question) -> String {
+    let style = q.style.trim();
+    // Styles such as "9-mark evaluation" already carry a mark count: keep only the type.
+    let rest = match style.split_once(|c: char| c == ' ' || c == '\u{a0}') {
+        Some((first, rest)) if first.chars().next().is_some_and(|c| c.is_ascii_digit()) && first.to_lowercase().contains("mark") => rest.trim(),
+        _ => style,
+    };
+    let what = if rest.is_empty() { TYPES.iter().find(|t| t.0 == q.qtype).map(|t| t.1).unwrap_or("question").to_string() } else { rest.to_string() };
+    // "Multiple choice" reads "1-mark multiple choice"; a word in capitals ("SQL query") is left as it is.
+    let mut c = what.chars();
+    let what = match (c.next(), c.clone().next()) {
+        (Some(f), Some(s)) if f.is_uppercase() && !s.is_uppercase() => format!("{}{}", f.to_lowercase(), c.as_str()),
+        _ => what,
+    };
+    format!("{}-mark {what}", q.marks)
+}
+
 fn csv(s: &str) -> Vec<String> {
     s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }
@@ -306,7 +326,10 @@ pub async fn hub(State(st): State<AppState>, user: CurrentUser, Path(id): Path<S
             && (!on(Facet::Types) || types.is_empty() || types.contains(&x.qtype))
             && (!on(Facet::Marks) || marks.is_empty() || marks.contains(&x.marks))
             && (!on(Facet::Years) || years.is_empty() || year(x).is_some_and(|y| years.contains(&y)))
-            && (!on(Facet::Styles) || styles.is_empty() || styles.iter().any(|w| w.eq_ignore_ascii_case(&x.style)))
+            && (!on(Facet::Styles) || styles.is_empty() || {
+                let k = question_kind(x);
+                styles.iter().any(|w| w.eq_ignore_ascii_case(&k))
+            })
     };
 
     let pool: Vec<&Question> = all.iter().filter(|x| base(x)).collect();
@@ -320,7 +343,7 @@ pub async fn hub(State(st): State<AppState>, user: CurrentUser, Path(id): Path<S
                 Facet::Marks => vec![x.marks.to_string()],
                 Facet::Years => year(x).map(|y| vec![y.to_string()]).unwrap_or_default(),
                 Facet::Spec => x.spec.clone(),
-                Facet::Styles => if x.style.is_empty() { Vec::new() } else { vec![x.style.clone()] },
+                Facet::Styles => vec![question_kind(x)],
             };
             for k in keys {
                 *c.entry(k).or_default() += 1;

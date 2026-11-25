@@ -236,7 +236,7 @@
     pick.hubTopics = choices("hub-topics", topics, { checked: false });
     pick.hubTypes = choices("hub-types", types, { checked: false });
     pick.hubStyles = choices("hub-styles", (meta.styles || []).map((s) => ({ value: s, label: s })), { checked: false });
-    pick.hubMarks = choices("hub-marks", marks, { checked: false });
+    pick.hubMarks = () => [];
     const years = [...new Set(meta.papers.map((p) => p.year).filter((y) => y > 0))].sort((a, b) => b - a);
     pick.hubYears = choices("hub-years", years.map((y) => ({ value: y, label: String(y) })), { checked: false });
     pick.cardTopics = choices("card-topics", topics);
@@ -854,7 +854,7 @@
   const hubQ = $("[data-hub-q]");
   const hubSort = $("[data-hub-sort]");
   const hubMore = $("[data-hub-more]");
-  const FACETS = { "hub-styles": "styles", "hub-topics": "topics", "hub-types": "types", "hub-marks": "marks", "hub-years": "years", "hub-spec": "spec" };
+  const FACETS = { "hub-styles": "styles", "hub-topics": "topics", "hub-types": "types", "hub-years": "years", "hub-spec": "spec" };
   const hubState = { shown: 0, total: 0, seq: 0 };
 
   /** Put each filter value's count next to it, and dim the ones that would give nothing. */
