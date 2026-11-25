@@ -254,6 +254,7 @@
     usePapers.checked = !!meta.paperQuestions;
     usePapers.parentElement.title = meta.paperQuestions ? `${meta.paperQuestions} past paper questions in the hub` : "Add past papers under Past papers first";
     renderPapers();
+    if (!hubState.sourceSet) { hubState.sourceSet = true; hubForm.querySelector("[name=source]").value = defaultSource(); }
   }
 
   // ---------- writing questions ----------
@@ -903,8 +904,20 @@
       if (!items.length) continue;
       box.appendChild(make("h3", "", title));
       const ul = make("ul", "small");
-      for (const i of items) ul.appendChild(make("li", "", i));
+      items.forEach((i, n) => { const li = make("li", "", i); if (n >= 5) li.hidden = true; ul.appendChild(li); });
       box.appendChild(ul);
+      if (items.length > 5) {
+        const more = make("button", "linklike small pr-show-all", `Show all ${items.length}`);
+        more.type = "button";
+        more.setAttribute("aria-expanded", "false");
+        more.addEventListener("click", () => {
+          const open = more.getAttribute("aria-expanded") !== "true";
+          $$("li", ul).forEach((li, n) => { if (n >= 5) li.hidden = !open; });
+          more.setAttribute("aria-expanded", open ? "true" : "false");
+          more.textContent = open ? "Show fewer" : `Show all ${items.length}`;
+        });
+        box.appendChild(more);
+      }
     }
     return box;
   }
@@ -981,7 +994,7 @@
       box.appendChild(b);
     };
     const src = hubForm.querySelector("[name=source]");
-    if (src.value !== "paper") chip(src.selectedOptions[0].textContent, () => { src.value = "paper"; });
+    if (src.value !== defaultSource()) chip(src.selectedOptions[0].textContent, () => { src.value = defaultSource(); });
     const paper = $("[data-paper-filter]");
     if (paper.value) chip(paper.selectedOptions[0].textContent, () => { paper.value = ""; });
     for (const name of Object.keys(FACETS)) {
@@ -1000,8 +1013,10 @@
     $("[data-filter-count]").textContent = n ? `(${n})` : "";
   }
 
+  /** Past paper questions, unless there are none yet: then everything (the questions Claude wrote). */
+  const defaultSource = () => (meta && !meta.paperQuestions ? "" : "paper");
   function clearHub() {
-    hubForm.querySelector("[name=source]").value = "paper";
+    hubForm.querySelector("[name=source]").value = defaultSource();
     $("[data-paper-filter]").value = "";
     $$(".pr-store-filters .pr-chip input").forEach((c) => { c.checked = false; });
     $$(".pr-store-filters input.pr-find").forEach((f) => { f.value = ""; f.dispatchEvent(new Event("input")); });
@@ -1089,7 +1104,23 @@
     $("[data-hub-count]").textContent = r.total ? `${plural(r.total, "question")}${r.total > hubState.shown ? ` · showing ${hubState.shown}` : ""}` : "";
     if (!r.total) {
       const empty = make("li", "pr-hub-empty");
-      empty.append(make("strong", "", "No questions match."), make("p", "muted small", "Take off a filter, or search for something else."));
+      const filtered = !$("[data-hub-active]").hidden;
+      const nothing = !meta.paperQuestions && !meta.generatedQuestions;
+      if (filtered && !nothing) {
+        empty.append(make("strong", "", "No questions match."), make("p", "muted small", "Take off a filter, or search for something else."));
+      } else {
+        empty.append(make("strong", "", nothing ? "The question hub is empty." : "No questions here yet."));
+        empty.append(make("p", "muted small", "Add past papers and their mark schemes and every question is filed here, or have Claude write some questions for you."));
+        const act = make("div", "pr-actions");
+        const add = make("button", "primary", "Add past papers");
+        add.type = "button";
+        add.addEventListener("click", () => show("papers"));
+        const write = make("button", "", "Write questions");
+        write.type = "button";
+        write.addEventListener("click", () => show("questions"));
+        act.append(add, write);
+        empty.appendChild(act);
+      }
       if (hubState.seq === seq) hubList.appendChild(empty);
     }
     hubMore.hidden = hubState.shown >= r.total;
@@ -1124,7 +1155,7 @@
     show("hub");
   }
   function clearFilters() {
-    hubForm.querySelector("[name=source]").value = "paper";
+    hubForm.querySelector("[name=source]").value = defaultSource();
     $("[data-paper-filter]").value = "";
     $$(".pr-store-filters .pr-chip input").forEach((c) => { c.checked = false; });
     hubQ.value = "";

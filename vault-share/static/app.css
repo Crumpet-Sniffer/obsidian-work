@@ -686,3 +686,13 @@ section[id] { scroll-margin-top: 110px; }
   .pr-store-search { order: 3; flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .pr-store-filters { transition: none; } }
+
+/* Choice options are lettered, as exam papers do ("Options A to D"). */
+.pr-hub-options { list-style: upper-alpha; padding-left: 1.6rem; }
+/* Searching only makes sense for long lists of names. */
+.pr-store-filters [data-choices="hub-marks"] .pr-choice-top, .pr-store-filters [data-choices="hub-years"] .pr-choice-top, .pr-store-filters [data-choices="hub-types"] .pr-choice-top { display: none; }
+.pr-hub-empty .pr-actions { justify-content: center; margin-top: .75rem; }
+.pr-show-all { color: var(--accent); margin: .1rem 0 .4rem 1.2rem; font-size: .85rem; }
+.pr-year-notes li[hidden] { display: none; }
+/* A filter with nothing to choose from is left out. */
+.pr-store-filters .pr-facet:not(:has(.pr-chip)) { display: none; }
