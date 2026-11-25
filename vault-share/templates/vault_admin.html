@@ -4,7 +4,7 @@
 <p class="crumbs"><a href="/admin">Admin</a></p>
 <div class="page-head">
   <h1>{{ vault.name }}</h1>
-  <div class="btn-row"><a class="button" href="/v/{{ vault.id }}/sources">Sources</a><a class="button" href="/v/{{ vault.id }}">Open vault</a></div>
+  <div class="btn-row"><a class="button" href="/v/{{ vault.id }}/sources">Sources</a><a class="button" href="/admin/vaults/{{ vault.id }}/papers">Past papers</a><a class="button" href="/v/{{ vault.id }}/graph">Open vault</a></div>
 </div>
 {% if let Some(n) = notice %}<p class="alert ok">{{ n }}</p>{% endif %}
 <p class="muted">{{ vault.files }} files · {{ vault.size }} · updated {{ vault.updated }}</p>

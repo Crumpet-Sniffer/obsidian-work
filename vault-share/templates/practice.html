@@ -4,24 +4,26 @@
 {% block content %}
 {% let section = "practice" %}{% include "_vaultnav.html" %}
 <div class="page-head">
-  <h1>Practice</h1>
+  <h1>Practice and revision</h1>
+  {% if is_admin %}<div class="btn-row"><a class="button" href="/admin/vaults/{{ vault_id }}/papers">Manage past papers</a></div>{% endif %}
 </div>
-<div class="practice" data-practice data-vault="{{ vault_id }}" data-csrf="{{ csrf }}" data-configured="{% if configured %}1{% else %}0{% endif %}" data-max-file="{{ max_file_mb }}">
+<div class="practice" data-practice data-vault="{{ vault_id }}" data-csrf="{{ csrf }}" data-configured="{% if configured %}1{% else %}0{% endif %}" data-max-file="{{ max_file_mb }}" data-admin="{% if is_admin %}1{% else %}0{% endif %}">
   {% if !configured %}
-  <p class="alert error">Questions, flashcards and the coach need Claude, and no Anthropic API key is set. {% if is_admin %}Add one under <a href="/admin#microsidian">Admin → Claude settings</a>.{% else %}Ask an admin to add one.{% endif %}</p>
+  <p class="alert error">Questions, flashcards, mind maps, Ask Claude and the coach need Claude, and no Anthropic API key is set. {% if is_admin %}Add one under <a href="/admin#microsidian">Admin → Claude settings</a>.{% else %}Ask an admin to add one.{% endif %}</p>
   {% endif %}
   <nav class="pr-tabs" role="tablist" aria-label="Practice">
-    <button type="button" role="tab" data-tab="questions" aria-selected="true">Questions</button>
-    <button type="button" role="tab" data-tab="hub" aria-selected="false">Question hub</button>
-    <button type="button" role="tab" data-tab="papers" aria-selected="false">Past papers</button>
-    <button type="button" role="tab" data-tab="cards" aria-selected="false">Flashcards</button>
-    <button type="button" role="tab" data-tab="guides" aria-selected="false">Study guides</button>
-    <button type="button" role="tab" data-tab="history" aria-selected="false">History</button>
-    <button type="button" role="tab" data-tab="coach" aria-selected="false">Exam coach</button>
+    <button type="button" role="tab" data-tab="questions" aria-selected="true" title="Claude writes exam-style questions from your notes and marks your answers">Write practice questions</button>
+    <button type="button" role="tab" data-tab="hub" aria-selected="false" title="Every question from the past papers, and the ones Claude wrote, to filter and practise">Past paper question bank</button>
+    <button type="button" role="tab" data-tab="cards" aria-selected="false" title="Flashcards Claude makes from your notes">Flashcard decks</button>
+    <button type="button" role="tab" data-tab="guides" aria-selected="false" title="Study guides, briefings, cheat sheets and glossaries written from your notes">Study guides and summaries</button>
+    <button type="button" role="tab" data-tab="mindmaps" aria-selected="false" title="Mind maps of how the ideas in your notes connect">Mind maps</button>
+    <button type="button" role="tab" data-tab="ask" aria-selected="false" title="Chat with Claude about your notes: explanations, follow-up questions and help">Ask Claude</button>
+    <button type="button" role="tab" data-tab="history" aria-selected="false" title="Everything you have answered, with your marks and feedback">My answers and marks</button>
+    <button type="button" role="tab" data-tab="coach" aria-selected="false" title="How you are doing, and what to revise next">Exam coach: my progress</button>
   </nav>
 
   <section class="card pr-panel" data-panel="questions" role="tabpanel">
-    <h2>Write me questions</h2>
+    <h2>Write me practice questions</h2>
     <p class="small muted">Claude writes questions from your notes on the topics you choose, then marks your answers: choice and fill-in questions straight away, written answers against a mark scheme. With past papers in the question hub, it copies how your exams word questions and mark schemes.</p>
     <form class="pr-form" data-gen-form>
       <div class="pr-row" data-gen-paper-row hidden>
@@ -113,66 +115,6 @@
     </div>
   </section>
 
-  <section class="card pr-panel" data-panel="papers" role="tabpanel" hidden>
-    <h2>Add past papers and exam documents</h2>
-    <p class="muted">Upload one .zip of everything from the exam board's assessment resources: past papers, mark schemes, the specification, examiner reports and guidance. Claude sorts it, splits each paper into questions with their mark schemes, and builds the paper guides. It takes a few minutes per paper, and you can leave the page.</p>
-    <details class="pr-more how">
-      <summary>How it works</summary>
-      <div class="small muted">
-        <p>Files can be PDF, Word or PowerPoint, in any folders, named however they came. Claude works out what each file is, matches each paper to its mark scheme, and reads each paper's qualification, paper number, month and year off its cover.</p>
-        <p>Each paper is split into its questions, each with its marks, type, topics and its part of the mark scheme; the other documents are read for their content areas, command words, marking guidance and what examiners found. Then the paper guides below are built from all of it.</p>
-        <p>Anything already in the hub is skipped, so you can upload a bigger zip later.</p>
-      </div>
-    </details>
-    <form class="pr-upload pr-zip" data-zip-form>
-      <label>Zip of exam papers and documents <input type="file" name="zip" accept=".zip,application/zip" required></label>
-      <div><button type="submit" class="primary">Add everything</button></div>
-    </form>
-    <details class="pr-more pr-one">
-      <summary>Or add files one at a time</summary>
-    <h3 class="pr-h3">A specification</h3>
-    <form class="pr-upload" data-spec-form>
-      <label>Specification <input type="file" name="spec" accept=".pdf,.docx,.pptx" required></label>
-      <label>Qualification <span class="muted">(optional)</span> <input name="qualification" maxlength="150" list="pr-quals" placeholder="Read from the document"></label>
-      <div><button type="submit" class="primary">Add the specification</button></div>
-    </form>
-    <datalist id="pr-quals"></datalist>
-    <h3 class="pr-h3">A past paper and its mark scheme</h3>
-    <form class="pr-upload" data-paper-form>
-      <label>Name <input name="title" maxlength="150" required placeholder="June 2024 Paper 1"></label>
-      <label>Exam paper <input type="file" name="exam" accept=".pdf,.docx,.pptx" required></label>
-      <label>Mark scheme <input type="file" name="scheme" accept=".pdf,.docx,.pptx"></label>
-      <label>Insert <span class="muted">(optional: a case study, source booklet or data sheet given with the paper)</span> <input type="file" name="insert" accept=".pdf,.docx,.pptx"></label>
-      <div><button type="submit" class="primary">Add the paper</button></div>
-    </form>
-    </details>
-    <ul class="jobs" data-paper-jobs aria-live="polite"></ul>
-
-    <h2 class="pr-h2">Paper guides</h2>
-    <p class="small muted">For each paper of each qualification: the fields (specification areas) it can examine, with how many past questions each has, its format and command words, how marks are earned and what examiners say students get wrong. Built by Claude from the specification, past papers, examiner reports, commentaries and guidance, and used when it writes and marks questions for that paper.</p>
-    <p class="small" data-guides-status aria-live="polite"></p>
-    <div class="pr-guides" data-guides></div>
-    <div class="pr-actions"><button type="button" data-guides-rebuild>Build the guides again</button></div>
-
-    <h2 class="pr-h2">Papers by year</h2>
-    <p class="small muted">Each exam year: every paper sat that year, the documents about it (examiner reports, commentaries, guidance), and what examiners said about the year as a whole. The examiners' notes are written by Claude from that year's documents when the guides are built.</p>
-    <div class="pr-years" data-years></div>
-    <h2 class="pr-h2">Course documents</h2>
-    <p class="small muted">Specifications, and other documents not about one exam year.</p>
-    <div data-docs></div>
-
-    {% if is_admin %}
-    <details class="pr-more pr-wipe" data-wipe>
-      <summary>Clear the question hub</summary>
-      <div>
-        <p class="small">Deletes every past paper and its questions, every exam document, the paper guides and the examiners' notes for each year from this vault's question hub. Questions Claude wrote, everyone's answers and history, flashcards and the exam coach are kept. This cannot be undone; upload the papers again to start over.</p>
-        <label class="check small"><input type="checkbox" name="files"> Also move the exam files kept in the vault (the <code>Question Hub</code> folder under the originals folder) to the vault's trash</label>
-        <div class="pr-actions"><button type="button" class="danger" data-wipe-go>Clear all exam data…</button></div>
-      </div>
-    </details>
-    {% endif %}
-  </section>
-
   <section class="card pr-panel" data-panel="cards" role="tabpanel" hidden>
     <h2>Make flashcards</h2>
     <form class="pr-form" data-cards-form>
@@ -228,13 +170,70 @@
     <article class="prose pr-report-body" data-report-body></article>
   </section>
 
+  <section class="card pr-panel" data-panel="mindmaps" role="tabpanel" hidden>
+    <h2>Make me a mind map</h2>
+    <p class="small muted">Claude maps the main themes of your notes on the topics you choose and how their ideas branch out. Open and close the branches, click an idea to ask Claude to explain it, and save the map into the vault as a note.</p>
+    <form class="pr-form" data-map-form>
+      <fieldset class="pr-choices" data-choices="map-topics"><legend>Topics</legend></fieldset>
+      <label class="pr-focus"><span>What should it focus on? <span class="muted small">(optional)</span></span>
+        <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: the causes and effects only, or how the laws relate to each other"></textarea>
+      </label>
+      <div class="pr-actions"><button type="submit" class="primary">Make the mind map</button></div>
+    </form>
+    <div data-maps></div>
+  </section>
+
+  <section class="card pr-panel pr-mapview" data-panel="mindmap" role="tabpanel" hidden>
+    <div class="pr-quiz-head">
+      <button type="button" class="linklike" data-map-back>&larr; Back</button>
+      <h2 data-map-title></h2>
+    </div>
+    <div class="pr-actions pr-report-tools" data-map-tools>
+      <button type="button" data-map-expand>Open every branch</button>
+      <button type="button" data-map-collapse>Close the branches</button>
+      <span class="pr-seg" role="group" aria-label="Zoom">
+        <button type="button" data-map-zoom="-1" aria-label="Zoom out">&minus;</button>
+        <button type="button" data-map-zoom="0">Fit</button>
+        <button type="button" data-map-zoom="1" aria-label="Zoom in">+</button>
+      </span>
+      <button type="button" data-map-save>Save to vault</button>
+      <button type="button" data-map-download>Download picture</button>
+      <button type="button" class="danger" data-map-delete>Delete</button>
+    </div>
+    <p class="small muted" data-map-status aria-live="polite"></p>
+    <div class="pr-map" data-map-canvas tabindex="0" aria-label="Mind map: drag to move around"></div>
+    <p class="small muted pr-keys">Click a <strong>&#9656;</strong> to open or close a branch &middot; click an idea to ask Claude about it &middot; drag to move around</p>
+  </section>
+
+  <section class="card pr-panel pr-ask" data-panel="ask" role="tabpanel" hidden>
+    <h2>Ask Claude</h2>
+    <p class="small muted">Ask Claude about your notes: to explain an idea, go over a question you got wrong, make sense of a mark scheme, or test you. Claude answers from your notes and links the ones it used. Only you can see this conversation.</p>
+    <details class="pr-more pr-ask-scope">
+      <summary>Which notes Claude reads <span class="muted small" data-ask-scope></span></summary>
+      <fieldset class="pr-choices" data-choices="ask-topics"><legend class="sr-only">Topics</legend></fieldset>
+      <p class="muted small">Choose none to let Claude read notes from across the whole vault.</p>
+    </details>
+    <div class="pr-chat" data-chat aria-live="polite"></div>
+    <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
+    <form class="pr-chat-form" data-chat-form>
+      <textarea name="message" rows="2" maxlength="8000" placeholder="Ask anything about your notes, or try: Explain this topic as if I were new to it"></textarea>
+      <div class="pr-actions">
+        <button type="submit" class="primary">Send</button>
+        <button type="button" data-chat-clear>Start a new chat</button>
+      </div>
+    </form>
+  </section>
+
   <section class="card pr-panel" data-panel="history" role="tabpanel" hidden>
-    <h2>Your answers</h2>
+    <div class="pr-head-row">
+      <h2>Your answers and marks</h2>
+      <button type="button" class="danger small" data-history-clear>Clear my answer history…</button>
+    </div>
     <p class="small muted">Every set of questions you have answered, with your marks. Open one to see your answers, the feedback and the mark scheme, or to try the questions again.</p>
     <div data-history></div>
   </section>
 
-  <section class="card pr-panel" data-panel="coach" role="tabpanel" hidden>
+  <section class="card pr-panel pr-coach" data-panel="coach" role="tabpanel" hidden>
     <h2>Exam coach</h2>
     <p class="small muted">Claude looks at everything you have answered here and your flashcards, tells you where you are losing marks, and what would help. Only you can see this conversation.</p>
     <div class="pr-stats" data-stats></div>
@@ -293,7 +292,7 @@
       <span class="small muted" data-card-counts></span>
       <span class="pr-actions">
         <button type="button" class="small" data-card-timer aria-pressed="false" title="Time how long you take">&#9201; <span data-card-clock>Timer</span></button>
-        <button type="button" class="small" data-card-explain>Explain this card</button>
+        <button type="button" class="small" data-card-explain>Ask Claude to explain this card</button>
         <button type="button" class="small" data-card-edit>Edit</button>
         <button type="button" class="small" data-card-add>Add a card</button>
         <button type="button" class="small danger" data-card-delete>Delete card</button>

@@ -124,14 +124,16 @@
   }
 
   // ---------- tabs ----------
-  const TABS = ["questions", "hub", "papers", "cards", "guides", "history", "coach"];
+  const TABS = ["questions", "hub", "cards", "guides", "mindmaps", "ask", "history", "coach"];
   // Views opened from a tab keep that tab highlighted.
-  const PARENT = { quiz: null, study: "cards", report: "guides" };
+  const PARENT = { quiz: null, study: "cards", report: "guides", mindmap: "mindmaps" };
+  /** The tab named in the address (#hub, or #hub?years=2024 from a link with filters set). */
+  const hashTab = () => location.hash.slice(1).split("?")[0];
   function show(name) {
     if (name !== "report") stopListening();
     if (name !== "study") stopTimer();
     $$("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== name; });
-    const tab = TABS.includes(name) ? name : PARENT[name] !== undefined ? PARENT[name] || location.hash.slice(1) : "";
+    const tab = TABS.includes(name) ? name : PARENT[name] !== undefined ? PARENT[name] || hashTab() : "";
     $$("[data-tab]").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false"));
     // On a phone the tab row scrolls sideways: keep the chosen tab in view.
     const sel = $(`[data-tab="${tab}"]`);
@@ -139,10 +141,11 @@
     if (TABS.includes(name) && location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
     if (name === "history") loadHistory();
     if (name === "cards") loadDecks();
-    if (name === "coach") loadCoach();
+    if (name === "coach") coachChat.load();
+    if (name === "ask") askChat.load();
     if (name === "guides") loadReports();
+    if (name === "mindmaps") loadMaps();
     if (name === "hub") loadHub();
-    if (name === "papers") loadPaperJobs();
     window.scrollTo({ top: 0 });
   }
   // Arrow keys move between the tabs (the tab pattern).
@@ -156,7 +159,7 @@
     tabs[next].focus();
     show(tabs[next].dataset.tab);
   });
-  window.addEventListener("hashchange", () => { const t = location.hash.slice(1); if (TABS.includes(t)) show(t); });
+  window.addEventListener("hashchange", () => { if (TABS.includes(hashTab())) openFromHash(); });
   $$("[data-tab]").forEach((b) => b.addEventListener("click", () => show(b.dataset.tab)));
 
   // ---------- choice groups with "Select all" ----------
@@ -249,13 +252,14 @@
     paperSel.value = [...paperSel.options].some((o) => o.value === keepPaper) ? keepPaper : "";
     $("[data-gen-paper-row]").hidden = !meta.profiles.length;
     genPaperChanged();
-    $("#pr-quals").replaceChildren(...(meta.qualifications || []).map((q) => new Option(q)));
-    renderDocs();
-    renderGuides();
+    pick.mapTopics = choices("map-topics", topics);
+    pick.askTopics = choices("ask-topics", topics, { checked: false });
+    askScope();
+    drawBuilding();
     const usePapers = $("[data-gen-form] [name=use_papers]");
     usePapers.disabled = !meta.paperQuestions;
     usePapers.checked = !!meta.paperQuestions;
-    usePapers.parentElement.title = meta.paperQuestions ? `${meta.paperQuestions} past paper questions in the hub` : "Add past papers under Past papers first";
+    usePapers.parentElement.title = meta.paperQuestions ? `${meta.paperQuestions} past paper questions in the hub` : "No past papers have been added yet (an admin adds them on the admin page)";
     renderPapers();
     if (!hubState.sourceSet) { hubState.sourceSet = true; hubForm.querySelector("[name=source]").value = defaultSource(); }
   }
@@ -560,13 +564,22 @@
     if (a.marks === null || a.marks === undefined) top.append(make("strong", "pr-mark is-pending", fb.error ? "Not marked" : "Marking…"));
     else top.append(make("strong", `pr-mark ${a.marks === a.total ? "is-full" : a.marks === 0 ? "is-zero" : "is-part"}`, `${a.marks} / ${a.total}`));
     if (q.check && !q.attempt) top.append(make("span", "muted small", "Checked. It counts when you hand in."));
-    const explain = make("button", "small linklike", "Explain this to me");
+    const explain = make("button", "small linklike", "Ask Claude to explain this");
     explain.type = "button";
     explain.addEventListener("click", () => {
       const yours = q.type === "written" ? (a.answer && a.answer.text) || "" : q.type === "fill" ? ((a.answer && a.answer.blanks) || []).join(" / ") : q.type === "single" ? q.options[a.answer && a.answer.choice] || "" : ((a.answer && a.answer.choices) || []).map((i) => q.options[i]).join("; ");
       const text = make("div");
       text.innerHTML = q.html;
-      askCoach(`Explain question ${n + 1} to me${a.marks !== null && a.marks !== undefined ? ` (I got ${a.marks} out of ${a.total})` : ""}: what the right answer is, why, and what I should have done.\n\nQuestion: ${text.textContent.trim().slice(0, 1500)}\n\nMy answer: ${String(yours).slice(0, 2000) || "(none)"}`);
+      const scheme = make("div");
+      scheme.innerHTML = q.schemeHtml || "";
+      const opts = q.options && q.options.length ? `\nOptions: ${q.options.map((o, i) => `${String.fromCharCode(65 + i)}) ${o}`).join("; ")}` : "";
+      const marking = [
+        a.marks !== null && a.marks !== undefined ? `Marks: ${a.marks} out of ${a.total}` : "",
+        fb.feedback ? `Feedback: ${String(fb.feedback).slice(0, 1200)}` : "",
+        fb.missed && fb.missed.length ? `Missed: ${fb.missed.join("; ").slice(0, 800)}` : "",
+        scheme.textContent.trim() ? `Mark scheme: ${scheme.textContent.trim().slice(0, 1500)}` : "",
+      ].filter(Boolean).join("\n");
+      askClaude(`Explain question ${n + 1} to me: what the right answer is, why, and what I should have done to get full marks.\n\nQuestion: ${text.textContent.trim().slice(0, 1500)}${opts}\n\nMy answer: ${String(yours).slice(0, 2000) || "(none)"}${marking ? `\n\n${marking}` : ""}`);
     });
     top.append(explain);
     box.appendChild(top);
@@ -835,130 +848,6 @@
     sel.replaceChildren(new Option("Any paper", ""));
     for (const p of meta.papers) sel.appendChild(new Option(p.qualification ? `${p.title} · ${p.qualification}` : p.title, String(p.id)));
     sel.value = [...sel.options].some((o) => o.value === keep) ? keep : "";
-    renderYears();
-  }
-
-  // A document about one exam year (an examiner report, commentary or guidance for a dated series).
-  const ofYear = (d) => d.year > 0 && d.kind !== "specification";
-
-  /** One section per exam year: its papers, its documents and the examiners' notes on the year as a whole. */
-  function renderYears() {
-    const box = $("[data-years]");
-    const open = new Set($$("details.pr-year[open]", box).map((d) => d.dataset.year));
-    const first = !box.dataset.drawn;
-    box.dataset.drawn = "1";
-    box.replaceChildren();
-    const notes = meta.years || [];
-    const years = [...new Set([...meta.papers.map((p) => p.year), ...meta.docs.filter(ofYear).map((d) => d.year), ...notes.map((y) => y.year)].filter((y) => y > 0))].sort((a, b) => b - a);
-    const undated = meta.papers.filter((p) => !(p.year > 0));
-    if (!years.length && !undated.length) {
-      box.appendChild(make("p", "muted small", "No past papers yet."));
-      return;
-    }
-    const quals = new Set([...meta.papers.map((p) => p.qualification), ...notes.map((y) => y.qualification)].filter(Boolean));
-    const section = (key, title, papers, docs, yearNotes) => {
-      const d = make("details", "pr-guide pr-year");
-      d.dataset.year = key;
-      d.open = open.has(key) || (first && key === String(years[0]));
-      const sum = make("summary");
-      sum.append(make("strong", "", title));
-      const qs = papers.reduce((n, p) => n + p.questions, 0);
-      const bits = [plural(papers.length, "paper"), plural(qs, "question")];
-      if (docs.length) bits.push(plural(docs.length, "document"));
-      sum.append(make("span", "muted small", bits.join(" · ")));
-      d.appendChild(sum);
-      for (const y of yearNotes) d.appendChild(yearNotesBox(y, quals.size > 1));
-      if (!yearNotes.length && docs.length) {
-        const building = (meta.buildingProfiles || []).length;
-        d.appendChild(make("p", "muted small", building ? "Claude is writing the examiners' notes for this year…" : "No examiners' notes for this year yet: they are written when the guides are built."));
-      }
-      if (papers.length) {
-        d.appendChild(make("h3", "pr-h3", "Papers"));
-        d.appendChild(paperTable(papers));
-      }
-      if (docs.length) {
-        d.appendChild(make("h3", "pr-h3", "Documents"));
-        d.appendChild(docTable(docs));
-      }
-      if (papers.length && key !== "undated") {
-        const act = make("div", "pr-actions");
-        const go = make("button", "", `Show ${key}'s questions`);
-        go.type = "button";
-        go.addEventListener("click", () => {
-          hubWith(() => { $$("[data-choices=hub-years] .pr-chip input").forEach((c) => { c.checked = c.value === key; }); });
-        });
-        act.appendChild(go);
-        d.appendChild(act);
-      }
-      box.appendChild(d);
-    };
-    for (const y of years) {
-      section(String(y), String(y), meta.papers.filter((p) => p.year === y), meta.docs.filter((d) => ofYear(d) && d.year === y), notes.filter((n) => n.year === y));
-    }
-    if (undated.length) section("undated", "Sample and undated papers", undated, [], []);
-  }
-
-  /** What examiners said about one year of one qualification. */
-  function yearNotesBox(y, showQual) {
-    const n = y.notes || {};
-    const box = make("div", "pr-year-notes");
-    box.appendChild(make("h3", "", showQual && y.qualification ? `Examiners' notes · ${y.qualification}` : "Examiners' notes"));
-    if (n.overview) box.appendChild(make("p", "", n.overview));
-    for (const [k, title] of [["went_well", "What went well"], ["common_mistakes", "Common mistakes"], ["advice", "Advice for next time"]]) {
-      const items = n[k] || [];
-      if (!items.length) continue;
-      box.appendChild(make("h3", "", title));
-      const ul = make("ul", "small");
-      items.forEach((i, n) => { const li = make("li", "", i); if (n >= 5) li.hidden = true; ul.appendChild(li); });
-      box.appendChild(ul);
-      if (items.length > 5) {
-        const more = make("button", "linklike small pr-show-all", `Show all ${items.length}`);
-        more.type = "button";
-        more.setAttribute("aria-expanded", "false");
-        more.addEventListener("click", () => {
-          const open = more.getAttribute("aria-expanded") !== "true";
-          $$("li", ul).forEach((li, n) => { if (n >= 5) li.hidden = !open; });
-          more.setAttribute("aria-expanded", open ? "true" : "false");
-          more.textContent = open ? "Show fewer" : `Show all ${items.length}`;
-        });
-        box.appendChild(more);
-      }
-    }
-    return box;
-  }
-
-  function paperTable(papers) {
-    const box = make("div");
-    const wrap = make("div", "table-wrap");
-    const t = make("table", "table small");
-    t.innerHTML = "<thead><tr><th>Paper</th><th>Qualification</th><th>Questions</th><th>Added by</th><th></th></tr></thead>";
-    const tb = make("tbody");
-    for (const p of papers) {
-      const tr = make("tr");
-      tr.appendChild(make("td", "", p.title));
-      tr.appendChild(make("td", "muted", p.qualification || ""));
-      tr.appendChild(make("td", "", String(p.questions)));
-      tr.appendChild(make("td", "", p.by));
-      const act = make("td", "actions");
-      if (p.examUrl) { const a = make("a", "button", "Paper"); a.href = p.examUrl; a.target = "_blank"; act.appendChild(a); }
-      if (p.schemeUrl) { const a = make("a", "button", "Mark scheme"); a.href = p.schemeUrl; a.target = "_blank"; act.appendChild(a); }
-      (p.insertUrls || []).forEach((u, i, all) => { const a = make("a", "button", all.length > 1 ? `Insert ${i + 1}` : "Insert"); a.href = u; a.target = "_blank"; act.appendChild(a); });
-      if (p.canDelete) {
-        const b = make("button", "danger", "Remove");
-        b.type = "button";
-        b.addEventListener("click", async () => {
-          if (!window.confirm(`Remove "${p.title}" and its ${plural(p.questions, "question")} from the hub? Answers already given stay in History.`)) return;
-          try { await api("DELETE", `practice/papers/${p.id}`); await loadMeta(); loadHub(); } catch (e) { alertBox(box, e.message); }
-        });
-        act.appendChild(b);
-      }
-      tr.appendChild(act);
-      tb.appendChild(tr);
-    }
-    t.appendChild(tb);
-    wrap.appendChild(t);
-    box.appendChild(wrap);
-    return box;
   }
 
   // ---------- the question hub: a catalogue with filters on the left ----------
@@ -1120,13 +1009,17 @@
         empty.append(make("strong", "", nothing ? "The question hub is empty." : "No questions here yet."));
         empty.append(make("p", "muted small", "Add past papers and their mark schemes and every question is filed here, or have Claude write some questions for you."));
         const act = make("div", "pr-actions");
-        const add = make("button", "primary", "Add past papers");
-        add.type = "button";
-        add.addEventListener("click", () => show("papers"));
+        if (host.dataset.admin === "1") {
+          const add = make("a", "button primary", "Add past papers");
+          add.href = `/admin/vaults/${vault}/papers`;
+          act.appendChild(add);
+        } else {
+          empty.appendChild(make("p", "muted small", "An admin adds past papers on the admin page."));
+        }
         const write = make("button", "", "Write questions");
         write.type = "button";
         write.addEventListener("click", () => show("questions"));
-        act.append(add, write);
+        act.append(write);
         empty.appendChild(act);
       }
       if (hubState.seq === seq) hubList.appendChild(empty);
@@ -1156,12 +1049,6 @@
   $("[data-filters-open]").addEventListener("click", () => openFilters(true));
   $$("[data-filters-close]").forEach((b) => b.addEventListener("click", () => openFilters(false)));
   store.addEventListener("keydown", (e) => { if (e.key === "Escape" && store.classList.contains("show-filters")) openFilters(false); });
-  /** Open the hub with one filter set (from a paper guide or an exam year). */
-  function hubWith(set) {
-    clearFilters();
-    set();
-    show("hub");
-  }
   function clearFilters() {
     hubForm.querySelector("[name=source]").value = defaultSource();
     $("[data-paper-filter]").value = "";
@@ -1197,12 +1084,21 @@
       refreshStatus.hidden = true;
     }
   }
+  /** While the paper guides are being built (the filters refreshed), check again every few seconds. */
+  let buildTimer = 0;
+  function drawBuilding() {
+    window.clearTimeout(buildTimer);
+    const building = meta.buildingProfiles || [];
+    const qualName = (q) => (meta.qualifications || []).find((x) => x.toLowerCase() === String(q).toLowerCase()) || q;
+    drawRefresh(building.map(qualName), meta.failedProfiles || []);
+    if (building.length) buildTimer = window.setTimeout(() => loadMeta().then(() => { if (!$("[data-panel=hub]").hidden) loadHub(); }, () => {}), 5000);
+  }
   refreshBtn.addEventListener("click", async () => {
     if (!window.confirm("Refresh the filters? Claude reads every past question in the hub again and sorts each by question type, specification area and topic. It takes a minute or two and uses your Claude credit.")) return;
     refreshBtn.disabled = true;
     try {
       await api("POST", "practice/profiles/rebuild", {});
-      await refreshLists();
+      await loadMeta();
     } catch (e) {
       toast(e.message, "error");
       refreshBtn.disabled = false;
@@ -1223,335 +1119,6 @@
       openSession(r.id);
     } catch (e) { alertBox($("[data-panel=hub]"), e.message); }
   });
-
-  // ---------- adding a past paper (uploaded in pieces, read by the ingest worker) ----------
-  const CHUNK = 64 * 1024 * 1024;
-  function sendChunk(bid, file, offset, onSent) {
-    return new Promise((resolve, reject) => {
-      const end = Math.min(offset + CHUNK, file.size);
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${base}/ingest/batches/${bid}/files`);
-      xhr.setRequestHeader("X-CSRF-Token", csrf);
-      xhr.setRequestHeader("X-Upload-Name", encodeURIComponent(file.name));
-      xhr.setRequestHeader("X-Upload-Size", String(file.size));
-      xhr.setRequestHeader("X-Upload-Offset", String(offset));
-      xhr.upload.onprogress = (e) => onSent(offset + Math.min(e.loaded, end - offset));
-      xhr.onload = () => {
-        let data = null;
-        try { data = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
-        if (xhr.status >= 200 && xhr.status < 300) resolve(data);
-        else if (xhr.status === 409 && data && typeof data.received === "number") resolve({ received: data.received, resync: true });
-        else reject(new ApiError((data && data.error) || `The server answered ${xhr.status}.`));
-      };
-      xhr.onerror = () => reject(new ApiError("The upload was interrupted. Check your connection and try again."));
-      const form = new FormData();
-      form.append("chunk", file.slice(offset, end), "chunk");
-      xhr.send(form);
-    });
-  }
-  async function sendFile(bid, file, onSent) {
-    let offset = 0;
-    for (;;) {
-      const r = await sendChunk(bid, file, offset, onSent);
-      offset = r.received;
-      onSent(offset);
-      if (offset >= file.size && !r.resync) return;
-    }
-  }
-  const paperForm = $("[data-paper-form]");
-  const jobsEl = $("[data-paper-jobs]");
-  let jobsTimer = 0;
-  paperForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const f = new FormData(paperForm);
-    const title = String(f.get("title") || "").trim();
-    const chosen = [["exam", f.get("exam")], ["scheme", f.get("scheme")], ["insert", f.get("insert")]].filter(([, x]) => x && x.size);
-    const files = chosen.map(([, x]) => x);
-    if (!title || !chosen.length || chosen[0][0] !== "exam") return;
-    const tooBig = files.find((x) => x.size > meta.maxFileBytes);
-    if (tooBig) { alertBox(paperForm, `${tooBig.name} is too large.`); return; }
-    const btn = paperForm.querySelector("button[type=submit]");
-    btn.disabled = true;
-    const row = make("li", "job");
-    row.append(make("strong", "", title), make("span", "job-status", "Uploading…"));
-    jobsEl.prepend(row);
-    let bid = null;
-    try {
-      bid = (await api("POST", "ingest/batches", { kind: "paper", title, parts: chosen.map(([part]) => part) })).id;
-      const total = files.reduce((n, x) => n + x.size, 0);
-      let done = 0;
-      for (const file of files) {
-        await sendFile(bid, file, (sent) => { row.lastChild.textContent = `Uploading… ${pct(done + sent, total)}%`; });
-        done += file.size;
-      }
-      await api("POST", `ingest/batches/${bid}/start`);
-      row.remove();
-      paperForm.reset();
-      loadPaperJobs();
-    } catch (err) {
-      if (bid) { try { await api("POST", `ingest/batches/${bid}/cancel`); } catch { /* gone */ } }
-      row.classList.add("is-failed");
-      row.lastChild.textContent = `Not added: ${err.message}`;
-    } finally {
-      btn.disabled = false;
-    }
-  });
-  const zipForm = $("[data-zip-form]");
-  zipForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const file = new FormData(zipForm).get("zip");
-    if (!file || !file.size) return;
-    const btn = zipForm.querySelector("button[type=submit]");
-    btn.disabled = true;
-    const row = make("li", "job");
-    row.append(make("strong", "", file.name), make("span", "job-status", "Uploading…"));
-    jobsEl.prepend(row);
-    let bid = null;
-    try {
-      bid = (await api("POST", "ingest/batches", { kind: "paper", zip: true })).id;
-      await sendFile(bid, file, (sent) => { row.lastChild.textContent = `Uploading… ${pct(sent, file.size)}%`; });
-      await api("POST", `ingest/batches/${bid}/start`);
-      row.remove();
-      zipForm.reset();
-      loadPaperJobs();
-    } catch (err) {
-      if (bid) { try { await api("POST", `ingest/batches/${bid}/cancel`); } catch { /* gone */ } }
-      row.classList.add("is-failed");
-      row.lastChild.textContent = `Not added: ${err.message}`;
-    } finally {
-      btn.disabled = false;
-    }
-  });
-
-  const specForm = $("[data-spec-form]");
-  specForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const f = new FormData(specForm);
-    const file = f.get("spec");
-    if (!file || !file.size) return;
-    if (file.size > meta.maxFileBytes) { alertBox(specForm, `${file.name} is too large.`); return; }
-    const btn = specForm.querySelector("button[type=submit]");
-    btn.disabled = true;
-    const row = make("li", "job");
-    row.append(make("strong", "", file.name), make("span", "job-status", "Uploading…"));
-    jobsEl.prepend(row);
-    let bid = null;
-    try {
-      bid = (await api("POST", "ingest/batches", { kind: "paper", spec: true, title: String(f.get("qualification") || "").trim() })).id;
-      await sendFile(bid, file, (sent) => { row.lastChild.textContent = `Uploading… ${pct(sent, file.size)}%`; });
-      await api("POST", `ingest/batches/${bid}/start`);
-      row.remove();
-      specForm.reset();
-      loadPaperJobs();
-    } catch (err) {
-      if (bid) { try { await api("POST", `ingest/batches/${bid}/cancel`); } catch { /* gone */ } }
-      row.classList.add("is-failed");
-      row.lastChild.textContent = `Not added: ${err.message}`;
-    } finally {
-      btn.disabled = false;
-    }
-  });
-
-  // ---------- exam documents and paper guides ----------
-  function renderDocs() {
-    const box = $("[data-docs]");
-    box.replaceChildren();
-    const course = meta.docs.filter((d) => !ofYear(d));
-    if (!course.length) { box.appendChild(make("p", "muted small", meta.docs.length ? "None: every document so far is about one exam year, under Papers by year." : "No specifications, examiner reports, commentaries or guidance yet.")); return; }
-    box.appendChild(docTable(course));
-  }
-
-  function docTable(docs) {
-    const box = make("div");
-    const wrap = make("div", "table-wrap");
-    const t = make("table", "table small");
-    t.innerHTML = "<thead><tr><th>Document</th><th>Kind</th><th>Qualification</th><th>Paper / series</th><th></th></tr></thead>";
-    const tb = make("tbody");
-    for (const d of docs) {
-      const tr = make("tr");
-      const name = make("td");
-      name.appendChild(make("strong", "", d.title));
-      if (d.summary) name.appendChild(make("div", "muted", d.summary));
-      tr.appendChild(name);
-      tr.appendChild(make("td", "nowrap", d.kindLabel));
-      tr.appendChild(make("td", "", d.qualification || ""));
-      tr.appendChild(make("td", "nowrap", [d.paperNumber, d.month, d.year || ""].filter(Boolean).join(" ")));
-      const act = make("td", "actions");
-      if (d.url) { const a = make("a", "button", "Open"); a.href = d.url; a.target = "_blank"; act.appendChild(a); }
-      if (d.canDelete) {
-        const b = make("button", "danger", "Remove");
-        b.type = "button";
-        b.addEventListener("click", async () => {
-          if (!window.confirm(`Remove "${d.title}"? Build the guides again afterwards to leave it out of them.`)) return;
-          try { await api("DELETE", `practice/docs/${d.id}`); await loadMeta(); } catch (e) { alertBox(box, e.message); }
-        });
-        act.appendChild(b);
-      }
-      tr.appendChild(act);
-      tb.appendChild(tr);
-    }
-    t.appendChild(tb);
-    wrap.appendChild(t);
-    box.appendChild(wrap);
-    return box;
-  }
-
-  let guidesTimer = 0;
-  /** A qualification as it is printed (the server reports the ones being built in lower case). */
-  const qualName = (q) => (meta.qualifications || []).find((x) => x.toLowerCase() === String(q).toLowerCase()) || q;
-  function renderGuides() {
-    window.clearTimeout(guidesTimer);
-    const box = $("[data-guides]");
-    const status = $("[data-guides-status]");
-    box.replaceChildren();
-    const building = meta.buildingProfiles || [];
-    const failed = meta.failedProfiles || [];
-    const bits = [];
-    if (building.length) bits.push(`Claude is building the guides for ${building.map(qualName).join(", ")}… (this takes a minute or two)`);
-    for (const f of failed) bits.push(`The guides for ${f.qualification} could not be built: ${f.error}`);
-    status.textContent = bits.join(" ");
-    status.className = `small ${failed.length && !building.length ? "pr-bad" : "muted"}`;
-    if (!meta.profiles.length && !building.length) box.appendChild(make("p", "muted small", "No guides yet. Add a specification or past papers and they are built automatically."));
-    for (const p of meta.profiles) {
-      const d = make("details", "pr-guide");
-      const sum = make("summary");
-      sum.append(make("strong", "", p.title));
-      if (p.qualification) sum.append(make("span", "muted small", p.qualification));
-      sum.append(make("span", "muted small", `${p.fields.length} fields · ${p.fields.reduce((n, f) => n + f.questions, 0)} tagged questions`));
-      d.appendChild(sum);
-      const fields = make("div", "pr-fields");
-      for (const f of p.fields) {
-        const b = make("button", "pr-field", f.label);
-        b.type = "button";
-        b.title = "Show the past questions on this area";
-        b.appendChild(make("span", "muted", String(f.questions)));
-        b.addEventListener("click", () => {
-          hubWith(() => {
-            $$("[data-choices=hub-spec] .pr-chip input").forEach((c) => { c.checked = c.value === f.label; });
-            hubForm.querySelector("[name=source]").value = "";
-          });
-        });
-        fields.appendChild(b);
-      }
-      d.appendChild(fields);
-      const body = make("div", "prose small pr-guide-body");
-      body.innerHTML = p.html;
-      d.appendChild(body);
-      const act = make("div", "pr-actions");
-      const go = make("button", "primary", "Write questions for this paper");
-      go.type = "button";
-      go.addEventListener("click", () => { show("questions"); $("[data-gen-paper]").value = String(p.id); genPaperChanged(); });
-      act.appendChild(go);
-      d.appendChild(act);
-      box.appendChild(d);
-    }
-    $("[data-guides-rebuild]").disabled = !!building.length || !(meta.qualifications || []).length;
-    drawRefresh(building.map(qualName), failed);
-    if (building.length) guidesTimer = window.setTimeout(() => loadMeta().then(() => { if (!$("[data-panel=hub]").hidden) loadHub(); }), 5000);
-  }
-  $("[data-guides-rebuild]").addEventListener("click", async () => {
-    try { await api("POST", "practice/profiles/rebuild", {}); await loadMeta(); } catch (e) { alertBox($("[data-panel=papers]"), e.message); }
-  });
-
-  // Admins only: clear everything the question hub holds for this vault.
-  const wipeBox = $("[data-wipe]");
-  if (wipeBox) {
-    $("[data-wipe-go]", wipeBox).addEventListener("click", async (e) => {
-      const btn = e.currentTarget;
-      const files = $("input[name=files]", wipeBox).checked;
-      const n = meta ? meta.papers.length : 0;
-      const typed = window.prompt(
-        `This deletes ${plural(n, "past paper")} and all their questions, ${plural(meta ? meta.docs.length : 0, "exam document")}, the paper guides and the year notes${files ? ", and moves the exam files to the vault's trash" : ""}. It cannot be undone.\n\nType the vault's name to confirm:`,
-        "",
-      );
-      if (typed === null) return;
-      btn.disabled = true;
-      try {
-        const r = await api("POST", "practice/wipe", { confirm: typed, files });
-        selected.clear();
-        await loadMeta();
-        loadHub();
-        alertBox($("div", wipeBox), `Cleared: ${plural(r.papers, "paper")} (${plural(r.questions, "question")}), ${plural(r.docs, "document")}, ${plural(r.guides, "guide")}, ${plural(r.years, "year")} of notes${r.filesMoved ? "; the exam files are in the vault's trash" : ""}.`, "ok");
-      } catch (err) {
-        alertBox($("div", wipeBox), err.message);
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  }
-
-  async function loadPaperJobs() {
-    window.clearTimeout(jobsTimer);
-    let r;
-    try { r = await api("GET", "ingest/batches?kind=paper"); } catch { return; }
-    const recent = r.batches.filter((b) => b.status !== "uploading" && (["queued", "running"].includes(b.status) || Date.now() / 1000 - b.updatedAt < 3600));
-    $$("li[data-bid]", jobsEl).forEach((li) => li.remove());
-    let active = false;
-    for (const b of recent) {
-      const li = make("li", `job ${b.status === "done" ? "is-done" : b.status === "failed" ? "is-failed" : ""}`);
-      li.dataset.bid = b.id;
-      const p = b.progress || {};
-      const steps = p.steps || {};
-      let text;
-      if (b.status === "queued") text = "Waiting to start…";
-      else if (b.status === "running") {
-        active = true;
-        const clock = `${Math.floor((steps.plan && steps.plan.elapsed) / 60 || 0)}:${String(((steps.plan && steps.plan.elapsed) || 0) % 60).padStart(2, "0")}`;
-        if (steps.plan && steps.plan.state === "working") text = `${steps.plan.note || "Claude is reading the paper"}… (${clock})`;
-        else if (b.meta && b.meta.zip && steps.file && steps.file.state === "working") text = `Adding papers and reading documents: ${steps.file.done} of ${steps.file.of} done…`;
-        else if (steps.file && steps.file.state === "working") text = "Adding the questions to the hub…";
-        else if (b.meta && b.meta.zip && steps.read && steps.read.state === "working") text = `Looking at each document (${steps.read.done} of ${steps.read.of})…`;
-        else text = ((p.files || []).find((f) => f.state === "working") || {}).text || "Reading the files…";
-      } else text = p.summary || b.status;
-      const jobTitle = b.meta && b.meta.spec ? `Specification: ${b.files.join(", ")}` : (b.meta && !b.meta.zip && b.meta.title) || b.files.join(", ");
-      li.append(make("strong", "", jobTitle), make("span", "job-status", text));
-      // A zip: what was found in it, paper by paper.
-      if (b.meta && b.meta.zip && (p.files || []).length > 1) {
-        const d = make("details", "pr-more pr-job-files");
-        d.open = b.status === "running" || openJobs.has(b.id);
-        d.addEventListener("toggle", () => { if (d.open) openJobs.add(b.id); else openJobs.delete(b.id); });
-        d.appendChild(make("summary", "", "What was in the zip"));
-        const ul = make("ul", "small");
-        for (const f of p.files.slice(1)) {
-          const item = make("li", `pr-job-file is-${f.state}`);
-          item.append(make("strong", "", f.name), document.createTextNode(` · ${f.text || ""}`));
-          if (f.detail) item.appendChild(make("div", "muted", f.detail));
-          ul.appendChild(item);
-        }
-        if (p.files[0] && p.files[0].detail) ul.appendChild(make("li", "muted", p.files[0].detail));
-        d.appendChild(ul);
-        li.appendChild(d);
-      }
-      if (b.status === "queued" || b.status === "running") {
-        const stop = make("button", "linklike small", "Stop");
-        stop.type = "button";
-        stop.addEventListener("click", async () => { try { await api("POST", `ingest/batches/${b.id}/cancel`); } catch { /* ignore */ } loadPaperJobs(); });
-        li.appendChild(stop);
-      }
-      jobsEl.appendChild(li);
-      const finished = ["done", "failed", "cancelled"].includes(b.status);
-      if (finished && !seenDone.has(b.id)) { seenDone.add(b.id); if (seenDone.ready) { loadMeta().then(loadHub); } }
-      // While a zip is being added, show each paper and document in the lists as it is saved.
-      const done = (steps.file && steps.file.done) || 0;
-      if (b.status === "running" && done > (seenProgress.get(b.id) || 0)) {
-        seenProgress.set(b.id, done);
-        if (Date.now() - listsRefreshed > 10000) { listsRefreshed = Date.now(); refreshLists(); }
-      }
-    }
-    seenDone.ready = true;
-    if (active || recent.some((b) => b.status === "queued")) jobsTimer = window.setTimeout(loadPaperJobs, 3000);
-  }
-  const seenDone = new Set();
-  const seenProgress = new Map();
-  let listsRefreshed = 0;
-  const openJobs = new Set();
-  /** Redraw the papers, documents and guides from the server without resetting the filters being used. */
-  async function refreshLists() {
-    try { meta = await api("GET", "practice/meta"); } catch { return; }
-    renderDocs();
-    renderGuides();
-    renderPapers();
-  }
 
   // ---------- flashcards ----------
   const cardsForm = $("[data-cards-form]");
@@ -1721,7 +1288,7 @@
   $("[data-card-explain]").addEventListener("click", () => {
     if (!st.order.length) return;
     const c = st.deck.items[st.order[st.at]];
-    askCoach(`Explain this flashcard to me in more depth, with an example, and how it could come up in an exam.\n\nFront: ${c.front}\nBack: ${c.back}`);
+    askClaude(`Explain this flashcard to me in more depth, with an example, and how it could come up in an exam.\n\nFront: ${c.front}\nBack: ${c.back}`);
   });
 
   // A stopwatch, to time a run through the deck.
@@ -1831,12 +1398,13 @@
     let r;
     try { r = await api("GET", "practice/reports"); } catch (e) { $("[data-reports]").textContent = e.message; return; }
     if (!reportKinds.length) { reportKinds = r.kinds; drawKinds(); }
+    const reports = r.reports.filter((d) => d.kind !== "mind_map");
     const box = $("[data-reports]");
     box.replaceChildren();
     box.appendChild(make("h2", "pr-h2", "Your study guides"));
-    if (!r.reports.length) { box.appendChild(make("p", "muted small", "None yet.")); return; }
+    if (!reports.length) { box.appendChild(make("p", "muted small", "None yet.")); return; }
     const ul = make("ul", "pr-decks");
-    for (const d of r.reports) {
+    for (const d of reports) {
       const li = make("li", "pr-deck");
       const info = make("div");
       info.append(make("strong", "", d.title));
@@ -1863,7 +1431,7 @@
       ul.appendChild(li);
     }
     box.appendChild(ul);
-    if (r.reports.some((d) => d.status === "generating")) reportsTimer = window.setTimeout(loadReports, 3000);
+    if (reports.some((d) => d.status === "generating")) reportsTimer = window.setTimeout(loadReports, 3000);
   }
 
   reportForm.addEventListener("submit", async (e) => {
@@ -1966,6 +1534,7 @@
     let r;
     try { r = await api("GET", "practice/sessions"); } catch (e) { box.textContent = e.message; return; }
     box.replaceChildren();
+    $("[data-history-clear]").hidden = !r.sessions.length;
     if (!r.sessions.length) { box.appendChild(make("p", "muted small", "Nothing answered yet.")); return; }
     const wrap = make("div", "table-wrap");
     const t = make("table", "table small");
@@ -1989,147 +1558,556 @@
     wrap.appendChild(t);
     box.appendChild(wrap);
   }
+  $("[data-history-clear]").addEventListener("click", async (e) => {
+    if (!window.confirm("Delete every set of questions you have answered in this vault, with your answers, marks and feedback?\n\nYour history and the exam coach's results start again from nothing. The questions, flashcards, study guides and mind maps are kept. This cannot be undone.")) return;
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "practice/history/clear", {});
+      toast(`Cleared ${plural(r.sessions, "set")} of questions (${plural(r.answers, "answer")}).`);
+      quiz.id = null;
+      quiz.data = null;
+      await loadHistory();
+    } catch (err) { toast(err.message, "error"); } finally { btn.disabled = false; }
+  });
 
-  // ---------- exam coach ----------
-  const chat = $("[data-chat]");
-  const chatForm = $("[data-chat-form]");
-  const SUGGEST = [
-    "Where am I losing the most marks?",
-    "What should I revise this week?",
-    "How do I write a good answer to a 9-mark question?",
-    "Which topics am I strongest in?",
-    "Quiz me with three quick questions on my weakest topic.",
-  ];
-  function renderCoach(r) {
-    const s = r.stats;
+  // ---------- conversations: the exam coach and Ask Claude ----------
+  /**
+   * A chat in one panel ([data-chat], [data-chat-form], [data-chat-suggest], [data-chat-clear] inside it), talking to
+   * practice/<path>. extra() adds to each message sent; onView(reply) draws anything else the reply carries.
+   */
+  function chatBox(panel, { path, suggest, empty, thinking, noteName, extra = () => ({}), onView = () => {}, clearText }) {
+    const log = $("[data-chat]", panel);
+    const form = $("[data-chat-form]", panel);
+    const ta = form.querySelector("textarea");
+    let loading = Promise.resolve();
+    let busy = false;
+    function message(m) {
+      const d = make("div", `pr-msg ${m.role === "user" ? "is-user" : "is-coach"}`);
+      if (m.role === "user") { d.textContent = m.text; return d; }
+      const body = make("div", "prose");
+      body.innerHTML = m.html;
+      d.appendChild(body);
+      const act = make("div", "pr-msg-actions");
+      const copy = make("button", "linklike small", "Copy");
+      copy.type = "button";
+      copy.addEventListener("click", () => copyText(m.text));
+      const save = make("button", "linklike small", "Save as a note");
+      save.type = "button";
+      save.addEventListener("click", async () => {
+        save.disabled = true;
+        try {
+          const day = new Date((m.at || Date.now() / 1000) * 1000).toISOString().slice(0, 10);
+          const r = await saveNote("Study guides", `${noteName} ${day}`, `${m.text}\n`);
+          toast(`Saved as ${r.path}.`);
+        } catch (e) { toast(e.message, "error"); } finally { save.disabled = false; }
+      });
+      act.append(copy, save);
+      d.appendChild(act);
+      return d;
+    }
+    function draw(r) {
+      onView(r);
+      log.replaceChildren();
+      if (!r.messages.length) log.appendChild(make("p", "muted small", empty));
+      for (const m of r.messages) log.appendChild(message(m));
+      log.scrollTop = log.scrollHeight;
+      const box = $("[data-chat-suggest]", panel);
+      box.replaceChildren();
+      for (const t of suggest) {
+        const b = make("button", "pr-suggestion small", t);
+        b.type = "button";
+        b.addEventListener("click", () => { ta.value = t; form.requestSubmit(); });
+        box.appendChild(b);
+      }
+    }
+    function load() {
+      loading = api("GET", `practice/${path}`).then(draw, (e) => { log.textContent = e.message; });
+      return loading;
+    }
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = ta.value.trim();
+      if (!text || busy) return;
+      busy = true;
+      const btn = form.querySelector("button[type=submit]");
+      btn.disabled = true;
+      $$("[data-chat-suggest] button", panel).forEach((b) => { b.disabled = true; });
+      const none = log.querySelector(":scope > p.muted");
+      if (none) none.remove();
+      log.appendChild(Object.assign(make("div", "pr-msg is-user"), { textContent: text }));
+      const wait = make("div", "pr-msg is-coach muted pr-typing", thinking);
+      log.appendChild(wait);
+      log.scrollTop = log.scrollHeight;
+      ta.value = "";
+      try {
+        draw(await api("POST", `practice/${path}`, { message: text, ...extra() }));
+      } catch (err) {
+        wait.textContent = err.message;
+        wait.classList.remove("pr-typing");
+        wait.classList.add("pr-bad");
+        ta.value = text;
+      } finally {
+        busy = false;
+        btn.disabled = false;
+        $$("[data-chat-suggest] button", panel).forEach((b) => { b.disabled = false; });
+      }
+    });
+    ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
+    $("[data-chat-clear]", panel).addEventListener("click", async () => {
+      if (!window.confirm(clearText)) return;
+      try { draw(await api("POST", `practice/${path}/clear`)); } catch (e) { alertBox(form, e.message); }
+    });
+    /** Put a message in the box: sent straight away, or (send false) left there to edit first. */
+    async function ask(text, send) {
+      await loading;
+      ta.value = text;
+      if (send) form.requestSubmit();
+      else { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+      form.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+    return { load, ask };
+  }
+
+  function drawStats(s) {
     const stats = $("[data-stats]");
     stats.replaceChildren();
     if (!s.answers) {
       stats.appendChild(make("p", "muted small", "No marked answers yet. Answer some questions and the coach will have more to go on."));
-    } else {
-      stats.appendChild(make("p", "", `${plural(s.answers, "answer")} marked · ${s.got} / ${s.of} marks (${s.percent}%)`));
-      const grid = make("div", "pr-stat-grid");
-      const table = (title, rows) => {
-        if (!rows.length) return;
-        const d = make("div", "pr-stat");
-        d.appendChild(make("strong", "small", title));
-        const ul = make("ul", "small");
-        rows.slice(0, 6).forEach((x) => {
-          const li = make("li", "");
-          const bar = make("span", "pr-bar");
-          const fill = make("span", x.percent < 50 ? "is-low" : x.percent < 70 ? "is-mid" : "");
-          fill.style.width = `${Math.max(2, x.percent)}%`;
-          bar.appendChild(fill);
-          li.append(make("span", "pr-stat-name", x.name), bar, make("span", "pr-stat-pct", `${Math.round(x.percent)}%`));
-          li.title = `${x.name}: ${x.got} / ${x.of} marks over ${plural(x.answers, "answer")}`;
-          ul.appendChild(li);
-        });
-        d.appendChild(ul);
-        grid.appendChild(d);
-      };
-      table("Weakest topics", s.topics);
-      table("Specification areas", s.specAreas || []);
-      table("Question types", s.types);
-      table("Mark levels", s.markLevels);
-      stats.appendChild(grid);
+      return;
     }
-    chat.replaceChildren();
-    if (!r.messages.length) chat.appendChild(make("p", "muted small", "Ask the coach how you are doing, or what to revise next."));
-    for (const m of r.messages) chat.appendChild(message(m));
-    chat.scrollTop = chat.scrollHeight;
-    drawSuggestions();
+    stats.appendChild(make("p", "", `${plural(s.answers, "answer")} marked · ${s.got} / ${s.of} marks (${s.percent}%)`));
+    const grid = make("div", "pr-stat-grid");
+    const table = (title, rows) => {
+      if (!rows.length) return;
+      const d = make("div", "pr-stat");
+      d.appendChild(make("strong", "small", title));
+      const ul = make("ul", "small");
+      rows.slice(0, 6).forEach((x) => {
+        const li = make("li", "");
+        const bar = make("span", "pr-bar");
+        const fill = make("span", x.percent < 50 ? "is-low" : x.percent < 70 ? "is-mid" : "");
+        fill.style.width = `${Math.max(2, x.percent)}%`;
+        bar.appendChild(fill);
+        li.append(make("span", "pr-stat-name", x.name), bar, make("span", "pr-stat-pct", `${Math.round(x.percent)}%`));
+        li.title = `${x.name}: ${x.got} / ${x.of} marks over ${plural(x.answers, "answer")}`;
+        ul.appendChild(li);
+      });
+      d.appendChild(ul);
+      grid.appendChild(d);
+    };
+    table("Weakest topics", s.topics);
+    table("Specification areas", s.specAreas || []);
+    table("Question types", s.types);
+    table("Mark levels", s.markLevels);
+    stats.appendChild(grid);
   }
-  function message(m) {
-    const d = make("div", `pr-msg ${m.role === "user" ? "is-user" : "is-coach"}`);
-    if (m.role === "user") { d.textContent = m.text; return d; }
-    const body = make("div", "prose");
-    body.innerHTML = m.html;
-    d.appendChild(body);
-    const act = make("div", "pr-msg-actions");
-    const copy = make("button", "linklike small", "Copy");
-    copy.type = "button";
-    copy.addEventListener("click", () => copyText(m.text));
-    const save = make("button", "linklike small", "Save as a note");
-    save.type = "button";
-    save.addEventListener("click", async () => {
-      save.disabled = true;
-      try {
-        const day = new Date((m.at || Date.now() / 1000) * 1000).toISOString().slice(0, 10);
-        const r = await saveNote("Study guides", `Exam coach ${day}`, `${m.text}\n`);
-        toast(`Saved as ${r.path}.`);
-      } catch (e) { toast(e.message, "error"); } finally { save.disabled = false; }
-    });
-    act.append(copy, save);
-    d.appendChild(act);
-    return d;
-  }
-  function drawSuggestions() {
-    const box = $("[data-chat-suggest]");
-    box.replaceChildren();
-    for (const t of SUGGEST) {
-      const b = make("button", "pr-suggestion small", t);
-      b.type = "button";
-      b.addEventListener("click", () => { chatForm.querySelector("textarea").value = t; chatForm.requestSubmit(); });
-      box.appendChild(b);
-    }
-  }
-  let coachLoad = Promise.resolve();
-  function loadCoach() {
-    coachLoad = api("GET", "practice/coach").then(renderCoach, (e) => { chat.textContent = e.message; });
-    return coachLoad;
-  }
-  let coachBusy = false;
-  chatForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const ta = chatForm.querySelector("textarea");
-    const text = ta.value.trim();
-    if (!text || coachBusy) return;
-    coachBusy = true;
-    const btn = chatForm.querySelector("button[type=submit]");
-    btn.disabled = true;
-    $$("[data-chat-suggest] button").forEach((b) => { b.disabled = true; });
-    const empty = chat.querySelector(":scope > p.muted");
-    if (empty) empty.remove();
-    chat.appendChild(Object.assign(make("div", "pr-msg is-user"), { textContent: text }));
-    const wait = make("div", "pr-msg is-coach muted pr-typing", "The coach is thinking");
-    chat.appendChild(wait);
-    chat.scrollTop = chat.scrollHeight;
-    ta.value = "";
-    try {
-      renderCoach(await api("POST", "practice/coach", { message: text }));
-    } catch (err) {
-      wait.textContent = err.message;
-      wait.classList.remove("pr-typing");
-      wait.classList.add("pr-bad");
-      ta.value = text;
-    } finally {
-      coachBusy = false;
-      btn.disabled = false;
-      $$("[data-chat-suggest] button").forEach((b) => { b.disabled = false; });
-    }
+
+  const coachChat = chatBox($("[data-panel=coach]"), {
+    path: "coach",
+    suggest: [
+      "Where am I losing the most marks?",
+      "What should I revise this week?",
+      "How do I write a good answer to a 9-mark question?",
+      "Which topics am I strongest in?",
+      "Quiz me with three quick questions on my weakest topic.",
+    ],
+    empty: "Ask the coach how you are doing, or what to revise next.",
+    thinking: "The coach is thinking",
+    noteName: "Exam coach",
+    onView: (r) => drawStats(r.stats),
+    clearText: "Clear this conversation? Your answers and marks are kept.",
   });
-  chatForm.querySelector("textarea").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); chatForm.requestSubmit(); } });
-  $("[data-chat-clear]").addEventListener("click", async () => {
-    if (!window.confirm("Clear this conversation? Your answers and marks are kept.")) return;
-    try { renderCoach(await api("POST", "practice/coach/clear")); } catch (e) { alertBox(chatForm, e.message); }
+  /** Open the coach with a message: sent straight away, or (send false) left in the box to edit first. */
+  function askCoach(text, send = true) {
+    show("coach");
+    return coachChat.ask(text, send);
+  }
+
+  const askChat = chatBox($("[data-panel=ask]"), {
+    path: "chat",
+    suggest: [
+      "Summarise the main ideas of my notes.",
+      "Explain the hardest idea in my notes simply, with an example.",
+      "What are the key terms I need to know, with definitions?",
+      "Test me: ask me one exam-style question and mark my answer.",
+      "Which ideas in my notes are most likely to come up in the exam?",
+    ],
+    empty: "Ask Claude anything about your notes. Claude answers from them and links the notes it used.",
+    thinking: "Claude is reading your notes",
+    noteName: "Ask Claude",
+    extra: () => ({ topics: pick.askTopics ? pick.askTopics() : [] }),
+    clearText: "Start a new chat? This conversation is deleted; notes you saved from it are kept.",
+  });
+  /** Ask Claude about something (an answer, a card, an idea on a mind map): opens the chat and sends it. */
+  function askClaude(text, send = true) {
+    show("ask");
+    return askChat.ask(text, send);
+  }
+  /** Which notes Ask Claude reads, in its summary line. */
+  function askScope() {
+    const n = pick.askTopics ? pick.askTopics().length : 0;
+    $("[data-ask-scope]").textContent = n ? `(${plural(n, "topic")})` : "(all of your notes)";
+  }
+  $("[data-choices=ask-topics]").addEventListener("change", askScope);
+
+  // ---------- mind maps ----------
+  // Claude writes a mind map as a nested Markdown list (kept with the study guides, kind "mind_map"); it is drawn
+  // here as a tree growing to the right, whose branches open and close.
+  const mapForm = $("[data-map-form]");
+  let mapsTimer = 0;
+  const mm = { data: null, tree: null, poll: 0, t0: 0, scale: 1, id: null };
+
+  async function loadMaps() {
+    window.clearTimeout(mapsTimer);
+    const box = $("[data-maps]");
+    let r;
+    try { r = await api("GET", "practice/reports"); } catch (e) { box.textContent = e.message; return; }
+    const maps = r.reports.filter((d) => d.kind === "mind_map");
+    box.replaceChildren();
+    box.appendChild(make("h2", "pr-h2", "Your mind maps"));
+    if (!maps.length) { box.appendChild(make("p", "muted small", "None yet.")); return; }
+    const ul = make("ul", "pr-decks");
+    for (const d of maps) {
+      const li = make("li", "pr-deck");
+      const info = make("div");
+      info.append(make("strong", "", d.title));
+      const sub = d.status === "generating" ? "Claude is mapping your notes…" : d.status === "failed" ? d.error || "This could not be made." : when(d.createdAt);
+      info.append(make("div", `small ${d.status === "failed" ? "pr-bad" : "muted"}`, sub));
+      li.appendChild(info);
+      const act = make("div", "pr-actions");
+      if (d.status === "ready") {
+        const b = make("button", "primary", "Open");
+        b.type = "button";
+        b.addEventListener("click", () => openMap(d.id));
+        act.appendChild(b);
+      }
+      if (d.status !== "generating") {
+        const x = make("button", "danger", "Delete");
+        x.type = "button";
+        x.addEventListener("click", async () => {
+          if (!window.confirm(`Delete the mind map "${d.title}"? Copies saved in the vault are kept.`)) return;
+          try { await api("DELETE", `practice/reports/${d.id}`); loadMaps(); } catch (e) { toast(e.message, "error"); }
+        });
+        act.appendChild(x);
+      }
+      li.appendChild(act);
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+    if (maps.some((d) => d.status === "generating")) mapsTimer = window.setTimeout(loadMaps, 3000);
+  }
+
+  mapForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = mapForm.querySelector("button[type=submit]");
+    const focus = mapForm.querySelector("[name=focus]");
+    btn.disabled = true;
+    try {
+      const r = await api("POST", "practice/reports", { kind: "mind_map", topics: pick.mapTopics(), focus: focus.value });
+      focus.value = "";
+      openMap(r.id);
+    } catch (err) { alertBox(mapForm, err.message); } finally { btn.disabled = false; }
   });
 
-  /** Open the coach with a message: sent straight away, or (send false) left in the box to edit first. */
-  async function askCoach(text, send = true) {
-    show("coach");
-    await coachLoad;
-    const ta = chatForm.querySelector("textarea");
-    ta.value = text;
-    if (send) chatForm.requestSubmit();
-    else { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
-    chatForm.scrollIntoView({ behavior: "smooth", block: "end" });
+  /** The tree of a mind map's Markdown: the level-1 heading is the centre, the nested list its branches. */
+  function parseMap(md, fallback) {
+    const root = { label: fallback || "Mind map", children: [], depth: 0 };
+    const stack = [{ indent: -1, node: root }];
+    for (const raw of String(md || "").split(/\r?\n/)) {
+      const h = raw.match(/^#\s+(.+)/);
+      if (h) { root.label = h[1].trim(); continue; }
+      const m = raw.match(/^(\s*)(?:[-*+]|\d+[.)])\s+(.+)$/);
+      if (!m) continue;
+      const indent = m[1].replace(/\t/g, "  ").length;
+      const label = m[2].replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, a, b) => b || a).replace(/[*_`]/g, "").trim();
+      if (!label) continue;
+      while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop();
+      const parent = stack[stack.length - 1].node;
+      const node = { label, children: [], depth: parent.depth + 1 };
+      parent.children.push(node);
+      stack.push({ indent, node });
+    }
+    const walk = (n, parent) => { n.parent = parent; n.open = n.depth < 1; n.children.forEach((c) => walk(c, n)); };
+    walk(root, null);
+    // The branches each get a colour; their ideas share it.
+    root.children.forEach((c, i) => { const paint = (n) => { n.hue = i; n.children.forEach(paint); }; paint(c); });
+    return root;
+  }
+
+  async function openMap(id) {
+    window.clearTimeout(mm.poll);
+    if (mm.id !== id) { mm.t0 = Date.now(); mm.scale = 1; }
+    mm.id = id;
+    let r;
+    try { r = await api("GET", `practice/reports/${id}`); } catch (e) { toast(e.message, "error"); return; }
+    if (mm.id !== id) return;
+    mm.data = r;
+    if ($("[data-panel=mindmap]").hidden) show("mindmap");
+    $("[data-map-title]").textContent = r.title;
+    const status = $("[data-map-status]");
+    $$("[data-map-tools] button").forEach((b) => { b.disabled = r.status !== "ready" && !b.matches("[data-map-delete]"); });
+    const canvas = $("[data-map-canvas]");
+    if (r.status === "generating") {
+      status.className = "small muted";
+      status.textContent = `Claude is mapping your notes… (${Math.round((Date.now() - mm.t0) / 1000)} s; this can take a minute, and you can leave this page)`;
+      canvas.replaceChildren();
+      mm.poll = window.setTimeout(() => openMap(id), 2500);
+      return;
+    }
+    status.className = `small ${r.status === "failed" ? "pr-bad" : "muted"}`;
+    status.textContent = r.status === "failed" ? r.error || "This could not be made. Try again." : "";
+    if (r.status !== "ready") { canvas.replaceChildren(); return; }
+    mm.tree = parseMap(r.markdown, r.title);
+    if (!mm.tree.children.length) { status.textContent = "This mind map is empty. Delete it and try again."; canvas.replaceChildren(); return; }
+    drawMap();
+    fitMap();
+  }
+
+  const SVG = "http://www.w3.org/2000/svg";
+  const svgEl = (tag, attrs = {}) => { const e = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v)); return e; };
+  const BRANCH_HUES = [212, 152, 32, 280, 350, 190, 95, 260, 15, 320];
+  /** Split a label into lines of about 26 characters. */
+  function wrapLabel(text) {
+    const lines = [];
+    let line = "";
+    for (const w of text.split(/\s+/)) {
+      if (line && (line + " " + w).length > 26) { lines.push(line); line = w; } else line = line ? `${line} ${w}` : w;
+    }
+    if (line) lines.push(line);
+    return lines.slice(0, 4);
+  }
+  let measureCtx = null;
+  function textWidth(t, bold) {
+    measureCtx = measureCtx || document.createElement("canvas").getContext("2d");
+    measureCtx.font = `${bold ? "600 " : ""}14px ${getComputedStyle(document.body).fontFamily}`;
+    return measureCtx.measureText(t).width;
+  }
+
+  /** Lay out the open part of the tree (left to right) and draw it as SVG. */
+  function drawMap() {
+    const canvas = $("[data-map-canvas]");
+    const css = getComputedStyle(document.body);
+    const ink = css.color || "#222";
+    const dark = (() => { const m = (css.backgroundColor || "").match(/\d+/g); return m ? (Number(m[0]) + Number(m[1]) + Number(m[2])) / 3 < 128 : false; })();
+    const LINE = 18, PAD_X = 12, PAD_Y = 8, GAP_Y = 10, GAP_X = 56, TOGGLE = 22;
+    // Size every visible node.
+    const visible = [];
+    const size = (n) => {
+      n.lines = wrapLabel(n.label);
+      const bold = n.depth === 0;
+      n.w = Math.ceil(Math.max(...n.lines.map((l) => textWidth(l, bold)))) + PAD_X * 2 + (n.children.length ? TOGGLE : 0);
+      n.h = n.lines.length * LINE + PAD_Y * 2;
+      visible.push(n);
+      if (n.open) n.children.forEach(size);
+    };
+    size(mm.tree);
+    const colW = [];
+    for (const n of visible) colW[n.depth] = Math.max(colW[n.depth] || 0, n.w);
+    const colX = [0];
+    for (let d = 1; d < colW.length; d++) colX[d] = colX[d - 1] + colW[d - 1] + GAP_X;
+    // Leaves take the next free row; a parent sits in the middle of its children.
+    let y = 0;
+    const place = (n) => {
+      n.x = colX[n.depth];
+      if (n.open && n.children.length) {
+        n.children.forEach(place);
+        const first = n.children[0], last = n.children[n.children.length - 1];
+        const mid = (first.y + first.h / 2 + last.y + last.h / 2) / 2;
+        n.y = mid - n.h / 2;
+        // A tall parent must not overlap the row below its children.
+        if (n.y + n.h + GAP_Y > y) y = n.y + n.h + GAP_Y;
+        if (n.y < 0) { const shift = -n.y; const move = (c) => { c.y += shift; if (c.open) c.children.forEach(move); }; move(n); y += shift; }
+      } else {
+        n.y = y;
+        y += n.h + GAP_Y;
+      }
+    };
+    place(mm.tree);
+    const width = colX[colX.length - 1] + colW[colW.length - 1] + 8;
+    const height = Math.max(y - GAP_Y, mm.tree.h) + 8;
+    const svg = svgEl("svg", { xmlns: SVG, viewBox: `-4 -4 ${width + 4} ${height + 4}`, role: "img", "aria-label": `Mind map: ${mm.tree.label}` });
+    svg.style.fontFamily = css.fontFamily;
+    mm.size = { width: width + 4, height: height + 4 };
+    const colour = (n, kind) => {
+      if (n.depth === 0) return kind === "fill" ? (dark ? "#3b3f58" : "#e6e8f7") : kind === "stroke" ? (dark ? "#8f96d6" : "#5b63b7") : ink;
+      const h = BRANCH_HUES[n.hue % BRANCH_HUES.length];
+      if (kind === "fill") return dark ? `hsl(${h} 30% ${n.depth === 1 ? 30 : 22}%)` : `hsl(${h} 70% ${n.depth === 1 ? 88 : 95}%)`;
+      if (kind === "stroke") return dark ? `hsl(${h} 55% 62%)` : `hsl(${h} 50% 45%)`;
+      return ink;
+    };
+    const edges = svgEl("g", { fill: "none", "stroke-width": 1.6 });
+    const nodes = svgEl("g");
+    svg.append(edges, nodes);
+    for (const n of visible) {
+      if (n.parent) {
+        const x1 = n.parent.x + n.parent.w, y1 = n.parent.y + n.parent.h / 2, x2 = n.x, y2 = n.y + n.h / 2, mx = (x1 + x2) / 2;
+        edges.appendChild(svgEl("path", { d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, stroke: colour(n, "stroke"), opacity: 0.7 }));
+      }
+      const g = svgEl("g", { class: "pr-map-node", transform: `translate(${n.x},${n.y})` });
+      const box = svgEl("g", { class: "pr-map-label", tabindex: 0, role: "button", "aria-label": `${n.label}: ask Claude about this` });
+      box.appendChild(svgEl("rect", { width: n.w, height: n.h, rx: 8, fill: colour(n, "fill"), stroke: colour(n, "stroke"), "stroke-width": n.depth < 2 ? 1.5 : 1 }));
+      n.lines.forEach((l, i) => {
+        const t = svgEl("text", { x: PAD_X, y: PAD_Y + LINE * i + 14, fill: colour(n, "text"), "font-size": 14, "font-weight": n.depth === 0 ? 600 : 400 });
+        t.textContent = l;
+        box.appendChild(t);
+      });
+      const title = svgEl("title");
+      title.textContent = `${n.label}\nClick to ask Claude about this`;
+      box.appendChild(title);
+      const askAbout = () => {
+        const path = [];
+        for (let p = n.parent; p; p = p.parent) path.unshift(p.label);
+        askClaude(n.depth === 0 ? `Give me an overview of "${n.label}" from my notes.` : `Explain "${n.label}" from my notes${path.length ? `, in the context of ${path.map((x) => `"${x}"`).join(" → ")}` : ""}.`);
+      };
+      box.addEventListener("click", (e) => { if (!mm.dragged) askAbout(); e.stopPropagation(); });
+      box.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); askAbout(); } });
+      g.appendChild(box);
+      if (n.children.length) {
+        const tg = svgEl("g", { class: "pr-map-toggle", tabindex: 0, role: "button", "aria-expanded": n.open ? "true" : "false", "aria-label": `${n.open ? "Close" : "Open"} ${n.label} (${plural(n.children.length, "idea")})`, transform: `translate(${n.w - TOGGLE + 2},${n.h / 2})` });
+        tg.appendChild(svgEl("circle", { cx: 8, cy: 0, r: 9, fill: colour(n, "stroke") }));
+        const arrow = svgEl("text", { x: 8, y: 4.5, "text-anchor": "middle", "font-size": 12, fill: dark ? "#111" : "#fff", "font-weight": 700 });
+        arrow.textContent = n.open ? "‹" : "›";
+        tg.appendChild(arrow);
+        const t2 = svgEl("title");
+        t2.textContent = n.open ? "Close this branch" : `Open this branch (${plural(n.children.length, "idea")})`;
+        tg.appendChild(t2);
+        const toggle = () => { n.open = !n.open; drawMap(); const again = $(`[data-map-canvas] .pr-map-toggle[aria-label^="${n.open ? "Close" : "Open"} ${CSS.escape(n.label)}"]`); if (again) again.focus(); };
+        tg.addEventListener("click", (e) => { if (!mm.dragged) toggle(); e.stopPropagation(); });
+        tg.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+        g.appendChild(tg);
+      }
+      nodes.appendChild(g);
+    }
+    canvas.replaceChildren(svg);
+    applyScale();
+  }
+  function applyScale() {
+    const svg = $("[data-map-canvas] svg");
+    if (!svg || !mm.size) return;
+    svg.setAttribute("width", String(Math.round(mm.size.width * mm.scale)));
+    svg.setAttribute("height", String(Math.round(mm.size.height * mm.scale)));
+  }
+  function fitMap() {
+    const canvas = $("[data-map-canvas]");
+    if (!mm.size) return;
+    const fit = Math.min((canvas.clientWidth - 16) / mm.size.width, (Math.max(320, window.innerHeight * 0.7) - 16) / mm.size.height);
+    // Never so small the words cannot be read: a big map scrolls instead, starting at its centre idea.
+    mm.scale = Math.max(0.6, Math.min(1.2, fit || 1));
+    applyScale();
+    const root = mm.tree;
+    canvas.scrollLeft = 0;
+    canvas.scrollTop = Math.max(0, (root.y + root.h / 2) * mm.scale - canvas.clientHeight / 2);
+  }
+  /** Open or close every branch. */
+  function setOpen(open) {
+    if (!mm.tree) return;
+    const walk = (n) => { n.open = open || n.depth === 0; n.children.forEach(walk); };
+    walk(mm.tree);
+    drawMap();
+    fitMap();
+  }
+  $("[data-map-expand]").addEventListener("click", () => setOpen(true));
+  $("[data-map-collapse]").addEventListener("click", () => setOpen(false));
+  $$("[data-map-zoom]").forEach((b) => b.addEventListener("click", () => {
+    const z = Number(b.dataset.mapZoom);
+    if (!z) fitMap();
+    else { mm.scale = Math.max(0.25, Math.min(3, mm.scale * (z > 0 ? 1.25 : 0.8))); applyScale(); }
+  }));
+  // Drag to move around a map larger than the box.
+  (() => {
+    const canvas = $("[data-map-canvas]");
+    let start = null;
+    canvas.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      start = { x: e.clientX, y: e.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
+      mm.dragged = false;
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!start) return;
+      const dx = e.clientX - start.x, dy = e.clientY - start.y;
+      if (!mm.dragged && Math.hypot(dx, dy) < 5) return;
+      if (!mm.dragged) { mm.dragged = true; canvas.setPointerCapture(e.pointerId); canvas.classList.add("is-dragging"); }
+      canvas.scrollLeft = start.left - dx;
+      canvas.scrollTop = start.top - dy;
+    });
+    const end = () => { start = null; canvas.classList.remove("is-dragging"); window.setTimeout(() => { mm.dragged = false; }, 0); };
+    canvas.addEventListener("pointerup", end);
+    canvas.addEventListener("pointercancel", end);
+  })();
+  $("[data-map-back]").addEventListener("click", () => { window.clearTimeout(mm.poll); mm.id = null; show("mindmaps"); });
+  $("[data-map-save]").addEventListener("click", async (e) => {
+    if (!mm.data) return;
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const r = await saveNote("Mind maps", mm.data.title, mm.data.markdown);
+      const s = $("[data-map-status]");
+      s.className = "small muted";
+      s.replaceChildren(document.createTextNode(`Saved as ${r.path}. `));
+      if (r.url) { const a = make("a", "", "Open the note"); a.href = r.url; s.appendChild(a); }
+      toast("Saved to the vault.");
+    } catch (err) { toast(err.message, "error"); } finally { btn.disabled = false; }
+  });
+  $("[data-map-download]").addEventListener("click", () => {
+    const svg = $("[data-map-canvas] svg");
+    if (!svg || !mm.data) return;
+    const copy = svg.cloneNode(true);
+    copy.setAttribute("width", String(mm.size.width * 2));
+    copy.setAttribute("height", String(mm.size.height * 2));
+    const bg = svgEl("rect", { x: -4, y: -4, width: mm.size.width, height: mm.size.height, fill: getComputedStyle(document.body).backgroundColor || "#fff" });
+    copy.insertBefore(bg, copy.firstChild);
+    const text = new XMLSerializer().serializeToString(copy);
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = mm.size.width * 2;
+      c.height = mm.size.height * 2;
+      c.getContext("2d").drawImage(img, 0, 0);
+      c.toBlob((blob) => {
+        if (!blob) { download(`${fileName(mm.data.title)}.svg`, text, "image/svg+xml"); return; }
+        const url = URL.createObjectURL(blob);
+        const a = make("a");
+        a.href = url;
+        a.download = `${fileName(mm.data.title)}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }, "image/png");
+    };
+    img.onerror = () => download(`${fileName(mm.data.title)}.svg`, text, "image/svg+xml");
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
+  });
+  $("[data-map-delete]").addEventListener("click", async () => {
+    if (!mm.data || !window.confirm(`Delete the mind map "${mm.data.title}"? Copies saved in the vault are kept.`)) return;
+    try { await api("DELETE", `practice/reports/${mm.data.id}`); mm.id = null; show("mindmaps"); } catch (e) { toast(e.message, "error"); }
+  });
+  window.addEventListener("resize", () => { if (!$("[data-panel=mindmap]").hidden && mm.tree) applyScale(); });
+
+  // ---------- links into a tab with filters set (from the admin page's past papers) ----------
+  // #hub?years=2024, #hub?spec=1.2 Networks&source=, #hub?paper=12, #questions?paper=3 (a paper guide's id).
+  function openFromHash() {
+    const [tab, query] = location.hash.slice(1).split("?");
+    if (!TABS.includes(tab)) { show("questions"); return; }
+    const p = new URLSearchParams(query || "");
+    if (tab === "hub" && query) {
+      clearFilters();
+      const tick = (name, value) => $$(`[data-choices=${name}] .pr-chip input`).forEach((c) => { c.checked = c.value === value; c.dispatchEvent(new Event("change")); });
+      if (p.has("years")) tick("hub-years", p.get("years"));
+      if (p.has("spec")) tick("hub-spec", p.get("spec"));
+      if (p.has("paper")) { const sel = $("[data-paper-filter]"); if ([...sel.options].some((o) => o.value === p.get("paper"))) sel.value = p.get("paper"); }
+      if (p.has("source")) hubForm.querySelector("[name=source]").value = p.get("source");
+    }
+    if (tab === "questions" && p.has("paper")) {
+      const sel = $("[data-gen-paper]");
+      if ([...sel.options].some((o) => o.value === p.get("paper"))) { sel.value = p.get("paper"); genPaperChanged(); }
+    }
+    show(tab);
   }
 
   // ---------- start ----------
   loadMeta()
-    .then(() => {
-      const tab = location.hash.slice(1);
-      show(TABS.includes(tab) ? tab : "questions");
-    })
+    .then(openFromHash)
     .catch((e) => alertBox(host, `The page could not load: ${e.message}`));
 })();

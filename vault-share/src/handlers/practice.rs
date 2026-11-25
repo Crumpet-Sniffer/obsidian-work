@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    auth::CurrentUser,
+    auth::{AdminUser, CurrentUser},
     errors::AppResult,
     handlers::{
         edit::{check_csrf, ok, ApiErr, ApiResult},
@@ -20,7 +20,7 @@ use crate::{
         vaults::{authorize, index_for},
     },
     practice::{self, PaperInfo, Profile, Question, Session, Who, DEFAULT_MARKS, DIFFICULTIES, DOC_KINDS, MAX_MARKS, MAX_QUESTIONS, TYPES},
-    templates::{render, PageCtx, PracticePage},
+    templates::{render, PageCtx, PapersAdminPage, PracticePage},
     vault::{file_url, VaultIndex},
     AppState,
 };
@@ -44,6 +44,20 @@ pub async fn page(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
         configured: s.api_key.is_some(),
         is_admin: user.is_admin,
         max_file_mb: st.cfg.max_file_bytes / 1024 / 1024,
+    }))
+}
+
+/// Past papers and exam documents for a vault: adding them, the paper guides, the years and clearing the hub. On the
+/// admin side of the site; the questions themselves are practised on the Practice page.
+pub async fn papers_page(State(st): State<AppState>, AdminUser(user): AdminUser, Path(id): Path<String>) -> AppResult {
+    let v = authorize(&st, &user, &id).await?;
+    let s = Settings::load(&st.db).await?;
+    Ok(render(&PapersAdminPage {
+        page: PageCtx::for_user(&user),
+        csrf: user.csrf.clone(),
+        vault_id: v.id,
+        vault_name: v.name,
+        configured: s.api_key.is_some(),
     }))
 }
 
@@ -1138,7 +1152,7 @@ const COACH_HISTORY: i64 = 30;
 
 async fn coach_view(st: &AppState, user: &CurrentUser, vault: &str) -> Result<Value, ApiErr> {
     let idx = index_for(st, vault).await?;
-    let msgs = st.db.coach_messages(user.id, vault.to_string(), 200).await?;
+    let msgs = st.db.coach_messages(user.id, vault.to_string(), "coach", 200).await?;
     let stats = practice::stats(st, user.id, vault).await?;
     let vid = vault.to_string();
     let list = tokio::task::spawn_blocking(move || {
@@ -1176,11 +1190,11 @@ pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id):
     if s.api_key.is_none() {
         return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
-    st.db.add_coach_message(user.id, v.id.clone(), "user", text).await?;
+    st.db.add_coach_message(user.id, v.id.clone(), "coach", "user", text).await?;
     let stats = practice::stats(&st, user.id, &v.id).await?;
     let idx = index_for(&st, &v.id).await?;
     let topics = practice::vault_topics(&idx, &s);
-    let history = st.db.coach_messages(user.id, v.id.clone(), COACH_HISTORY).await?;
+    let history = st.db.coach_messages(user.id, v.id.clone(), "coach", COACH_HISTORY).await?;
     // The conversation must start with the student; drop a leading reply left by the history limit.
     let msgs: Vec<Value> = history
         .iter()
@@ -1202,7 +1216,7 @@ pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id):
     let task = tokio::spawn(async move {
         let r = practice::ask(&st2, &w, &vid, "exam coach", &prompt, Some(context), json!(msgs), None, 6000).await;
         if let Ok(Value::String(reply)) = &r {
-            let _ = st2.db.add_coach_message(w.0, vid.clone(), "assistant", reply.clone()).await;
+            let _ = st2.db.add_coach_message(w.0, vid.clone(), "coach", "assistant", reply.clone()).await;
         }
         r
     });
@@ -1216,8 +1230,126 @@ pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id):
 pub async fn coach_clear(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap) -> ApiResult {
     check_csrf(&user, &headers)?;
     let v = authorize(&st, &user, &id).await?;
-    st.db.clear_coach(user.id, v.id.clone()).await?;
+    st.db.clear_coach(user.id, v.id.clone(), "coach").await?;
     ok(coach_view(&st, &user, &v.id).await?)
+}
+
+// ---------------------------------------------------------------- Ask Claude (a tutor on the notes)
+
+/// Messages of the conversation sent back to Claude with each new one.
+const CHAT_HISTORY: i64 = 40;
+
+async fn chat_view(st: &AppState, user: &CurrentUser, vault: &str) -> Result<Value, ApiErr> {
+    let idx = index_for(st, vault).await?;
+    let msgs = st.db.coach_messages(user.id, vault.to_string(), "chat", 200).await?;
+    let vid = vault.to_string();
+    let list = tokio::task::spawn_blocking(move || {
+        msgs.iter()
+            .map(|(role, content, ts)| {
+                let html = if role == "assistant" { practice::render(&idx, &vid, content) } else { String::new() };
+                json!({ "role": role, "text": content, "html": html, "at": ts })
+            })
+            .collect::<Vec<_>>()
+    })
+    .await?;
+    Ok(json!({ "messages": list }))
+}
+
+pub async fn chat(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> ApiResult {
+    let v = authorize(&st, &user, &id).await?;
+    ok(chat_view(&st, &user, &v.id).await?)
+}
+
+#[derive(Deserialize)]
+pub struct ChatBody {
+    message: String,
+    /// The topics whose notes Claude reads; none means notes from across the vault.
+    #[serde(default)]
+    topics: Vec<String>,
+}
+
+/// Ask Claude about the notes and wait for the reply. Like the coach, the reply is worked out in its own task so it
+/// is saved even if the page is closed while waiting.
+pub async fn chat_send(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<ChatBody>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let text: String = b.message.chars().filter(|c| !c.is_control() || *c == '\n').take(8000).collect::<String>().trim().to_string();
+    if text.is_empty() {
+        return Err(ApiErr::Bad("Type a message first.".into()));
+    }
+    let s = Settings::load(&st.db).await?;
+    if s.api_key.is_none() {
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
+    }
+    let idx = index_for(&st, &v.id).await?;
+    let all = practice::vault_topics(&idx, &s);
+    let topics: Vec<String> = all.iter().filter(|t| b.topics.iter().any(|c| c.eq_ignore_ascii_case(t))).cloned().collect();
+    let (s2, t2) = (s.clone(), topics.clone());
+    let notes = tokio::task::spawn_blocking(move || practice::notes_context(&idx, &s2, &t2)).await?;
+    st.db.add_coach_message(user.id, v.id.clone(), "chat", "user", text).await?;
+    let history = st.db.coach_messages(user.id, v.id.clone(), "chat", CHAT_HISTORY).await?;
+    let msgs: Vec<Value> = history
+        .iter()
+        .skip_while(|(r, _, _)| r != "user")
+        .map(|(r, c, _)| json!({ "role": if r == "assistant" { "assistant" } else { "user" }, "content": c }))
+        .collect();
+    let context = format!(
+        "Course: {}. Topics in the student's notes: {}.\n\n<notes>\n{}</notes>",
+        v.name,
+        if all.is_empty() { "(no topic pages)".to_string() } else { all.join("; ") },
+        if notes.trim().is_empty() { "(The vault has no notes yet.)\n".to_string() } else { notes }
+    );
+    let st2 = st.clone();
+    let (w, vid) = (who(&user), v.id.clone());
+    let task = tokio::spawn(async move {
+        let r = practice::ask(&st2, &w, &vid, "ask Claude", crate::prompts::CHAT, Some(context), json!(msgs), None, 8000).await;
+        if let Ok(Value::String(reply)) = &r {
+            let _ = st2.db.add_coach_message(w.0, vid.clone(), "chat", "assistant", reply.clone()).await;
+        }
+        r
+    });
+    match task.await {
+        Ok(Ok(_)) => ok(chat_view(&st, &user, &v.id).await?),
+        Ok(Err(e)) => Err(ApiErr::Bad(e)),
+        Err(e) => Err(ApiErr::Internal(e.into())),
+    }
+}
+
+pub async fn chat_clear(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    st.db.clear_coach(user.id, v.id.clone(), "chat").await?;
+    ok(chat_view(&st, &user, &v.id).await?)
+}
+
+// ---------------------------------------------------------------- clearing the answer history
+
+#[derive(Deserialize, Default)]
+pub struct ClearHistoryBody {
+    /// Everyone's answers in this vault, not only the signed-in account's (admins only).
+    #[serde(default)]
+    everyone: bool,
+}
+
+/// Delete every set of questions answered in this vault, with the answers, marks and feedback: the signed-in
+/// account's, or (an admin) everyone's. The questions themselves, flashcards, study guides and chats are kept.
+pub async fn clear_history(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, body: Option<Json<ClearHistoryBody>>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let everyone = body.map(|Json(b)| b.everyone).unwrap_or(false);
+    if everyone && !user.is_admin {
+        return Err(ApiErr::Forbidden("Only an admin can clear everyone's answers.".into()));
+    }
+    let (sessions, answers) = st.db.clear_history(v.id.clone(), if everyone { None } else { Some(user.id) }).await?;
+    st.db
+        .audit(
+            user.audit_id(),
+            None,
+            "practice_history_cleared",
+            format!("{}: {}, {sessions} sets, {answers} answers", v.name, if everyone { "everyone's answers" } else { "own answers" }),
+        )
+        .await;
+    ok(json!({ "sessions": sessions, "answers": answers }))
 }
 
 // ---------------------------------------------------------------- study guides and reports
@@ -1232,8 +1364,11 @@ pub const REPORT_KINDS: &[(&str, &str, &str)] = &[
     ("custom", "Write your own", "Describe what you want: structure, style and length"),
 ];
 
+/// Mind maps are kept with the study guides (as a nested Markdown list) but listed on their own tab.
+pub const MIND_MAP_KIND: (&str, &str, &str) = ("mind_map", "Mind map", "The main themes of the notes and how their ideas branch out");
+
 fn report_json(idx: Option<&VaultIndex>, vault_id: &str, r: &practice::Report) -> Value {
-    let label = REPORT_KINDS.iter().find(|k| k.0 == r.kind).map(|k| k.1).unwrap_or("Report");
+    let label = REPORT_KINDS.iter().chain(std::iter::once(&MIND_MAP_KIND)).find(|k| k.0 == r.kind).map(|k| k.1).unwrap_or("Report");
     let mut v = json!({ "id": r.id, "kind": r.kind, "kindLabel": label, "title": r.title, "status": r.status, "error": r.error, "createdAt": r.created_at, "settings": r.settings });
     if let Some(idx) = idx {
         v["markdown"] = json!(r.content);
@@ -1294,7 +1429,7 @@ pub async fn make_report(State(st): State<AppState>, user: CurrentUser, Path(id)
     if s.api_key.is_none() {
         return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
-    let Some(kind) = REPORT_KINDS.iter().find(|k| k.0 == b.kind) else {
+    let Some(kind) = REPORT_KINDS.iter().chain(std::iter::once(&MIND_MAP_KIND)).find(|k| k.0 == b.kind) else {
         return Err(ApiErr::Bad("Choose what to write.".into()));
     };
     let focus = clean_focus(&b.focus);
@@ -1342,7 +1477,8 @@ async fn write_report(st: &AppState, who: &Who, vault: &str, kind: &str, topics:
     if !focus.is_empty() {
         msg.push_str(&format!("\n\n<student_request>\n{}\n</student_request>", focus.replace("</student_request>", "")));
     }
-    let v = practice::ask(st, who, vault, "writing a study guide", s.report_prompt(), None, json!([{ "role": "user", "content": msg }]), None, 16_000).await?;
+    let (what, prompt) = if kind == MIND_MAP_KIND.0 { ("making a mind map", crate::prompts::MIND_MAP) } else { ("writing a study guide", s.report_prompt()) };
+    let v = practice::ask(st, who, vault, what, prompt, None, json!([{ "role": "user", "content": msg }]), None, 16_000).await?;
     let md = v.as_str().unwrap_or("").trim().to_string();
     let md = md.strip_prefix("```markdown").or_else(|| md.strip_prefix("```md")).map(|x| x.trim_end().trim_end_matches("```").trim().to_string()).unwrap_or(md);
     let title = md.lines().find_map(|l| l.strip_prefix("# ")).map(|t| t.trim().chars().take(150).collect::<String>()).filter(|t| !t.is_empty());

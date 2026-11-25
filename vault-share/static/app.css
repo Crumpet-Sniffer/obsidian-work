@@ -705,3 +705,24 @@ section[id] { scroll-margin-top: 110px; }
 .pr-refresh-status { margin: 0; padding: .5rem .75rem; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 0 6px 6px 0; }
 .pr-refresh-status[hidden] { display: none; }
 .pr-refresh-status.pr-bad { border-left-color: var(--bad); background: var(--bad-soft); }
+
+/* ---------- Practice: mind maps, Ask Claude, history ---------- */
+a.pr-field { text-decoration: none; display: inline-block; }
+.pr-head-row { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; justify-content: space-between; }
+.pr-head-row h2 { margin: 0; }
+.pr-map { overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 8px; min-height: 240px; max-height: 75vh; cursor: grab; touch-action: none; background: color-mix(in srgb, var(--code-bg) 50%, transparent); }
+.pr-map.is-dragging { cursor: grabbing; user-select: none; }
+.pr-map svg { display: block; max-width: none; }
+.pr-map-label { cursor: pointer; outline: none; }
+.pr-map-label:hover rect, .pr-map-label:focus-visible rect { stroke-width: 2.5; filter: brightness(1.04); }
+.pr-map-toggle { cursor: pointer; outline: none; }
+.pr-map-toggle:hover circle, .pr-map-toggle:focus-visible circle { r: 10.5; }
+.pr-map-label:focus-visible rect, .pr-map-toggle:focus-visible circle { stroke: var(--accent); stroke-width: 3; }
+.pr-mapview .pr-report-tools .pr-seg button { padding: .35rem .7rem; }
+.pr-ask-scope { margin: .25rem 0 .75rem; }
+.pr-ask-scope > summary { cursor: pointer; }
+[data-papers] > .card + .card { margin-top: 1rem; }
+[data-papers] .pr-wipe + .pr-wipe { margin-top: .5rem; }
+@media print {
+  .pr-mapview .pr-map { max-height: none; overflow: visible; border: 0; }
+}

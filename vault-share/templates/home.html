@@ -14,13 +14,14 @@
 <ul class="vault-grid">
   {% for v in vaults %}
   <li class="card vault-card">
-    <a class="vault-card-main" href="/v/{{ v.id }}">
+    <a class="vault-card-main" href="/v/{{ v.id }}/graph">
       <h2>{{ v.name }}</h2>
       {% if !v.description.is_empty() %}<p>{{ v.description }}</p>{% endif %}
       <span class="meta">{{ v.files }} files · updated {{ v.updated }}</span>
     </a>
     <div class="vault-actions">
-      <a class="button primary" href="/v/{{ v.id }}"><svg class="ic"><use href="#i-book"/></svg>Notes</a>
+      <a class="button primary" href="/v/{{ v.id }}/graph"><svg class="ic"><use href="#i-graph"/></svg>Graph</a>
+      <a class="button" href="/v/{{ v.id }}"><svg class="ic"><use href="#i-book"/></svg>Notes</a>
       <a class="button" href="/v/{{ v.id }}/practice"><svg class="ic"><use href="#i-practice"/></svg>Practice</a>
       <a class="button" href="/v/{{ v.id }}/sources"><svg class="ic"><use href="#i-upload"/></svg>Add sources</a>
     </div>

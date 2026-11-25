@@ -301,6 +301,16 @@ pub struct SourcesPage {
 }
 
 #[derive(Template)]
+#[template(path = "papers_admin.html")]
+pub struct PapersAdminPage {
+    pub page: PageCtx,
+    pub csrf: String,
+    pub vault_id: String,
+    pub vault_name: String,
+    pub configured: bool,
+}
+
+#[derive(Template)]
 #[template(path = "practice.html")]
 pub struct PracticePage {
     pub page: PageCtx,

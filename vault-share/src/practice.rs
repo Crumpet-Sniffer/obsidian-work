@@ -66,7 +66,8 @@ pub async fn ask(
     let model = s.model.clone();
     let mut system_blocks = vec![json!({ "type": "text", "text": system })];
     if let Some(x) = extra_system {
-        system_blocks.push(json!({ "type": "text", "text": x }));
+        // Cached, so a conversation that sends the same notes with every message pays for them once.
+        system_blocks.push(json!({ "type": "text", "text": x, "cache_control": { "type": "ephemeral" } }));
     }
     let mut body = json!({
         "model": model,
@@ -959,26 +960,54 @@ impl Db {
 
     // ---------- exam coach
 
-    pub async fn coach_messages(&self, user: i64, vault: String, limit: i64) -> Result<Vec<(String, String, i64)>> {
+    /// A conversation's messages ("coach" or "chat"), the last `limit` of them, oldest first.
+    pub async fn coach_messages(&self, user: i64, vault: String, channel: &'static str, limit: i64) -> Result<Vec<(String, String, i64)>> {
         self.call(move |c| {
             let mut st = c.prepare(
-                "SELECT role, content, created_at FROM (SELECT id, role, content, created_at FROM coach_messages WHERE user_id = ?1 AND vault_id = ?2 ORDER BY id DESC LIMIT ?3) ORDER BY id",
+                "SELECT role, content, created_at FROM (SELECT id, role, content, created_at FROM coach_messages WHERE user_id = ?1 AND vault_id = ?2 AND channel = ?3 ORDER BY id DESC LIMIT ?4) ORDER BY id",
             )?;
-            let rows = st.query_map(params![user, vault, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect();
+            let rows = st.query_map(params![user, vault, channel, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect();
             rows
         })
         .await
     }
 
-    pub async fn add_coach_message(&self, user: i64, vault: String, role: &'static str, content: String) -> Result<()> {
+    pub async fn add_coach_message(&self, user: i64, vault: String, channel: &'static str, role: &'static str, content: String) -> Result<()> {
         self.call(move |c| {
-            c.execute("INSERT INTO coach_messages (vault_id, user_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)", params![vault, user, role, content, now()]).map(|_| ())
+            c.execute(
+                "INSERT INTO coach_messages (vault_id, user_id, channel, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![vault, user, channel, role, content, now()],
+            )
+            .map(|_| ())
         })
         .await
     }
 
-    pub async fn clear_coach(&self, user: i64, vault: String) -> Result<()> {
-        self.call(move |c| c.execute("DELETE FROM coach_messages WHERE user_id = ?1 AND vault_id = ?2", params![user, vault]).map(|_| ())).await
+    pub async fn clear_coach(&self, user: i64, vault: String, channel: &'static str) -> Result<()> {
+        self.call(move |c| c.execute("DELETE FROM coach_messages WHERE user_id = ?1 AND vault_id = ?2 AND channel = ?3", params![user, vault, channel]).map(|_| ())).await
+    }
+
+    // ---------- answer history
+
+    /// Delete the practice sessions in a vault with every answer, mark and feedback in them: one account's (Some) or
+    /// everyone's (None). Returns how many sessions and answers were deleted.
+    pub async fn clear_history(&self, vault: String, user: Option<i64>) -> Result<(usize, usize)> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let (answers, sessions) = match user {
+                Some(u) => (
+                    tx.execute("DELETE FROM attempts WHERE vault_id = ?1 AND user_id = ?2", params![vault, u])?,
+                    tx.execute("DELETE FROM practice_sessions WHERE vault_id = ?1 AND user_id = ?2", params![vault, u])?,
+                ),
+                None => (
+                    tx.execute("DELETE FROM attempts WHERE vault_id = ?1", params![vault])?,
+                    tx.execute("DELETE FROM practice_sessions WHERE vault_id = ?1", params![vault])?,
+                ),
+            };
+            tx.commit()?;
+            Ok((sessions, answers))
+        })
+        .await
     }
 }
 

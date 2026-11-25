@@ -180,6 +180,8 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/ingest/claude", post(ingest::claude))
         // The exam coach waits for Claude's reply.
         .route("/v/{id}/api/practice/coach", get(practice_h::coach).post(practice_h::coach_send))
+        // So does Ask Claude.
+        .route("/v/{id}/api/practice/chat", get(practice_h::chat).post(practice_h::chat_send))
         // Checking one written answer waits for Claude to mark it.
         .route("/v/{id}/api/practice/sessions/{sid}/check", post(practice_h::check))
         // Pictures shown to the filing model travel in the request (Anthropic takes at most 32 MB).
@@ -229,6 +231,8 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/practice/decks/{did}", get(practice_h::deck).delete(practice_h::delete_deck))
         .route("/v/{id}/api/practice/decks/{did}/progress", axum::routing::put(practice_h::deck_progress))
         .route("/v/{id}/api/practice/coach/clear", post(practice_h::coach_clear))
+        .route("/v/{id}/api/practice/chat/clear", post(practice_h::chat_clear))
+        .route("/v/{id}/api/practice/history/clear", post(practice_h::clear_history))
         .route("/v/{id}/api/practice/docs", post(practice_h::add_doc))
         .route("/v/{id}/api/practice/docs/{did}", axum::routing::delete(practice_h::delete_doc))
         .route("/v/{id}/api/practice/profiles/rebuild", post(practice_h::rebuild_profiles))
@@ -246,6 +250,7 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/new-tab", get(vaults::new_tab))
         .route("/v/{id}/sources", get(ingest::sources_page))
         .route("/v/{id}/practice", get(practice_h::page))
+        .route("/admin/vaults/{id}/papers", get(practice_h::papers_page))
         .route("/vaults/new", get(admin::new_vault_form))
         .route("/admin/microsidian", post(ingest::save_settings))
         .route("/admin/spend-rate", post(ingest::save_rate))
@@ -284,6 +289,7 @@ fn router(state: AppState) -> Router {
         .route("/static/graph.js", get(static_graph_js))
         .route("/static/ingest.js", get(static_ingest_js))
         .route("/static/practice.js", get(static_practice_js))
+        .route("/static/papers.js", get(static_papers_js))
         .route("/favicon.svg", get(favicon))
         .route("/robots.txt", get(|| async { "User-agent: *\nDisallow: /\n" }))
         .fallback(|| async { errors::AppError::NotFound })
@@ -370,6 +376,13 @@ async fn static_practice_js() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
         include_str!("../static/practice.js"),
+    )
+}
+
+async fn static_papers_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "public, max-age=3600")],
+        include_str!("../static/papers.js"),
     )
 }
 

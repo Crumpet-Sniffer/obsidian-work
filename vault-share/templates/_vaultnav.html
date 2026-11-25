@@ -1,5 +1,5 @@
 <nav class="vault-nav" aria-label="Vault">
-  <a class="vault-nav-name" href="/v/{{ vault_id }}" title="Open the notes"><svg class="ic"><use href="#i-book"/></svg><span>{{ vault_name }}</span></a>
+  <a class="vault-nav-name" href="/v/{{ vault_id }}/graph" title="Open the vault (graph view)"><svg class="ic"><use href="#i-book"/></svg><span>{{ vault_name }}</span></a>
   <div class="vault-tabs">
     <a href="/v/{{ vault_id }}"><svg class="ic"><use href="#i-file"/></svg>Notes</a>
     <a href="/v/{{ vault_id }}/practice"{% if section == "practice" %} aria-current="page"{% endif %}><svg class="ic"><use href="#i-practice"/></svg>Practice</a>

@@ -416,6 +416,14 @@ impl Db {
                  PRAGMA user_version = 11; COMMIT;",
             )?;
         }
+        if version < 12 {
+            // Conversations kept per channel: the exam coach ("coach") and Ask Claude about the notes ("chat").
+            conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE coach_messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'coach';
+                 PRAGMA user_version = 12; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Past papers · {{ vault_name }}{% endblock %}
+{% block head %}<script src="/static/papers.js?v={{ page.asset_v }}" defer></script>{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/admin">Admin</a> / <a href="/admin/vaults/{{ vault_id }}">{{ vault_name }}</a></p>
+<div class="page-head">
+  <h1>Past papers and exam documents</h1>
+  <div class="btn-row"><a class="button" href="/v/{{ vault_id }}/practice#hub">Open the question bank</a></div>
+</div>
+<div class="practice" data-papers data-vault="{{ vault_id }}" data-csrf="{{ csrf }}">
+  {% if !configured %}
+  <p class="alert error">Reading past papers needs Claude, and no Anthropic API key is set. Add one under <a href="/admin#microsidian">Admin → Claude settings</a>.</p>
+  {% endif %}
+  <section class="card">
+    <h2>Add past papers and exam documents</h2>
+    <p class="muted">Upload one .zip of everything from the exam board's assessment resources: past papers, mark schemes, the specification, examiner reports and guidance. Claude sorts it, splits each paper into questions with their mark schemes, and builds the paper guides. It takes a few minutes per paper, and you can leave the page. The questions appear in the question bank on the vault's Practice page.</p>
+    <details class="pr-more how">
+      <summary>How it works</summary>
+      <div class="small muted">
+        <p>Files can be PDF, Word or PowerPoint, in any folders, named however they came. Claude works out what each file is, matches each paper to its mark scheme, and reads each paper's qualification, paper number, month and year off its cover.</p>
+        <p>Each paper is split into its questions, each with its marks, type, topics and its part of the mark scheme; the other documents are read for their content areas, command words, marking guidance and what examiners found. Then the paper guides below are built from all of it.</p>
+        <p>Anything already in the hub is skipped, so you can upload a bigger zip later.</p>
+      </div>
+    </details>
+    <form class="pr-upload pr-zip" data-zip-form>
+      <label>Zip of exam papers and documents <input type="file" name="zip" accept=".zip,application/zip" required></label>
+      <div><button type="submit" class="primary">Add everything</button></div>
+    </form>
+    <details class="pr-more pr-one">
+      <summary>Or add files one at a time</summary>
+      <h3 class="pr-h3">A specification</h3>
+      <form class="pr-upload" data-spec-form>
+        <label>Specification <input type="file" name="spec" accept=".pdf,.docx,.pptx" required></label>
+        <label>Qualification <span class="muted">(optional)</span> <input name="qualification" maxlength="150" list="pr-quals" placeholder="Read from the document"></label>
+        <div><button type="submit" class="primary">Add the specification</button></div>
+      </form>
+      <datalist id="pr-quals"></datalist>
+      <h3 class="pr-h3">A past paper and its mark scheme</h3>
+      <form class="pr-upload" data-paper-form>
+        <label>Name <input name="title" maxlength="150" required placeholder="June 2024 Paper 1"></label>
+        <label>Exam paper <input type="file" name="exam" accept=".pdf,.docx,.pptx" required></label>
+        <label>Mark scheme <input type="file" name="scheme" accept=".pdf,.docx,.pptx"></label>
+        <label>Insert <span class="muted">(optional: a case study, source booklet or data sheet given with the paper)</span> <input type="file" name="insert" accept=".pdf,.docx,.pptx"></label>
+        <div><button type="submit" class="primary">Add the paper</button></div>
+      </form>
+    </details>
+    <ul class="jobs" data-paper-jobs aria-live="polite"></ul>
+  </section>
+
+  <section class="card">
+    <h2>Paper guides</h2>
+    <p class="small muted">For each paper of each qualification: the fields (specification areas) it can examine, with how many past questions each has, its format and command words, how marks are earned and what examiners say students get wrong. Built by Claude from the specification, past papers, examiner reports, commentaries and guidance, and used when it writes and marks questions for that paper.</p>
+    <p class="small" data-guides-status aria-live="polite"></p>
+    <div class="pr-guides" data-guides></div>
+    <div class="pr-actions"><button type="button" data-guides-rebuild>Build the guides again</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Papers by year</h2>
+    <p class="small muted">Each exam year: every paper sat that year, the documents about it (examiner reports, commentaries, guidance), and what examiners said about the year as a whole. The examiners' notes are written by Claude from that year's documents when the guides are built.</p>
+    <div class="pr-years" data-years></div>
+  </section>
+
+  <section class="card">
+    <h2>Course documents</h2>
+    <p class="small muted">Specifications, and other documents not about one exam year.</p>
+    <div data-docs></div>
+  </section>
+
+  <section class="card danger-zone">
+    <h2>Clear data</h2>
+    <details class="pr-more pr-wipe" data-wipe>
+      <summary>Clear the question hub</summary>
+      <div>
+        <p class="small">Deletes every past paper and its questions, every exam document, the paper guides and the examiners' notes for each year from this vault's question hub. Questions Claude wrote, everyone's answers and history, flashcards and the exam coach are kept. This cannot be undone; upload the papers again to start over.</p>
+        <label class="check small"><input type="checkbox" name="files"> Also move the exam files kept in the vault (the <code>Question Hub</code> folder under the originals folder) to the vault's trash</label>
+        <div class="pr-actions"><button type="button" class="danger" data-wipe-go>Clear all exam data…</button></div>
+      </div>
+    </details>
+    <details class="pr-more pr-wipe" data-wipe-answers>
+      <summary>Clear everyone's answer history</summary>
+      <div>
+        <p class="small">Deletes every set of questions anyone has answered in this vault, with their answers, marks and feedback, so the history and the exam coach's results start again from nothing. The questions, flashcards, study guides, mind maps and chats are kept. This cannot be undone.</p>
+        <div class="pr-actions"><button type="button" class="danger" data-wipe-answers-go>Clear everyone's answers…</button></div>
+      </div>
+    </details>
+  </section>
+</div>
+{% endblock %}
