@@ -1,7 +1,7 @@
 //! The Practice page and its JSON API: writing quizzes and flashcards with Claude, the question hub of past exam
 //! questions, practice sessions and their marking, history, and the exam coach. See `crate::practice`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use axum::{
     extract::{Path, Query, State},
@@ -208,51 +208,106 @@ pub struct HubQuery {
     /// Specification area labels, separated by "|" (labels can hold commas).
     #[serde(default)]
     spec: String,
+    /// Words to look for in the question, its number or its paper's name.
+    #[serde(default)]
+    q: String,
+    /// "" (paper order), "marks_desc", "marks_asc" or "newest".
+    #[serde(default)]
+    sort: String,
+    /// For "Show more": how many are already shown.
+    #[serde(default)]
+    offset: usize,
 }
 
 fn csv(s: &str) -> Vec<String> {
     s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }
 
-/// The question hub, filtered by topic, question type, mark level, source and paper (each a comma list; empty
-/// means any).
+/// Questions sent per page of the hub.
+const HUB_PAGE: usize = 40;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Facet {
+    Topics,
+    Types,
+    Marks,
+    Years,
+    Spec,
+}
+
+/// The question hub, like a shop's catalogue: filtered by topic, question type, mark level, exam year and
+/// specification area (each a list; empty means any), by source and paper, and by words in the question. With
+/// each page of results come counts for every filter value: how many questions it would give with the other
+/// filters as they are.
 pub async fn hub(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, Query(q): Query<HubQuery>) -> ApiResult {
     let v = authorize(&st, &user, &id).await?;
     let idx = index_for(&st, &v.id).await?;
     let topics = csv(&q.topics);
     let types = csv(&q.types);
     let marks: Vec<i64> = csv(&q.marks).iter().filter_map(|m| m.parse().ok()).collect();
-    let mut papers: Vec<i64> = csv(&q.paper).iter().filter_map(|m| m.parse().ok()).collect();
+    let papers: Vec<i64> = csv(&q.paper).iter().filter_map(|m| m.parse().ok()).collect();
     let years: Vec<i64> = csv(&q.years).iter().filter_map(|m| m.parse().ok()).collect();
-    if !years.is_empty() {
-        // A year filter is a filter on the papers of those years (and the chosen paper, if one was chosen).
-        let of_years: Vec<i64> = st.db.papers(v.id.clone()).await?.into_iter().filter(|p| years.contains(&p.info.year)).map(|p| p.id).collect();
-        papers = if papers.is_empty() { of_years } else { papers.into_iter().filter(|p| of_years.contains(p)).collect() };
-        if papers.is_empty() {
-            papers.push(-1);
-        }
-    }
     let spec: Vec<String> = q.spec.split('|').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+    let words: Vec<String> = q.q.to_lowercase().split_whitespace().take(12).map(str::to_string).collect();
+    let year_of: HashMap<i64, i64> = st.db.papers(v.id.clone()).await?.into_iter().map(|p| (p.id, p.info.year)).collect();
     let all = st.db.questions(v.id.clone()).await?;
-    let matched: Vec<Question> = all
-        .into_iter()
-        .filter(|x| spec.is_empty() || x.spec.iter().any(|t| spec.iter().any(|w| w.eq_ignore_ascii_case(t))))
-        .filter(|x| topics.is_empty() || x.topics.iter().any(|t| topics.iter().any(|w| w.eq_ignore_ascii_case(t))))
-        .filter(|x| types.is_empty() || types.contains(&x.qtype))
-        .filter(|x| marks.is_empty() || marks.contains(&x.marks))
-        .filter(|x| match q.source.as_str() {
+
+    let year = |x: &Question| x.paper_id.and_then(|p| year_of.get(&p).copied()).filter(|y| *y > 0);
+    // The filters that are not facets: where questions come from, the paper, and the words searched for.
+    let base = |x: &Question| {
+        let from = match q.source.as_str() {
             "paper" => x.source == "paper",
             "generated" => x.source == "generated",
             "mine" => x.source == "generated" && x.user_id == Some(user.id),
             _ => true,
+        };
+        let hay = || format!("{} {} {}", x.text, x.number, x.paper_title).to_lowercase();
+        from && (papers.is_empty() || x.paper_id.is_some_and(|p| papers.contains(&p))) && (words.is_empty() || {
+            let h = hay();
+            words.iter().all(|w| h.contains(w.as_str()))
         })
-        .filter(|x| papers.is_empty() || x.paper_id.is_some_and(|p| papers.contains(&p)))
-        .collect();
+    };
+    // Every facet's filter, leaving one out (to count that facet's values).
+    let passes = |x: &Question, skip: Option<Facet>| {
+        let on = |f: Facet| skip != Some(f);
+        (!on(Facet::Spec) || spec.is_empty() || x.spec.iter().any(|t| spec.iter().any(|w| w.eq_ignore_ascii_case(t))))
+            && (!on(Facet::Topics) || topics.is_empty() || x.topics.iter().any(|t| topics.iter().any(|w| w.eq_ignore_ascii_case(t))))
+            && (!on(Facet::Types) || types.is_empty() || types.contains(&x.qtype))
+            && (!on(Facet::Marks) || marks.is_empty() || marks.contains(&x.marks))
+            && (!on(Facet::Years) || years.is_empty() || year(x).is_some_and(|y| years.contains(&y)))
+    };
+
+    let pool: Vec<&Question> = all.iter().filter(|x| base(x)).collect();
+    let mut counts: HashMap<&'static str, HashMap<String, usize>> = HashMap::new();
+    for (name, facet) in [("topics", Facet::Topics), ("types", Facet::Types), ("marks", Facet::Marks), ("years", Facet::Years), ("spec", Facet::Spec)] {
+        let c = counts.entry(name).or_default();
+        for x in pool.iter().filter(|x| passes(x, Some(facet))) {
+            let keys: Vec<String> = match facet {
+                Facet::Topics => x.topics.clone(),
+                Facet::Types => vec![x.qtype.clone()],
+                Facet::Marks => vec![x.marks.to_string()],
+                Facet::Years => year(x).map(|y| vec![y.to_string()]).unwrap_or_default(),
+                Facet::Spec => x.spec.clone(),
+            };
+            for k in keys {
+                *c.entry(k).or_default() += 1;
+            }
+        }
+    }
+
+    let mut matched: Vec<Question> = pool.into_iter().filter(|x| passes(x, None)).cloned().collect();
+    match q.sort.as_str() {
+        "marks_desc" => matched.sort_by(|a, b| b.marks.cmp(&a.marks).then(a.id.cmp(&b.id))),
+        "marks_asc" => matched.sort_by(|a, b| a.marks.cmp(&b.marks).then(a.id.cmp(&b.id))),
+        "newest" => matched.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id))),
+        _ => {}
+    }
     let total = matched.len();
     let vid = v.id.clone();
-    let list = tokio::task::spawn_blocking(move || matched.iter().take(300).map(|q| question_json(&idx, &vid, q, true)).collect::<Vec<_>>());
+    let offset = q.offset.min(total);
+    let list = tokio::task::spawn_blocking(move || matched.iter().skip(offset).take(HUB_PAGE).map(|q| question_json(&idx, &vid, q, true)).collect::<Vec<_>>());
     let list = list.await?;
-    ok(json!({ "questions": list, "total": total }))
+    ok(json!({ "questions": list, "total": total, "offset": offset, "facets": counts }))
 }
 
 /// The ingest worker hands over the questions it found in a past paper.

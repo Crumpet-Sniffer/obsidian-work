@@ -124,7 +124,7 @@
   }
 
   // ---------- tabs ----------
-  const TABS = ["questions", "hub", "cards", "guides", "history", "coach"];
+  const TABS = ["questions", "hub", "papers", "cards", "guides", "history", "coach"];
   // Views opened from a tab keep that tab highlighted.
   const PARENT = { quiz: null, study: "cards", report: "guides" };
   function show(name) {
@@ -141,7 +141,8 @@
     if (name === "cards") loadDecks();
     if (name === "coach") loadCoach();
     if (name === "guides") loadReports();
-    if (name === "hub") { loadPaperJobs(); loadHub(); }
+    if (name === "hub") loadHub();
+    if (name === "papers") loadPaperJobs();
     window.scrollTo({ top: 0 });
   }
   // Arrow keys move between the tabs (the tab pattern).
@@ -180,7 +181,7 @@
       c.type = "checkbox";
       c.value = String(v.value);
       c.checked = checked;
-      l.append(c, document.createTextNode(` ${v.label}`));
+      l.append(c, make("span", "pr-chip-label", ` ${v.label}`), make("span", "pr-n"));
       list.appendChild(l);
       return c;
     });
@@ -204,7 +205,7 @@
       find.setAttribute("aria-label", `Search ${legend ? legend.textContent : "the choices"}`);
       find.addEventListener("input", () => {
         const q = find.value.trim().toLowerCase();
-        boxes.forEach((b) => { b.parentElement.hidden = !!q && !b.parentElement.textContent.toLowerCase().includes(q); });
+        boxes.forEach((b) => { b.parentElement.hidden = !!q && !b.parentElement.querySelector(".pr-chip-label").textContent.toLowerCase().includes(q); });
         all.lastChild.nodeValue = q ? " Select all shown" : " Select all";
       });
       // Enter in the search box must not submit the form.
@@ -227,16 +228,16 @@
     pick.topics = choices("topics", topics);
     pick.types = choices("types", types);
     pick.marks = choices("marks", marks);
-    pick.hubTopics = choices("hub-topics", topics, { checked: false, anyHint: "None ticked means any." });
-    pick.hubTypes = choices("hub-types", types, { checked: false, anyHint: "None ticked means any." });
-    pick.hubMarks = choices("hub-marks", marks, { checked: false, anyHint: "None ticked means any." });
+    pick.hubTopics = choices("hub-topics", topics, { checked: false });
+    pick.hubTypes = choices("hub-types", types, { checked: false });
+    pick.hubMarks = choices("hub-marks", marks, { checked: false });
     const years = [...new Set(meta.papers.map((p) => p.year).filter((y) => y > 0))].sort((a, b) => b - a);
-    pick.hubYears = choices("hub-years", years.map((y) => ({ value: y, label: String(y) })), { checked: false, anyHint: years.length ? "None ticked means any." : "" });
+    pick.hubYears = choices("hub-years", years.map((y) => ({ value: y, label: String(y) })), { checked: false });
     pick.cardTopics = choices("card-topics", topics);
     pick.reportTopics = choices("report-topics", topics);
     const specLabels = [...new Set(meta.profiles.flatMap((p) => p.fields.map((f) => f.label)))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    pick.hubSpec = choices("hub-spec", specLabels.map((l) => ({ value: l, label: l })), { checked: false, anyHint: specLabels.length ? "None ticked means any. Past questions are tagged when the paper guides are built." : "" });
-    $("[data-choices=hub-spec]").hidden = !specLabels.length;
+    pick.hubSpec = choices("hub-spec", specLabels.map((l) => ({ value: l, label: l })), { checked: false });
+    $("[data-facet-spec]").hidden = !specLabels.length;
     // Questions tab: write for one paper, on some of its specification areas.
     const paperSel = $("[data-gen-paper]");
     const keepPaper = paperSel.value;
@@ -251,7 +252,7 @@
     const usePapers = $("[data-gen-form] [name=use_papers]");
     usePapers.disabled = !meta.paperQuestions;
     usePapers.checked = !!meta.paperQuestions;
-    usePapers.parentElement.title = meta.paperQuestions ? `${meta.paperQuestions} past paper questions in the hub` : "Add past papers in the Question hub first";
+    usePapers.parentElement.title = meta.paperQuestions ? `${meta.paperQuestions} past paper questions in the hub` : "Add past papers under Past papers first";
     renderPapers();
   }
 
@@ -878,11 +879,7 @@
         const go = make("button", "", `Show ${key}'s questions`);
         go.type = "button";
         go.addEventListener("click", () => {
-          $$("[data-choices=hub-years] .pr-chip input").forEach((c) => { c.checked = c.value === key; });
-          $("[data-paper-filter]").value = "";
-          hubForm.querySelector("[name=source]").value = "paper";
-          loadHub();
-          hubList.scrollIntoView({ behavior: "smooth", block: "start" });
+          hubWith(() => { $$("[data-choices=hub-years] .pr-chip input").forEach((c) => { c.checked = c.value === key; }); });
         });
         act.appendChild(go);
         d.appendChild(act);
@@ -946,7 +943,119 @@
     return box;
   }
 
-  async function loadHub() {
+  // ---------- the question hub: a catalogue with filters on the left ----------
+  const hubQ = $("[data-hub-q]");
+  const hubSort = $("[data-hub-sort]");
+  const hubMore = $("[data-hub-more]");
+  const FACETS = { "hub-topics": "topics", "hub-types": "types", "hub-marks": "marks", "hub-years": "years", "hub-spec": "spec" };
+  const hubState = { shown: 0, total: 0, seq: 0 };
+
+  /** Put each filter value's count next to it, and dim the ones that would give nothing. */
+  function drawCounts(facets) {
+    for (const [name, key] of Object.entries(FACETS)) {
+      const counts = (facets && facets[key]) || {};
+      // Topic and specification names match whatever case they were tagged with.
+      const lower = {};
+      for (const [k, n] of Object.entries(counts)) lower[k.toLowerCase()] = (lower[k.toLowerCase()] || 0) + n;
+      $$(`[data-choices="${name}"] .pr-chip`).forEach((l) => {
+        const c = l.querySelector("input");
+        const n = lower[String(c.value).toLowerCase()] || 0;
+        l.querySelector(".pr-n").textContent = String(n);
+        l.classList.toggle("is-none", !n && !c.checked);
+      });
+    }
+  }
+
+  /** The filters in use, as chips to take off one at a time. */
+  function drawActive() {
+    const box = $("[data-hub-active]");
+    box.replaceChildren();
+    let n = 0;
+    const chip = (text, undo) => {
+      n++;
+      const b = make("button", "pr-active-chip", text);
+      b.type = "button";
+      b.setAttribute("aria-label", `Remove the filter ${text}`);
+      b.appendChild(make("span", "", "×"));
+      b.addEventListener("click", () => { undo(); loadHub(); });
+      box.appendChild(b);
+    };
+    const src = hubForm.querySelector("[name=source]");
+    if (src.value !== "paper") chip(src.selectedOptions[0].textContent, () => { src.value = "paper"; });
+    const paper = $("[data-paper-filter]");
+    if (paper.value) chip(paper.selectedOptions[0].textContent, () => { paper.value = ""; });
+    for (const name of Object.keys(FACETS)) {
+      $$(`[data-choices="${name}"] .pr-chip input:checked`).forEach((c) => {
+        chip(c.parentElement.querySelector(".pr-chip-label").textContent.trim(), () => { c.checked = false; c.dispatchEvent(new Event("change")); });
+      });
+    }
+    if (hubQ.value.trim()) chip(`“${hubQ.value.trim()}”`, () => { hubQ.value = ""; });
+    if (n > 1) {
+      const all = make("button", "linklike small", "Clear all");
+      all.type = "button";
+      all.addEventListener("click", clearHub);
+      box.appendChild(all);
+    }
+    box.hidden = !n;
+    $("[data-filter-count]").textContent = n ? `(${n})` : "";
+  }
+
+  function clearHub() {
+    hubForm.querySelector("[name=source]").value = "paper";
+    $("[data-paper-filter]").value = "";
+    $$(".pr-store-filters .pr-chip input").forEach((c) => { c.checked = false; });
+    $$(".pr-store-filters input.pr-find").forEach((f) => { f.value = ""; f.dispatchEvent(new Event("input")); });
+    $$(".pr-store-filters .pr-all input").forEach((a) => { a.checked = false; a.indeterminate = false; });
+    hubQ.value = "";
+    loadHub();
+  }
+
+  function hubCard(q) {
+    const li = make("li", "pr-hub-q");
+    const head = make("label", "check pr-q-head");
+    const c = make("input");
+    c.type = "checkbox";
+    c.value = String(q.id);
+    c.checked = selected.has(q.id);
+    c.setAttribute("aria-label", "Choose this question to practise");
+    c.addEventListener("change", () => { if (c.checked) selected.add(q.id); else selected.delete(q.id); li.classList.toggle("is-picked", c.checked); updateHubBar(); });
+    li.classList.toggle("is-picked", c.checked);
+    head.append(c, make("strong", "", q.paper ? `${q.paper}${q.number ? ` · Q${q.number}` : ""}` : "Written by Claude"));
+    head.append(make("span", "pr-tag pr-marks", plural(q.marks, "mark")), make("span", "pr-tag", typeLabel(q.type)));
+    for (const t of q.topics) head.append(make("span", "pr-tag pr-topic", t));
+    for (const t of q.spec || []) head.append(make("span", "pr-tag pr-spec", t));
+    li.appendChild(head);
+    const links = insertLinks(q);
+    if (links.length) { const line = make("p", "small muted pr-q-links", "Uses the insert given with the paper: "); line.append(...links); li.appendChild(line); }
+    const body = make("div", "pr-q-text prose");
+    body.innerHTML = q.html;
+    if (q.type === "fill") showGaps(body);
+    li.appendChild(body);
+    if (q.options && q.options.length) {
+      const ol = make("ol", "pr-hub-options small");
+      q.options.forEach((o) => ol.appendChild(make("li", "", o)));
+      li.appendChild(ol);
+    }
+    const foot = make("div", "pr-hub-foot");
+    const d = make("details", "pr-more");
+    d.appendChild(make("summary", "", "Mark scheme"));
+    const sc = make("div", "prose small");
+    sc.innerHTML = q.schemeHtml || "";
+    if (q.correct && q.correct.length) sc.prepend(make("p", "", `Correct: ${q.correct.map((i) => q.options[i]).join("; ")}`));
+    if (q.accepted && q.accepted.length) sc.prepend(make("p", "", `Accepted answers: ${q.accepted.map((b, i) => `(${i + 1}) ${b.join(" / ")}`).join(" · ")}`));
+    d.appendChild(sc);
+    const go = make("button", "small", "Practise this one");
+    go.type = "button";
+    go.addEventListener("click", async () => {
+      try { const r = await api("POST", "practice/sessions", { question_ids: [q.id] }); openSession(r.id); } catch (e) { toast(e.message, "error"); }
+    });
+    foot.append(d, go);
+    li.appendChild(foot);
+    return li;
+  }
+
+  /** Fetch the hub with the filters in use: a fresh list, or (more) the next page added to it. */
+  async function loadHub(more = false) {
     if (!meta) return;
     const f = new FormData(hubForm);
     const q = new URLSearchParams({
@@ -957,57 +1066,73 @@
       spec: pick.hubSpec().join("|"),
       source: f.get("source") || "",
       paper: f.get("paper") || "",
+      q: hubQ.value.trim(),
+      sort: hubSort.value,
+      offset: String(more ? hubState.shown : 0),
     });
+    const seq = ++hubState.seq;
+    drawActive();
+    hubMore.disabled = true;
     let r;
-    try { r = await api("GET", `practice/hub?${q}`); } catch (e) { $("[data-hub-count]").textContent = e.message; return; }
-    selected.clear();
-    updateHubBar();
-    $("[data-hub-count]").textContent = r.total > r.questions.length ? `${r.total} questions match; the first ${r.questions.length} are shown` : `${plural(r.total, "question")} ${r.total === 1 ? "matches" : "match"}`;
-    hubList.replaceChildren();
-    for (const q of r.questions) {
-      const li = make("li", "pr-hub-q");
-      const head = make("label", "check pr-q-head");
-      const c = make("input");
-      c.type = "checkbox";
-      c.value = String(q.id);
-      c.addEventListener("change", () => { if (c.checked) selected.add(q.id); else selected.delete(q.id); updateHubBar(); });
-      head.append(c, make("strong", "", q.paper ? `${q.paper}${q.number ? ` · Q${q.number}` : ""}` : "Written by Claude"));
-      head.append(make("span", "pr-tag", plural(q.marks, "mark")), make("span", "pr-tag", typeLabel(q.type)));
-      for (const t of q.topics) head.append(make("span", "pr-tag pr-topic", t));
-      for (const t of q.spec || []) head.append(make("span", "pr-tag pr-spec", t));
-      li.appendChild(head);
-      const links = insertLinks(q);
-      if (links.length) { const line = make("p", "small muted pr-q-links", "Uses the insert given with the paper: "); line.append(...links); li.appendChild(line); }
-      const body = make("div", "pr-q-text prose");
-      body.innerHTML = q.html;
-      if (q.type === "fill") showGaps(body);
-      li.appendChild(body);
-      if (q.options && q.options.length) {
-        const ol = make("ol", "pr-hub-options small");
-        q.options.forEach((o) => ol.appendChild(make("li", "", o)));
-        li.appendChild(ol);
-      }
-      const d = make("details", "pr-more");
-      d.appendChild(make("summary", "", "Mark scheme"));
-      const sc = make("div", "prose small");
-      sc.innerHTML = q.schemeHtml || "";
-      if (q.correct && q.correct.length) sc.prepend(make("p", "", `Correct: ${q.correct.map((i) => q.options[i]).join("; ")}`));
-      if (q.accepted && q.accepted.length) sc.prepend(make("p", "", `Accepted answers: ${q.accepted.map((b, i) => `(${i + 1}) ${b.join(" / ")}`).join(" · ")}`));
-      d.appendChild(sc);
-      li.appendChild(d);
-      hubList.appendChild(li);
+    try { r = await api("GET", `practice/hub?${q}`); } catch (e) { $("[data-hub-count]").textContent = e.message; hubMore.disabled = false; return; }
+    if (seq !== hubState.seq) return; // a newer search has started
+    if (!more) {
+      selected.clear();
+      hubList.replaceChildren();
+      hubState.shown = 0;
     }
+    hubState.total = r.total;
+    for (const item of r.questions) hubList.appendChild(hubCard(item));
+    hubState.shown += r.questions.length;
+    drawCounts(r.facets);
+    updateHubBar();
+    $("[data-hub-count]").textContent = r.total ? `${plural(r.total, "question")}${r.total > hubState.shown ? ` · showing ${hubState.shown}` : ""}` : "";
+    if (!r.total) {
+      const empty = make("li", "pr-hub-empty");
+      empty.append(make("strong", "", "No questions match."), make("p", "muted small", "Take off a filter, or search for something else."));
+      if (hubState.seq === seq) hubList.appendChild(empty);
+    }
+    hubMore.hidden = hubState.shown >= r.total;
+    hubMore.disabled = false;
+    hubMore.textContent = `Show more (${r.total - hubState.shown} left)`;
   }
   function updateHubBar() {
     const b = $("[data-hub-practise]");
     b.disabled = !selected.size;
     b.textContent = selected.size ? `Practise ${plural(selected.size, "question")}` : "Practise selected";
   }
-  hubForm.addEventListener("change", () => { window.clearTimeout(hubTimer); hubTimer = window.setTimeout(loadHub, 250); });
+  hubForm.addEventListener("change", () => { window.clearTimeout(hubTimer); hubTimer = window.setTimeout(() => loadHub(), 250); });
+  hubForm.addEventListener("submit", (e) => e.preventDefault());
+  hubQ.addEventListener("input", () => { window.clearTimeout(hubTimer); hubTimer = window.setTimeout(() => loadHub(), 350); });
+  hubSort.addEventListener("change", () => loadHub());
+  hubMore.addEventListener("click", () => loadHub(true));
+  $("[data-hub-clear]").addEventListener("click", clearHub);
+  // On a phone the filters slide over the list.
+  const store = $("[data-panel=hub]");
+  const openFilters = (on) => {
+    store.classList.toggle("show-filters", on);
+    $("[data-filters-open]").setAttribute("aria-expanded", on ? "true" : "false");
+    if (on) { const first = $(".pr-store-filters select"); if (first) first.focus(); } else $("[data-filters-open]").focus();
+  };
+  $("[data-filters-open]").addEventListener("click", () => openFilters(true));
+  $$("[data-filters-close]").forEach((b) => b.addEventListener("click", () => openFilters(false)));
+  store.addEventListener("keydown", (e) => { if (e.key === "Escape" && store.classList.contains("show-filters")) openFilters(false); });
+  /** Open the hub with one filter set (from a paper guide or an exam year). */
+  function hubWith(set) {
+    clearFilters();
+    set();
+    show("hub");
+  }
+  function clearFilters() {
+    hubForm.querySelector("[name=source]").value = "paper";
+    $("[data-paper-filter]").value = "";
+    $$(".pr-store-filters .pr-chip input").forEach((c) => { c.checked = false; });
+    hubQ.value = "";
+  }
   $("[data-hub-all]").addEventListener("click", () => {
     const boxes = $$("input[type=checkbox]", hubList);
     const on = boxes.some((b) => !b.checked);
-    boxes.forEach((b) => { b.checked = on; if (on) selected.add(Number(b.value)); else selected.delete(Number(b.value)); });
+    boxes.forEach((b) => { b.checked = on; b.closest("li").classList.toggle("is-picked", on); if (on) selected.add(Number(b.value)); else selected.delete(Number(b.value)); });
     updateHubBar();
   });
   $("[data-hub-practise]").addEventListener("click", async () => {
@@ -1219,11 +1344,10 @@
         b.title = "Show the past questions on this area";
         b.appendChild(make("span", "muted", String(f.questions)));
         b.addEventListener("click", () => {
-          $$("[data-choices=hub-spec] .pr-chip input").forEach((c) => { c.checked = c.value === f.label; });
-          const src = hubForm.querySelector("[name=source]");
-          src.value = "";
-          loadHub();
-          hubList.scrollIntoView({ behavior: "smooth", block: "start" });
+          hubWith(() => {
+            $$("[data-choices=hub-spec] .pr-chip input").forEach((c) => { c.checked = c.value === f.label; });
+            hubForm.querySelector("[name=source]").value = "";
+          });
         });
         fields.appendChild(b);
       }
@@ -1243,7 +1367,7 @@
     if (building.length) guidesTimer = window.setTimeout(() => loadMeta().then(() => { if (!$("[data-panel=hub]").hidden) loadHub(); }), 5000);
   }
   $("[data-guides-rebuild]").addEventListener("click", async () => {
-    try { await api("POST", "practice/profiles/rebuild", {}); await loadMeta(); } catch (e) { alertBox($("[data-panel=hub]"), e.message); }
+    try { await api("POST", "practice/profiles/rebuild", {}); await loadMeta(); } catch (e) { alertBox($("[data-panel=papers]"), e.message); }
   });
 
   // Admins only: clear everything the question hub holds for this vault.

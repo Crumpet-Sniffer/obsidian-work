@@ -13,6 +13,7 @@
   <nav class="pr-tabs" role="tablist" aria-label="Practice">
     <button type="button" role="tab" data-tab="questions" aria-selected="true">Questions</button>
     <button type="button" role="tab" data-tab="hub" aria-selected="false">Question hub</button>
+    <button type="button" role="tab" data-tab="papers" aria-selected="false">Past papers</button>
     <button type="button" role="tab" data-tab="cards" aria-selected="false">Flashcards</button>
     <button type="button" role="tab" data-tab="guides" aria-selected="false">Study guides</button>
     <button type="button" role="tab" data-tab="history" aria-selected="false">History</button>
@@ -57,7 +58,59 @@
     </form>
   </section>
 
-  <section class="card pr-panel" data-panel="hub" role="tabpanel" hidden>
+  <section class="pr-panel pr-store" data-panel="hub" role="tabpanel" hidden>
+    <form class="pr-store-filters" data-hub-form aria-label="Filter the questions">
+      <div class="pr-filter-head">
+        <h2>Filters</h2>
+        <button type="button" class="linklike small" data-hub-clear>Clear all</button>
+        <button type="button" class="icon-btn pr-filter-close" data-filters-close aria-label="Close the filters"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+      <label class="pr-filter-select">Show
+        <select name="source">
+          <option value="paper">Past paper questions</option>
+          <option value="generated">Questions Claude wrote</option>
+          <option value="mine">Questions Claude wrote for me</option>
+          <option value="">Everything</option>
+        </select>
+      </label>
+      <label class="pr-filter-select">Paper <select name="paper" data-paper-filter><option value="">Any paper</option></select></label>
+      <details class="pr-facet" open><summary>Exam year</summary><fieldset class="pr-choices" data-choices="hub-years"><legend class="sr-only">Exam years</legend></fieldset></details>
+      <details class="pr-facet" open><summary>Question type</summary><fieldset class="pr-choices" data-choices="hub-types"><legend class="sr-only">Question types</legend></fieldset></details>
+      <details class="pr-facet" open><summary>Marks</summary><fieldset class="pr-choices" data-choices="hub-marks"><legend class="sr-only">Mark levels</legend></fieldset></details>
+      <details class="pr-facet" open data-facet-spec><summary>Specification area</summary><fieldset class="pr-choices" data-choices="hub-spec"><legend class="sr-only">Specification areas</legend></fieldset></details>
+      <details class="pr-facet" open><summary>Topic</summary><fieldset class="pr-choices" data-choices="hub-topics"><legend class="sr-only">Topics</legend></fieldset></details>
+      <div class="pr-filter-done"><button type="button" class="primary" data-filters-close>Show the questions</button></div>
+    </form>
+    <div class="pr-store-main">
+      <div class="pr-store-top">
+        <button type="button" class="pr-filters-open" data-filters-open aria-expanded="false"><svg class="ic"><use href="#i-sort"/></svg>Filters <span data-filter-count></span></button>
+        <label class="pr-store-search"><span class="sr-only">Search the questions</span>
+          <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+          <input type="search" data-hub-q placeholder="Search the questions…" maxlength="200" autocomplete="off">
+        </label>
+        <label class="pr-store-sort">Sort
+          <select data-hub-sort>
+            <option value="">Paper order</option>
+            <option value="marks_desc">Most marks first</option>
+            <option value="marks_asc">Fewest marks first</option>
+            <option value="newest">Newest first</option>
+          </select>
+        </label>
+      </div>
+      <div class="pr-active" data-hub-active aria-label="Filters in use"></div>
+      <div class="pr-hub-bar">
+        <span class="muted small" data-hub-count aria-live="polite"></span>
+        <span class="pr-actions">
+          <button type="button" data-hub-all>Select all shown</button>
+          <button type="button" class="primary" data-hub-practise disabled>Practise selected</button>
+        </span>
+      </div>
+      <ol class="pr-hub-list" data-hub-list></ol>
+      <div class="pr-more-row"><button type="button" data-hub-more hidden>Show more</button></div>
+    </div>
+  </section>
+
+  <section class="card pr-panel" data-panel="papers" role="tabpanel" hidden>
     <h2>Add past papers and exam documents</h2>
     <p class="muted">Upload one .zip of everything from the exam board's assessment resources: past papers, mark schemes, the specification, examiner reports and guidance. Claude sorts it, splits each paper into questions with their mark schemes, and builds the paper guides. It takes a few minutes per paper, and you can leave the page.</p>
     <details class="pr-more how">
@@ -115,34 +168,6 @@
       </div>
     </details>
     {% endif %}
-
-    <h2 class="pr-h2">Find questions</h2>
-    <form class="pr-form" data-hub-form>
-      <fieldset class="pr-choices" data-choices="hub-topics"><legend>Topics</legend></fieldset>
-      <fieldset class="pr-choices" data-choices="hub-types"><legend>Question types</legend></fieldset>
-      <fieldset class="pr-choices" data-choices="hub-marks"><legend>Mark levels</legend></fieldset>
-      <fieldset class="pr-choices" data-choices="hub-years"><legend>Exam years</legend></fieldset>
-      <fieldset class="pr-choices" data-choices="hub-spec"><legend>Specification areas</legend></fieldset>
-      <div class="pr-row">
-        <label>From
-          <select name="source">
-            <option value="paper">Past papers</option>
-            <option value="generated">Questions Claude wrote</option>
-            <option value="mine">Questions Claude wrote for me</option>
-            <option value="">Everything</option>
-          </select>
-        </label>
-        <label>Paper <select name="paper" data-paper-filter><option value="">Any paper</option></select></label>
-      </div>
-    </form>
-    <div class="pr-hub-bar">
-      <span class="muted small" data-hub-count aria-live="polite"></span>
-      <span class="pr-actions">
-        <button type="button" data-hub-all>Select all shown</button>
-        <button type="button" class="primary" data-hub-practise disabled>Practise selected</button>
-      </span>
-    </div>
-    <ol class="pr-hub-list" data-hub-list></ol>
   </section>
 
   <section class="card pr-panel" data-panel="cards" role="tabpanel" hidden>
