@@ -31,6 +31,9 @@ pub const DIFFICULTIES: &[&str] = &["easy", "medium", "hard", "mixed"];
 pub const DEFAULT_MARKS: &[i64] = &[1, 2, 3, 4, 6, 8];
 pub const MAX_MARKS: i64 = 30;
 pub const MAX_QUESTIONS: usize = 30;
+/// Past questions sorted by fields and styles in one call to Claude, and calls made at once.
+const TAG_BATCH: usize = 40;
+const TAG_PARALLEL: usize = 4;
 /// Characters of notes sent to Claude to write questions or cards from (about 100,000 tokens).
 const NOTES_BUDGET: usize = 400_000;
 /// Past paper questions shown to Claude as examples of the course's style.
@@ -1753,13 +1756,7 @@ pub async fn build_profiles(st: &AppState, who: &Who, vault: &str, qualification
         "marking_tips": strings(),
         "common_mistakes": strings(),
     }));
-    let schema = object(json!({
-        "profiles": { "type": "array", "items": profile },
-        "question_fields": {
-            "type": "array",
-            "items": object(json!({ "id": { "type": "integer" }, "paper_number": { "type": "string" }, "codes": strings(), "style": { "type": "string" }, "topics": strings() })),
-        },
-    }));
+    let schema = object(json!({ "profiles": { "type": "array", "items": profile } }));
     let v = ask(st, who, vault, "building paper guides", s.profile_prompt(), None, json!([{ "role": "user", "content": msg }]), Some(schema), 32_000).await?;
 
     // Check what came back: sensible sizes, one guide per paper number.
@@ -1829,9 +1826,65 @@ pub async fn build_profiles(st: &AppState, who: &Who, vault: &str, qualification
             .map(|x| list_of(&x.2, "question_styles").iter().map(|q| str_of(q, "name").to_string()).collect())
             .unwrap_or_default()
     };
+    // Then every past question is sorted by those fields and styles (and the vault's topics), a batch at a time, so
+    // a big hub never needs one reply longer than Claude can write.
+    let mut brief = String::new();
+    for (num, title, json) in &saved {
+        brief.push_str(&format!("<guide paper_number=\"{}\" title=\"{}\">\nFields:\n", num.replace('"', "'"), title.replace('"', "'")));
+        for f in list_of(json, "fields") {
+            brief.push_str(&format!("- {}: {}\n", str_of(&f, "code"), str_of(&f, "title")));
+        }
+        brief.push_str("Question styles:\n");
+        for q in list_of(json, "question_styles") {
+            brief.push_str(&format!("- {}: {}\n", str_of(&q, "name"), str_of(&q, "about")));
+        }
+        brief.push_str("</guide>\n");
+    }
+    let topic_list = if topics.is_empty() { "(none: leave each question's topics empty)".to_string() } else { topics.join("\n") };
+    let tag_schema = object(json!({
+        "question_fields": {
+            "type": "array",
+            "items": object(json!({ "id": { "type": "integer" }, "paper_number": { "type": "string" }, "codes": strings(), "style": { "type": "string" }, "topics": strings() })),
+        },
+    }));
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(TAG_PARALLEL));
+    let mut jobs = tokio::task::JoinSet::new();
+    for chunk in questions.chunks(TAG_BATCH) {
+        let mut list = String::new();
+        for q in chunk {
+            let text: String = q.text.split_whitespace().collect::<Vec<_>>().join(" ");
+            list.push_str(&format!(
+                "{} | {} | {} | Q{} | {} marks | {} | {}\n",
+                q.id,
+                q.paper_title,
+                if q.paper_number.is_empty() { "(no paper number)" } else { &q.paper_number },
+                q.number,
+                q.marks,
+                q.qtype,
+                cut(&text, 500)
+            ));
+        }
+        let msg = format!(
+            "Qualification: {qualification}\n\n<guides>\n{brief}</guides>\n\n<topics>\n{topic_list}\n</topics>\n\n<questions>\nid | paper | paper number | number | marks | type | text\n{list}</questions>"
+        );
+        let (st2, who2, vault2, schema2, sem2) = (st.clone(), who.clone(), vault.to_string(), tag_schema.clone(), sem.clone());
+        jobs.spawn(async move {
+            let _permit = sem2.acquire().await;
+            ask(&st2, &who2, &vault2, "sorting past questions", crate::prompts::TAG, None, json!([{ "role": "user", "content": msg }]), Some(schema2), 16_000).await
+        });
+    }
+    let mut sorted: Vec<Value> = Vec::new();
+    while let Some(r) = jobs.join_next().await {
+        match r {
+            Ok(Ok(v)) => sorted.extend(list_of(&v, "question_fields")),
+            Ok(Err(e)) => return Err(format!("the past questions could not be sorted: {e}")),
+            Err(_) => return Err("the past questions could not be sorted.".into()),
+        }
+    }
+
     let ids: HashSet<i64> = questions.iter().map(|q| q.id).collect();
     let mut tags: Vec<QuestionTags> = Vec::new();
-    for t in list_of(&v, "question_fields") {
+    for t in sorted {
         let Some(id) = t["id"].as_i64().filter(|i| ids.contains(i)) else { continue };
         let fields = labels_of(str_of(&t, "paper_number"));
         // A style of that paper (or of any paper of the qualification), by its exact name.
