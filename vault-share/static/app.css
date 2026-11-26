@@ -690,7 +690,8 @@ section[id] { scroll-margin-top: 110px; }
 .pr-chip-label { flex: 1; min-width: 0; }
 .pr-n { margin-left: auto; color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
 .pr-n:empty { display: none; }
-.pr-chip.is-none { opacity: .45; }
+/* A filter value that would give no questions with the other filters is left out (a ticked one stays). */
+.pr-store-filters .pr-chip.is-none { display: none; }
 .pr-store-main { min-width: 0; display: grid; gap: .75rem; align-content: start; }
 .pr-store-top { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
 .pr-store-search { position: relative; display: block; flex: 1; min-width: 220px; }
@@ -740,7 +741,7 @@ section[id] { scroll-margin-top: 110px; }
 .pr-show-all { color: var(--accent); margin: .1rem 0 .4rem 1.2rem; font-size: .85rem; }
 .pr-year-notes li[hidden] { display: none; }
 /* A filter with nothing to choose from is left out. */
-.pr-store-filters .pr-facet:not(:has(.pr-chip)) { display: none; }
+.pr-store-filters .pr-facet:not(:has(.pr-chip:not(.is-none))) { display: none; }
 
 /* The exam's own name for a question's type ("25-mark essay"). */
 .pr-style { color: #d08b2c; background: color-mix(in srgb, #e9973f 15%, transparent); }

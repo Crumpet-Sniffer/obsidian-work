@@ -71,13 +71,12 @@ pub async fn meta(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
     let idx = index_for(&st, &v.id).await?;
     let topics = practice::vault_topics(&idx, &s);
     let qs = st.db.questions(v.id.clone()).await?;
-    let mut marks: Vec<i64> = DEFAULT_MARKS.to_vec();
-    for q in &qs {
-        if !marks.contains(&q.marks) {
-            marks.push(q.marks);
-        }
-    }
+    // The mark levels to write questions at: the ones the past papers use, once there are past papers. A vault with
+    // none yet offers the usual levels, and any its other questions have.
+    let paper_marks: Vec<i64> = qs.iter().filter(|q| q.source == "paper" && q.marks > 0).map(|q| q.marks).collect();
+    let mut marks: Vec<i64> = if paper_marks.is_empty() { DEFAULT_MARKS.iter().copied().chain(qs.iter().map(|q| q.marks).filter(|m| *m > 0)).collect() } else { paper_marks };
     marks.sort_unstable();
+    marks.dedup();
     // The kinds of question in the hub, marks and type together ("9-mark evaluation"), fewest marks first.
     let mut kinds: Vec<(i64, String)> = Vec::new();
     for q in &qs {

@@ -232,17 +232,22 @@
     const more = make("button", "linklike small pr-more-chips");
     more.type = "button";
     more.hidden = true;
-    const label = () => { more.textContent = list.classList.contains("is-folded") ? `Show all ${values.length}` : "Show fewer"; };
+    // Choices hidden for giving nothing (is-none, in the question filters) are left out of the count and the fold.
+    const offered = () => boxes.map((b) => b.parentElement).filter((l) => !l.classList.contains("is-none"));
+    const label = () => { more.textContent = list.classList.contains("is-folded") ? `Show all ${offered().length}` : "Show fewer"; };
     more.addEventListener("click", () => { list.classList.toggle("is-folded"); label(); });
-    label();
     box.append(more);
     function refold() {
       if (!list.offsetParent) return;
       const cols = getComputedStyle(list).gridTemplateColumns.split(" ").filter(Boolean).length;
       const keep = cols > 1 ? cols * 2 : FOLD;
-      boxes.forEach((b, i) => b.parentElement.classList.toggle("is-extra", i >= keep));
-      more.hidden = values.length <= keep || list.classList.contains("is-searching");
+      const shown = offered();
+      boxes.forEach((b) => b.parentElement.classList.remove("is-extra"));
+      shown.forEach((l, i) => l.classList.toggle("is-extra", i >= keep));
+      more.hidden = shown.length <= keep || list.classList.contains("is-searching");
+      label();
     }
+    list.refold = refold;
     if (window.ResizeObserver) new ResizeObserver(() => refold()).observe(list);
     refold();
     if (anyHint) box.appendChild(make("p", "muted small", anyHint));
@@ -1008,7 +1013,10 @@
   const FACETS = { "hub-styles": "styles", "hub-topics": "topics", "hub-types": "types", "hub-years": "years", "hub-spec": "spec" };
   const hubState = { shown: 0, total: 0, seq: 0 };
 
-  /** Put each filter value's count next to it, and dim the ones that would give nothing. */
+  /**
+   * Put each filter value's count next to it, and hide the ones that would give nothing with the other filters
+   * (a ticked one stays, so it can be unticked).
+   */
   function drawCounts(facets) {
     for (const [name, key] of Object.entries(FACETS)) {
       const counts = (facets && facets[key]) || {};
@@ -1021,6 +1029,8 @@
         l.querySelector(".pr-n").textContent = String(n);
         l.classList.toggle("is-none", !n && !c.checked);
       });
+      const list = $(`[data-choices="${name}"] .pr-choice-list`);
+      if (list && list.refold) list.refold();
     }
   }
 
