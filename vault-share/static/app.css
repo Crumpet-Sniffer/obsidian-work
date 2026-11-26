@@ -852,3 +852,5 @@ a.pr-field { text-decoration: none; display: inline-block; }
 .pr-remark.is-up { border-left-color: var(--ok); background: var(--ok-soft); }
 .pr-remark.is-down { border-left-color: var(--bad); background: var(--bad-soft); }
 .pr-quote { display: block; margin-top: .1rem; color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
+.pr-quote.is-said { color: var(--bad); font-style: normal; }
+.pr-why strong { font-weight: 650; }

@@ -1675,7 +1675,7 @@ pub fn mark_objective(q: &Question, answer: &Value) -> (i64, Value) {
 /// Asked of every marking (so it applies with an admin's own marking prompt too): evidence for each point, quoted
 /// from the answer, before the marks are decided. This stops the marker crediting or refusing a point from a
 /// misreading, such as two similar terms taken the wrong way round.
-const MARK_EVIDENCE: &str = "Mark point by point. In points, list every mark scheme point (or, for a levels-based scheme, each level's descriptor) in the scheme's order. For each, copy into evidence the exact words from the answer that meet it, character for character, or leave evidence empty if nothing in the answer does; then set met. Decide met only from the words you quoted: read them again against the point, and check you have not mixed up similar terms (which term is defined how, which side of a comparison is which). Then give marks from the points met, and write feedback that agrees with them.";
+const MARK_EVIDENCE: &str = "Mark point by point. In points, list every mark scheme point (or, for a levels-based scheme, each level's descriptor) in the scheme's order. For each, copy into evidence the exact words from the answer that meet it, character for character, or leave evidence empty if nothing in the answer does; then set met. For a point that is not met, copy into said the exact words of the answer about the same thing (for example, the student's definition of that term, even if it is wrong or the wrong way round), or leave said empty if the answer says nothing about it; for a met point, leave said empty. Decide met only from the words you quoted: read them again against the point, and check you have not mixed up similar terms (which term is defined how, which side of a comparison is which). Then give marks from the points met, and write feedback that agrees with them.";
 
 /// Added when the student challenges a mark: the earlier marking, to be checked from scratch.
 const MARK_CHALLENGE: &str = "The student has challenged the earlier marking given inside <earlier_marking>. Mark the answer again from scratch, independently, as above: do not assume the earlier marking was right or wrong. In note, say in one or two sentences to the student whether the earlier marking was right, and if not, what it got wrong (for example, that it misread their answer).";
@@ -1705,6 +1705,7 @@ pub async fn mark_written(st: &AppState, who: &Who, vault_id: &str, q: &Question
         "points": { "type": "array", "items": object(json!({
             "point": { "type": "string" },
             "evidence": { "type": "string" },
+            "said": { "type": "string" },
             "met": { "type": "boolean" },
         })) },
         "marks": { "type": "integer" },
@@ -1715,16 +1716,16 @@ pub async fn mark_written(st: &AppState, who: &Who, vault_id: &str, q: &Question
     let what = if challenge.is_some() { "re-marking a challenged answer" } else { "marking" };
     let v = ask(st, who, vault_id, what, s.mark_prompt(), guidance.map(|g| format!("<paper_guidance>\n{g}\n</paper_guidance>")), json!([{ "role": "user", "content": msg }]), Some(schema), 10_000).await?;
     let marks = v.get("marks").and_then(Value::as_i64).unwrap_or(0).clamp(0, q.marks);
-    let points: Vec<(String, String, bool)> = v
+    let points: Vec<(String, String, bool, String)> = v
         .get("points")
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
                 .map(|p| {
                     let s = |k: &str| clip(p.get(k).and_then(Value::as_str).unwrap_or(""), 400);
-                    (s("point"), s("evidence"), p.get("met").and_then(Value::as_bool).unwrap_or(false))
+                    (s("point"), s("evidence"), p.get("met").and_then(Value::as_bool).unwrap_or(false), s("said"))
                 })
-                .filter(|(p, _, _)| !p.is_empty())
+                .filter(|(p, _, _, _)| !p.is_empty())
                 .take(20)
                 .collect()
         })
@@ -1735,7 +1736,7 @@ pub async fn mark_written(st: &AppState, who: &Who, vault_id: &str, q: &Question
         "feedback": clip(v.get("feedback").and_then(Value::as_str).unwrap_or(""), 3000),
         "met": met,
         "missed": missed,
-        "evidence": points.iter().map(|(p, e, m)| json!({ "point": p, "evidence": e, "met": m })).collect::<Vec<_>>(),
+        "evidence": points.iter().map(|(p, e, m, said)| json!({ "point": p, "evidence": e, "met": m, "said": said })).collect::<Vec<_>>(),
         "model": clip(v.get("model_answer").and_then(Value::as_str).unwrap_or(""), 6000),
     });
     if let Some(c) = challenge {

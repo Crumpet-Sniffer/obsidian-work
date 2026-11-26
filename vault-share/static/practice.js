@@ -675,7 +675,12 @@
     }
     if (fb.feedbackHtml) { const d = make("div", "prose small"); d.innerHTML = fb.feedbackHtml; box.appendChild(d); }
     else if (fb.feedback) box.appendChild(make("p", "small", fb.feedback));
-    if (q.explanation) box.appendChild(make("p", "small pr-why", q.explanation));
+    // The question's own explanation of the right answer, labelled so it is not taken for the student's answer.
+    if (q.explanation) {
+      const why = make("p", "small pr-why");
+      why.append(make("strong", "", "Why this is the answer: "), document.createTextNode(q.explanation));
+      box.appendChild(why);
+    }
     const lists = make("div", "pr-points");
     const listOf = (title, items, cls) => {
       if (!items || !items.length) return;
@@ -691,6 +696,9 @@
       const withQuote = (met) => fb.evidence.filter((e) => !!e.met === met).map((e) => {
         const li = make("li", "", e.point);
         if (met && e.evidence) li.append(make("span", "pr-quote", `“${e.evidence}”`));
+        // For a point missed: what the answer said about it instead (a definition the wrong way round, say).
+        if (!met && e.said) li.append(make("span", "pr-quote is-said", `You wrote: “${e.said}”`));
+        else if (!met && "said" in e) li.append(make("span", "pr-quote is-said", "Your answer does not mention this."));
         return li;
       });
       for (const [title, met, cls] of [["You got", true, "pr-met"], ["You missed", false, "pr-missed"]]) {

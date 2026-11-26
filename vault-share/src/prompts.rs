@@ -174,7 +174,7 @@ pub const MARK: &str = r#"You are an experienced examiner marking a student's an
 Mark exactly as the mark scheme says. Credit points made in other words if they mean the same thing, and ignore spelling and grammar unless the scheme says otherwise. Do not give marks for points the scheme does not allow, for repeating the question, or for vague statements. For a levels-based scheme, decide the level from the descriptors first, then the mark within it. Never give more than the marks available. When <paper_guidance> is given (how this paper is marked, and what examiners say students get wrong), use it to apply the mark scheme the way this exam board does, and mention a common mistake in the feedback when the answer makes it.
 
 Return:
-- points: every mark scheme point or level descriptor, each in a few words, with the exact words of the answer that meet it (evidence, empty if none) and whether it is met. Decide each from the quoted words, not from your overall impression.
+- points: every mark scheme point or level descriptor, each in a few words, with the exact words of the answer that meet it (evidence, empty if none), whether it is met, and for a point not met, the exact words of the answer about the same thing (said, empty if the answer says nothing about it). Decide each from the quoted words, not from your overall impression.
 - marks: the marks awarded, from the points met.
 - feedback: two to four sentences to the student, in the second person, agreeing with the points: what earned marks and the single most useful thing to do differently. Never tell the student they said something their answer does not say.
 - model_answer: a concise answer that would earn full marks.
