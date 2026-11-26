@@ -186,6 +186,8 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/practice/coach/grades", post(practice_h::coach_grade))
         // Checking one written answer waits for Claude to mark it.
         .route("/v/{id}/api/practice/sessions/{sid}/check", post(practice_h::check))
+        // So does marking a challenged answer again.
+        .route("/v/{id}/api/practice/sessions/{sid}/remark", post(practice_h::remark))
         // Pictures shown to the filing model travel in the request (Anthropic takes at most 32 MB).
         .layer(DefaultBodyLimit::max(34 * 1024 * 1024));
 

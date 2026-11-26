@@ -584,6 +584,35 @@
     }
   }
 
+  /** Challenge the marking of one written answer: it is marked again and the new marking replaces the old. */
+  async function challenge(q, btn) {
+    if (!window.confirm("Have Claude mark this answer again from scratch?\n\nIt checks your words against each point of the mark scheme. The new mark replaces this one, even if it is lower. You can challenge each answer once.")) return;
+    btn.disabled = true;
+    btn.textContent = "Claude is marking it again…";
+    try {
+      const r = await api("POST", `practice/sessions/${quiz.id}/remark`, { question_id: q.id });
+      const i = quiz.data.items.findIndex((x) => x.id === q.id);
+      if (i < 0) return;
+      quiz.data.items[i] = r.item;
+      if (r.score !== undefined) {
+        quiz.data.score = r.score;
+        quiz.data.total = r.total;
+        $("[data-quiz-score]").textContent = `${r.score} / ${r.total} (${pct(r.score, r.total)}%)`;
+      }
+      const li = $$(".pr-q", quizItems)[i];
+      const fresh = renderItem(r.item, i, quiz.data);
+      if (li) li.replaceWith(fresh);
+      renderSummary(quiz.data);
+      layout();
+      const box = fresh.querySelector(".pr-remark");
+      if (box) box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (e) {
+      toast(e.message, "error");
+      btn.disabled = false;
+      btn.textContent = "Challenge this mark";
+    }
+  }
+
   function result(q, a, n) {
     const box = make("div", "pr-result");
     const fb = a.feedback || {};
@@ -609,7 +638,23 @@
       askClaude(`Explain question ${n + 1} to me: what the right answer is, why, and what I should have done to get full marks.\n\nQuestion: ${text.textContent.trim().slice(0, 1500)}${opts}\n\nMy answer: ${String(yours).slice(0, 2000) || "(none)"}${marking ? `\n\n${marking}` : ""}`);
     });
     top.append(explain);
+    // A written answer Claude marked can be challenged once: it is marked again from scratch, point by point.
+    const marked = a.marks !== null && a.marks !== undefined;
+    if (q.type === "written" && marked && !fb.remarked && !fb.error && a.answer && String(a.answer.text || "").trim() && quiz.id) {
+      const ch = make("button", "small linklike", "Challenge this mark");
+      ch.type = "button";
+      ch.title = "Think the marking misread your answer? Claude marks it again from scratch, quoting your words against each point of the mark scheme. The new mark replaces this one.";
+      ch.addEventListener("click", () => challenge(q, ch));
+      top.append(ch);
+    }
     box.appendChild(top);
+    if (fb.remarked) {
+      const was = Number(fb.previous) || 0;
+      const d = make("div", `pr-remark small ${a.marks > was ? "is-up" : a.marks < was ? "is-down" : ""}`);
+      d.append(make("strong", "", a.marks === was ? `Marked again after your challenge: still ${a.marks} / ${a.total}.` : `Marked again after your challenge: ${was} → ${a.marks} / ${a.total}.`));
+      if (fb.note) d.append(" ", document.createTextNode(fb.note));
+      box.appendChild(d);
+    }
     if (fb.error) box.appendChild(make("p", "small", fb.error));
     if (q.type === "calc" && q.calc) {
       const c = q.calc;
@@ -641,8 +686,27 @@
       d.appendChild(ul);
       lists.appendChild(d);
     };
-    listOf("You got", fb.met, "pr-met");
-    listOf("You missed", fb.missed, "pr-missed");
+    if (Array.isArray(fb.evidence) && fb.evidence.length) {
+      // Each mark scheme point with the words of the answer that met it.
+      const withQuote = (met) => fb.evidence.filter((e) => !!e.met === met).map((e) => {
+        const li = make("li", "", e.point);
+        if (met && e.evidence) li.append(make("span", "pr-quote", `“${e.evidence}”`));
+        return li;
+      });
+      for (const [title, met, cls] of [["You got", true, "pr-met"], ["You missed", false, "pr-missed"]]) {
+        const items = withQuote(met);
+        if (!items.length) continue;
+        const d = make("div", cls);
+        d.appendChild(make("strong", "small", title));
+        const ul = make("ul", "small");
+        ul.append(...items);
+        d.appendChild(ul);
+        lists.appendChild(d);
+      }
+    } else {
+      listOf("You got", fb.met, "pr-met");
+      listOf("You missed", fb.missed, "pr-missed");
+    }
     if (lists.children.length) box.appendChild(lists);
     if (fb.modelHtml) {
       const d = make("details", "pr-more");

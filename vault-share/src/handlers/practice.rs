@@ -1068,7 +1068,7 @@ pub async fn check(State(st): State<AppState>, user: CurrentUser, Path((id, sid)
         let guide = q.profile_id.and_then(|pid| profiles.iter().find(|p| p.id == pid)).map(|p| p.marking_guidance()).filter(|g| !g.is_empty());
         let (st2, w, vid, q2) = (st.clone(), who(&user), v.id.clone(), q.clone());
         // In its own task, so the marking is kept even if the page is closed while waiting.
-        let task = tokio::spawn(async move { practice::mark_written(&st2, &w, &vid, &q2, &text, guide).await });
+        let task = tokio::spawn(async move { practice::mark_written(&st2, &w, &vid, &q2, &text, guide, None).await });
         match task.await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => return Err(ApiErr::Bad(e)),
@@ -1098,6 +1098,131 @@ pub async fn check(State(st): State<AppState>, user: CurrentUser, Path((id, sid)
     })
     .await?;
     ok(out)
+}
+
+#[derive(Deserialize)]
+pub struct RemarkBody {
+    question_id: i64,
+}
+
+/// Marking feedback as the page shows it: its Markdown rendered.
+fn rendered_feedback(idx: &VaultIndex, vault_id: &str, fb: &Value) -> Value {
+    let mut fb = fb.clone();
+    for k in ["feedback", "model"] {
+        if let Some(t) = fb.get(k).and_then(Value::as_str).map(str::to_string) {
+            fb[format!("{k}Html")] = json!(practice::render(idx, vault_id, &t));
+        }
+    }
+    fb
+}
+
+/// The marking guidance of a question's paper, for marking a written answer to it.
+async fn guidance_for(st: &AppState, vault: &str, q: &mut Question) -> Result<Option<String>, ApiErr> {
+    let profiles = st.db.profiles(vault.to_string()).await?;
+    if q.profile_id.is_none() && !q.qualification.is_empty() {
+        q.profile_id = profiles.iter().find(|p| p.qualification.eq_ignore_ascii_case(&q.qualification) && p.paper_number.eq_ignore_ascii_case(&q.paper_number)).map(|p| p.id);
+    }
+    Ok(q.profile_id.and_then(|pid| profiles.iter().find(|p| p.id == pid)).map(|p| p.marking_guidance()).filter(|g| !g.is_empty()))
+}
+
+/// Challenge the marking of a written answer: Claude marks it again from scratch, point by point, quoting the answer,
+/// and the new marking replaces the old one (the score is worked out again). Once per answer. Works for answers
+/// handed in and for answers checked before handing in.
+pub async fn remark(State(st): State<AppState>, user: CurrentUser, Path((id, sid)): Path<(String, String)>, headers: HeaderMap, Json(b): Json<RemarkBody>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let s = own_session(&st, &user, &v.id, &sid).await?;
+    if Settings::load(&st.db).await?.api_key.is_none() {
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
+    }
+    let attempts = st.db.attempts(s.id.clone()).await?;
+    let idx = index_for(&st, &v.id).await?;
+    let vid = v.id.clone();
+    if !attempts.is_empty() {
+        // Handed in: re-mark the answer kept with the session.
+        if s.status != "marked" {
+            return Err(ApiErr::Bad("Wait until the answers have been marked.".into()));
+        }
+        let a = attempts.iter().find(|a| a.question.get("id").and_then(Value::as_i64) == Some(b.question_id)).ok_or(ApiErr::NotFound)?;
+        let mut q = Question::from_snapshot(&a.question);
+        if q.qtype != "written" {
+            return Err(ApiErr::Bad("Only written answers are marked by Claude, so only they can be challenged.".into()));
+        }
+        if a.feedback.get("remarked").and_then(Value::as_bool).unwrap_or(false) {
+            return Err(ApiErr::Bad("This answer has already been marked again.".into()));
+        }
+        let text = a.answer.get("text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        if text.is_empty() {
+            return Err(ApiErr::Bad("No answer was given, so there is nothing to mark again.".into()));
+        }
+        let guide = guidance_for(&st, &v.id, &mut q).await?;
+        let mut earlier = a.feedback.clone();
+        earlier["marks"] = json!(a.marks.unwrap_or(0));
+        let (st2, w, vid2, q2) = (st.clone(), who(&user), v.id.clone(), q.clone());
+        // In its own task, so the new marking is kept even if the page is closed while waiting.
+        let (aid, total) = (a.id, a.total);
+        let sid2 = s.id.clone();
+        let err = s.error.clone();
+        let task = tokio::spawn(async move {
+            let r = practice::mark_written(&st2, &w, &vid2, &q2, &text, guide, Some(&earlier)).await?;
+            st2.db.mark_attempt(aid, Some(r.0), r.1.clone()).await.map_err(|_| "The new marking could not be saved.".to_string())?;
+            let all = st2.db.attempts(sid2.clone()).await.map_err(|_| "The score could not be worked out again.".to_string())?;
+            let score: i64 = all.iter().filter_map(|x| x.marks).sum();
+            let out_of: i64 = all.iter().map(|x| x.total).sum();
+            let _ = st2.db.set_session(sid2, "marked", err, None, Some((score, out_of))).await;
+            Ok::<_, String>((r, score, out_of))
+        });
+        let ((marks, fb), score, out_of) = match task.await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => return Err(ApiErr::Bad(e)),
+            Err(e) => return Err(ApiErr::Internal(e.into())),
+        };
+        st.db.audit(user.audit_id(), None, "practice_remark", format!("{}: {} → {marks} of {total}", v.name, a.marks.unwrap_or(0))).await;
+        let answer = a.answer.clone();
+        let item = tokio::task::spawn_blocking(move || {
+            let mut j = question_json(&idx, &vid, &q, true);
+            j["attempt"] = json!({ "answer": answer, "marks": marks, "total": total, "feedback": rendered_feedback(&idx, &vid, &fb) });
+            j
+        })
+        .await?;
+        return ok(json!({ "item": item, "score": score, "total": out_of }));
+    }
+    // Not handed in yet: re-mark an answer checked one at a time.
+    if s.status != "ready" {
+        return Err(ApiErr::Bad("Wait until the answers have been marked.".into()));
+    }
+    let entry = s.settings.pointer(&format!("/checked/{}", b.question_id)).cloned().ok_or(ApiErr::NotFound)?;
+    let mut q = st.db.questions_by_id(v.id.clone(), vec![b.question_id]).await?.pop().ok_or(ApiErr::NotFound)?;
+    if q.qtype != "written" {
+        return Err(ApiErr::Bad("Only written answers are marked by Claude, so only they can be challenged.".into()));
+    }
+    if entry.pointer("/feedback/remarked").and_then(Value::as_bool).unwrap_or(false) {
+        return Err(ApiErr::Bad("This answer has already been marked again.".into()));
+    }
+    let text = entry.pointer("/answer/text").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let guide = guidance_for(&st, &v.id, &mut q).await?;
+    let mut earlier = entry.get("feedback").cloned().unwrap_or(json!({}));
+    earlier["marks"] = entry.get("marks").cloned().unwrap_or(json!(0));
+    let (st2, w, vid2, q2) = (st.clone(), who(&user), v.id.clone(), q.clone());
+    let task = tokio::spawn(async move { practice::mark_written(&st2, &w, &vid2, &q2, &text, guide, Some(&earlier)).await });
+    let (marks, fb) = match task.await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return Err(ApiErr::Bad(e)),
+        Err(e) => return Err(ApiErr::Internal(e.into())),
+    };
+    let new_entry = json!({ "answer": entry.get("answer").cloned().unwrap_or(json!({})), "marks": marks, "feedback": fb });
+    // Read the settings again just before saving, so checks of other questions made meanwhile are kept.
+    let fresh = st.db.practice_session(s.id.clone()).await?.ok_or(ApiErr::NotFound)?;
+    let mut settings = fresh.settings.clone();
+    settings["checked"][b.question_id.to_string()] = new_entry.clone();
+    st.db.set_session_settings(s.id.clone(), settings).await?;
+    let item = tokio::task::spawn_blocking(move || {
+        let mut j = question_json(&idx, &vid, &q, true);
+        j["check"] = check_json(&idx, &vid, &q, &new_entry);
+        j
+    })
+    .await?;
+    ok(json!({ "item": item }))
 }
 
 /// A follow-up quiz: new questions on what the student lost marks on in a marked session.

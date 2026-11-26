@@ -1672,36 +1672,78 @@ pub fn mark_objective(q: &Question, answer: &Value) -> (i64, Value) {
     }
 }
 
-/// Mark a written answer against its mark scheme with Claude.
-pub async fn mark_written(st: &AppState, who: &Who, vault_id: &str, q: &Question, text: &str, guidance: Option<String>) -> Result<(i64, Value), String> {
+/// Asked of every marking (so it applies with an admin's own marking prompt too): evidence for each point, quoted
+/// from the answer, before the marks are decided. This stops the marker crediting or refusing a point from a
+/// misreading, such as two similar terms taken the wrong way round.
+const MARK_EVIDENCE: &str = "Mark point by point. In points, list every mark scheme point (or, for a levels-based scheme, each level's descriptor) in the scheme's order. For each, copy into evidence the exact words from the answer that meet it, character for character, or leave evidence empty if nothing in the answer does; then set met. Decide met only from the words you quoted: read them again against the point, and check you have not mixed up similar terms (which term is defined how, which side of a comparison is which). Then give marks from the points met, and write feedback that agrees with them.";
+
+/// Added when the student challenges a mark: the earlier marking, to be checked from scratch.
+const MARK_CHALLENGE: &str = "The student has challenged the earlier marking given inside <earlier_marking>. Mark the answer again from scratch, independently, as above: do not assume the earlier marking was right or wrong. In note, say in one or two sentences to the student whether the earlier marking was right, and if not, what it got wrong (for example, that it misread their answer).";
+
+/// Mark a written answer against its mark scheme with Claude. `challenge` is the earlier marking when the student has
+/// challenged it (`{marks, feedback, missed}`); the answer is then marked again from scratch.
+pub async fn mark_written(st: &AppState, who: &Who, vault_id: &str, q: &Question, text: &str, guidance: Option<String>, challenge: Option<&Value>) -> Result<(i64, Value), String> {
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
     let scheme = if q.scheme.trim().is_empty() { "(No mark scheme was given: mark as an examiner for this course would.)" } else { &q.scheme };
-    let msg = format!(
-        "<question marks=\"{}\">\n{}\n</question>\n\n<mark_scheme>\n{}\n</mark_scheme>\n\n<answer>\n{}\n</answer>",
+    let mut msg = format!(
+        "<question marks=\"{}\">\n{}\n</question>\n\n<mark_scheme>\n{}\n</mark_scheme>\n\n<answer>\n{}\n</answer>\n\n{MARK_EVIDENCE}",
         q.marks,
         q.text,
         scheme,
         text.replace("</answer>", "")
     );
+    if let Some(c) = challenge {
+        msg.push_str(&format!(
+            "\n\n<earlier_marking marks=\"{}\">\n{}\n</earlier_marking>\n\n{MARK_CHALLENGE}",
+            c.get("marks").and_then(Value::as_i64).unwrap_or(0),
+            clip(&serde_json::to_string(&json!({ "feedback": c.get("feedback"), "missed": c.get("missed"), "met": c.get("met") })).unwrap_or_default(), 4000)
+        ));
+    } else {
+        msg.push_str("\n\nLeave note empty.");
+    }
     let schema = object(json!({
+        "points": { "type": "array", "items": object(json!({
+            "point": { "type": "string" },
+            "evidence": { "type": "string" },
+            "met": { "type": "boolean" },
+        })) },
         "marks": { "type": "integer" },
         "feedback": { "type": "string" },
-        "points_met": strings(),
-        "points_missed": strings(),
         "model_answer": { "type": "string" },
+        "note": { "type": "string" },
     }));
-    let v = ask(st, who, vault_id, "marking", s.mark_prompt(), guidance.map(|g| format!("<paper_guidance>\n{g}\n</paper_guidance>")), json!([{ "role": "user", "content": msg }]), Some(schema), 8000).await?;
+    let what = if challenge.is_some() { "re-marking a challenged answer" } else { "marking" };
+    let v = ask(st, who, vault_id, what, s.mark_prompt(), guidance.map(|g| format!("<paper_guidance>\n{g}\n</paper_guidance>")), json!([{ "role": "user", "content": msg }]), Some(schema), 10_000).await?;
     let marks = v.get("marks").and_then(Value::as_i64).unwrap_or(0).clamp(0, q.marks);
-    let list = |k: &str| v.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(|x| clip(x, 400)).take(20).collect::<Vec<_>>()).unwrap_or_default();
-    Ok((
-        marks,
-        json!({
-            "feedback": clip(v.get("feedback").and_then(Value::as_str).unwrap_or(""), 3000),
-            "met": list("points_met"),
-            "missed": list("points_missed"),
-            "model": clip(v.get("model_answer").and_then(Value::as_str).unwrap_or(""), 6000),
-        }),
-    ))
+    let points: Vec<(String, String, bool)> = v
+        .get("points")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|p| {
+                    let s = |k: &str| clip(p.get(k).and_then(Value::as_str).unwrap_or(""), 400);
+                    (s("point"), s("evidence"), p.get("met").and_then(Value::as_bool).unwrap_or(false))
+                })
+                .filter(|(p, _, _)| !p.is_empty())
+                .take(20)
+                .collect()
+        })
+        .unwrap_or_default();
+    let met: Vec<&str> = points.iter().filter(|p| p.2).map(|p| p.0.as_str()).collect();
+    let missed: Vec<&str> = points.iter().filter(|p| !p.2).map(|p| p.0.as_str()).collect();
+    let mut fb = json!({
+        "feedback": clip(v.get("feedback").and_then(Value::as_str).unwrap_or(""), 3000),
+        "met": met,
+        "missed": missed,
+        "evidence": points.iter().map(|(p, e, m)| json!({ "point": p, "evidence": e, "met": m })).collect::<Vec<_>>(),
+        "model": clip(v.get("model_answer").and_then(Value::as_str).unwrap_or(""), 6000),
+    });
+    if let Some(c) = challenge {
+        fb["remarked"] = json!(true);
+        fb["previous"] = json!(c.get("marks").and_then(Value::as_i64).unwrap_or(0));
+        fb["note"] = json!(clip(v.get("note").and_then(Value::as_str).unwrap_or(""), 800));
+    }
+    Ok((marks, fb))
 }
 
 /// Mark every answer of a session: the objective ones here, written ones by Claude, several at a time.
@@ -1744,7 +1786,7 @@ pub async fn mark_session(st: AppState, who: Who, session: Session) {
                 } else {
                     let _permit = sem.acquire().await;
                     let guide = q.profile_id.and_then(|id| guides.get(&id).cloned());
-                    match mark_written(&st, &who, &vault, &q, &text, guide).await {
+                    match mark_written(&st, &who, &vault, &q, &text, guide, None).await {
                         Ok((m, f)) => (Some(m), f),
                         Err(e) => (None, json!({ "error": format!("This answer could not be marked: {e}") })),
                     }
