@@ -726,3 +726,123 @@ a.pr-field { text-decoration: none; display: inline-block; }
 @media print {
   .pr-mapview .pr-map { max-height: none; overflow: visible; border: 0; }
 }
+/* Claude API spend in the resource tracker */
+.rm-spend .rm-v { min-width: 0; }
+.rm-spend .rm-l { opacity: .7; }
+
+/* ---------- practice: where questions come from (the slider) ---------- */
+.pr-source { border: 1px solid var(--line); border-radius: 10px; padding: .6rem .9rem .5rem; margin: 0 0 1rem; }
+.pr-source legend { font-weight: 600; padding: 0 .3rem; }
+.pr-source input[type=range] { width: 100%; margin: .35rem 0 0; accent-color: var(--accent); cursor: pointer; }
+.pr-source input[type=range]:disabled { cursor: not-allowed; opacity: .5; }
+.pr-source-labels { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .5rem; }
+.pr-source-labels button { border: 0; background: none; padding: .15rem 0; color: var(--muted); font-size: .875rem; cursor: pointer; }
+.pr-source-labels button:first-child { justify-self: start; text-align: left; }
+.pr-source-labels button:nth-child(2) { justify-self: center; text-align: center; }
+.pr-source-labels button:last-child { justify-self: end; text-align: right; }
+.pr-source-labels button[aria-pressed="true"] { color: var(--ink); font-weight: 650; }
+.pr-source-labels button:disabled { cursor: not-allowed; }
+.pr-source p { margin: .35rem 0 0; }
+[data-gen-claude-only][hidden] { display: none !important; }
+
+/* ---------- practice: calculations built from tiles ---------- */
+.pr-calc { display: grid; gap: .6rem; margin-top: .5rem; }
+.pr-calc-tray { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.pr-calc-tray-label { min-width: 5.5rem; }
+.pr-tok { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-width: 2.2rem; padding: .3rem .6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-alt); color: var(--ink); line-height: 1.15; user-select: none; font-variant-numeric: tabular-nums; }
+.pr-tok[role=button] { cursor: grab; }
+.pr-tok[role=button]:hover, .pr-tok[role=button]:focus-visible { border-color: var(--accent); outline: none; }
+.pr-tok.is-dragging { opacity: .4; }
+.pr-tok.is-val { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-soft); }
+.pr-tok.is-op { font-weight: 700; font-size: 1.05rem; min-width: 2.2rem; }
+.pr-tok.is-num { border-style: dashed; }
+.pr-tok-label { font-size: .8rem; color: var(--muted); }
+.pr-tok-value { font-weight: 650; }
+.pr-tok.is-small { padding: .1rem .4rem; min-width: 0; flex-direction: row; gap: .3rem; font-size: .85rem; vertical-align: middle; margin: 0 .1rem; }
+.pr-tok.is-small .pr-tok-label { font-size: .8rem; }
+.pr-calc-num { width: 7rem; padding: .3rem .5rem; font: inherit; }
+.pr-calc-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: .6rem; }
+.pr-calc-formula { flex: 1 1 22rem; display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; min-height: 3.4rem; padding: .5rem; border: 2px dashed var(--line); border-radius: 10px; }
+.pr-calc-formula.is-over { border-color: var(--accent); background: var(--accent-soft); }
+.pr-calc.is-locked .pr-calc-formula { border-style: solid; }
+.pr-calc-result { flex: 0 1 auto; display: flex; align-items: center; padding: .5rem .9rem; border-radius: 10px; background: var(--code-bg); font-size: 1.05rem; font-variant-numeric: tabular-nums; min-width: 9rem; }
+.pr-calc-tools { margin: 0; }
+.pr-calc-mark { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem; margin: .35rem 0; }
+.pr-formula-view { display: inline-flex; flex-wrap: wrap; gap: .15rem; }
+
+/* ---------- practice: a retrieval quiz with its document beside it ---------- */
+.container.pr-wide { max-width: min(1700px, 100%); }
+.pr-quiz.has-resource .pr-quiz-split { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 1.25rem; align-items: start; }
+.pr-resource { position: sticky; top: .75rem; display: flex; flex-direction: column; height: calc(100vh - 1.5rem); min-height: 420px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); }
+.pr-resource[hidden] { display: none; }
+.pr-resource-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line); background: var(--bg-alt); }
+.pr-resource-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-resource-body { flex: 1; overflow: auto; padding: .75rem; }
+.pr-resource-body .office-host { padding: 0; }
+.pr-resource-body .pptx-deck .slide-wrap { max-width: none; }
+.pr-resource-pdf { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.pr-resource-body:has(.pr-resource-pdf) { padding: 0; overflow: hidden; }
+.pr-resource-note { max-width: none; }
+.pr-quiz-main { min-width: 0; }
+@media (max-width: 900px) {
+  .pr-quiz.has-resource .pr-quiz-split { grid-template-columns: 1fr; }
+  .pr-resource { position: relative; top: 0; height: 60vh; }
+}
+.pr-compare { display: flex; flex-wrap: wrap; align-items: stretch; gap: .75rem; margin: 0 0 1rem; }
+.pr-compare[hidden] { display: none; }
+.pr-compare-cell { display: grid; gap: .1rem; padding: .6rem 1rem; border: 1px solid var(--line); border-radius: 10px; min-width: 11rem; }
+.pr-compare-cell strong { font-size: 1.35rem; }
+.pr-compare-note { flex: 1 1 16rem; align-self: center; margin: 0; }
+
+/* ---------- practice: choosing a document for a retrieval quiz ---------- */
+.pr-retrieval-pick { align-items: flex-end; }
+.pr-retrieval-find { flex: 1 1 14rem; }
+.pr-retrieval-find input { width: 100%; }
+.pr-resources { list-style: none; margin: .5rem 0 0; padding: 0; display: grid; gap: .5rem; }
+.pr-resource-item { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .85rem; padding: .6rem .85rem; border: 1px solid var(--line); border-radius: 10px; }
+.pr-resource-main { flex: 1 1 16rem; display: grid; gap: .1rem; min-width: 0; }
+.pr-resource-main strong { overflow-wrap: anywhere; }
+.pr-resource-item .pr-actions { margin: 0; }
+.pr-kind { flex: none; width: 3.6rem; text-align: center; font-size: .75rem; font-weight: 700; padding: .2rem 0; border-radius: 6px; background: var(--code-bg); color: var(--muted); }
+.pr-kind.is-pptx { background: rgba(236, 117, 0, .18); color: #f0a35c; }
+.pr-kind.is-docx { background: rgba(8, 109, 221, .2); color: #6ea8ff; }
+.pr-kind.is-pdf { background: var(--bad-soft); color: var(--bad); }
+
+/* ---------- practice: saved conversations ---------- */
+.pr-convbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; margin: 0 0 .75rem; }
+.pr-conv-pick { display: flex; align-items: center; gap: .5rem; flex: 1 1 18rem; min-width: 0; font-size: .9rem; color: var(--muted); }
+.pr-conv-pick select { flex: 1; min-width: 0; max-width: 36rem; }
+
+/* ---------- practice: the coach's RAG grades and the work it sets ---------- */
+.pr-rag { margin: 0 0 1.25rem; }
+.pr-rag[hidden] { display: none; }
+.pr-rag-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: .35rem 1rem; }
+.pr-rag-bar h3 { margin: 0; font-size: 1.05rem; }
+.pr-rag-bar button { margin-left: auto; }
+.pr-rag-key { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .4rem; margin: .4rem 0 .6rem; }
+.pr-rag-dot { display: inline-block; width: .7rem; height: .7rem; border-radius: 50%; background: var(--faint); flex: none; }
+.pr-rag-dot.is-red { background: var(--bad); }
+.pr-rag-dot.is-amber { background: #e9973f; }
+.pr-rag-dot.is-green { background: var(--ok); }
+.pr-rag-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .5rem; }
+.pr-rag-item { display: grid; align-content: start; justify-items: stretch; gap: .2rem; width: 100%; height: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; font-weight: 450; padding: .55rem .7rem; border: 1px solid var(--line); border-left: 4px solid var(--faint); border-radius: 8px; background: none; color: var(--ink); cursor: pointer; font: inherit; }
+.pr-rag-item:hover:not(:disabled) { border-color: var(--accent); }
+.pr-rag-item:disabled { cursor: default; opacity: .75; }
+.pr-rag-item > span { display: block; min-width: 0; }
+.pr-rag-item > .pr-rag-top { display: flex; }
+.pr-source-labels button { white-space: normal; }
+.pr-rag-item.is-red { border-left-color: var(--bad); background: var(--bad-soft); }
+.pr-rag-item.is-amber { border-left-color: #e9973f; background: rgba(233, 151, 63, .12); }
+.pr-rag-item.is-green { border-left-color: var(--ok); background: var(--ok-soft); }
+.pr-rag-top { display: flex; align-items: center; gap: .45rem; }
+.pr-rag-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pr-rag-pct { font-variant-numeric: tabular-nums; color: var(--muted); }
+.pr-rag-docs { color: var(--accent); }
+.pr-rag-item:disabled .pr-rag-docs { color: var(--muted); }
+.pr-tasks { margin: 0 0 1rem; padding: .7rem .9rem; border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line)); border-radius: 10px; background: var(--accent-soft); }
+.pr-tasks[hidden] { display: none; }
+.pr-tasks-head { display: flex; align-items: baseline; gap: .75rem; margin-bottom: .4rem; }
+.pr-task-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; }
+.pr-task { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .75rem; }
+.pr-task-main { flex: 1 1 16rem; display: grid; min-width: 0; }
+.pr-task .pr-actions { margin: 0; }

@@ -424,6 +424,57 @@ impl Db {
                  PRAGMA user_version = 12; COMMIT;",
             )?;
         }
+        if version < 13 {
+            // Saved conversations: each channel's messages belong to a thread, so a student can start a new
+            // conversation and go back to an older one. Messages already kept become one thread per channel.
+            // The exam coach's RAG grade for each topic, and the work it sets (retrieval quizzes).
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE chat_threads (
+                     id         TEXT PRIMARY KEY,
+                     vault_id   TEXT NOT NULL,
+                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     channel    TEXT NOT NULL,
+                     title      TEXT NOT NULL DEFAULT '',
+                     created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX chat_threads_user ON chat_threads(user_id, vault_id, channel, updated_at);
+                 ALTER TABLE coach_messages ADD COLUMN thread TEXT NOT NULL DEFAULT '';
+                 INSERT INTO chat_threads (id, vault_id, user_id, channel, title, created_at, updated_at)
+                     SELECT lower(hex(randomblob(16))), vault_id, user_id, channel,
+                            COALESCE((SELECT substr(m2.content, 1, 80) FROM coach_messages m2
+                                      WHERE m2.vault_id = m.vault_id AND m2.user_id = m.user_id AND m2.channel = m.channel AND m2.role = 'user'
+                                      ORDER BY m2.id LIMIT 1), ''),
+                            MIN(created_at), MAX(created_at)
+                     FROM coach_messages m GROUP BY vault_id, user_id, channel;
+                 UPDATE coach_messages SET thread = (SELECT t.id FROM chat_threads t WHERE t.vault_id = coach_messages.vault_id
+                     AND t.user_id = coach_messages.user_id AND t.channel = coach_messages.channel);
+                 CREATE INDEX coach_messages_thread ON coach_messages(thread, id);
+                 CREATE TABLE coach_grades (
+                     vault_id   TEXT NOT NULL,
+                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     grades     TEXT NOT NULL DEFAULT '[]',
+                     answers    INTEGER NOT NULL DEFAULT 0,
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (vault_id, user_id)
+                 );
+                 CREATE TABLE coach_tasks (
+                     id         INTEGER PRIMARY KEY,
+                     vault_id   TEXT NOT NULL,
+                     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                     kind       TEXT NOT NULL,
+                     topic      TEXT NOT NULL,
+                     reason     TEXT NOT NULL DEFAULT '',
+                     status     TEXT NOT NULL DEFAULT 'set',
+                     session_id TEXT NOT NULL DEFAULT '',
+                     created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX coach_tasks_user ON coach_tasks(user_id, vault_id, status);
+                 PRAGMA user_version = 13; COMMIT;",
+            )?;
+        }
         Ok(Db { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -782,6 +833,18 @@ impl Db {
             )?;
             let rows = st.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect();
             rows
+        })
+        .await
+    }
+
+    /// `(cost, calls)` since `since`: everyone's, or one account's.
+    pub async fn usage_since(&self, since: i64, user: Option<i64>) -> Result<(i64, i64)> {
+        self.call(move |c| {
+            c.query_row(
+                "SELECT COALESCE(SUM(cost_micro_usd), 0), COUNT(*) FROM api_usage WHERE ts >= ?1 AND (?2 IS NULL OR user_id = ?2)",
+                params![since, user],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
         })
         .await
     }

@@ -124,7 +124,7 @@
   }
 
   // ---------- tabs ----------
-  const TABS = ["questions", "hub", "cards", "guides", "mindmaps", "ask", "history", "coach"];
+  const TABS = ["questions", "hub", "cards", "guides", "mindmaps", "retrieval", "ask", "history", "coach"];
   // Views opened from a tab keep that tab highlighted.
   const PARENT = { quiz: null, study: "cards", report: "guides", mindmap: "mindmaps" };
   /** The tab named in the address (#hub, or #hub?years=2024 from a link with filters set). */
@@ -132,6 +132,7 @@
   function show(name) {
     if (name !== "report") stopListening();
     if (name !== "study") stopTimer();
+    if (name !== "quiz") clearResource();
     $$("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== name; });
     const tab = TABS.includes(name) ? name : PARENT[name] !== undefined ? PARENT[name] || hashTab() : "";
     $$("[data-tab]").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false"));
@@ -146,6 +147,7 @@
     if (name === "guides") loadReports();
     if (name === "mindmaps") loadMaps();
     if (name === "hub") loadHub();
+    if (name === "retrieval") loadRetrieval();
     window.scrollTo({ top: 0 });
   }
   // Arrow keys move between the tabs (the tab pattern).
@@ -261,6 +263,7 @@
     usePapers.checked = !!meta.paperQuestions;
     usePapers.parentElement.title = meta.paperQuestions ? `${meta.paperQuestions} past paper questions in the hub` : "No past papers have been added yet (an admin adds them on the admin page)";
     renderPapers();
+    sourceSetup();
     if (!hubState.sourceSet) { hubState.sourceSet = true; hubForm.querySelector("[name=source]").value = defaultSource(); }
   }
 
@@ -286,11 +289,14 @@
       profile: f.get("profile") ? Number(f.get("profile")) : null,
       spec: pick.genSpec ? pick.genSpec() : [],
       focus: String(f.get("focus") || ""),
+      source: genSource(),
     };
     const btns = $$("button", genForm);
     btns.forEach((b) => { b.disabled = true; });
     try {
       const r = await api("POST", "practice/generate", body);
+      if (body.source === "bank" && r.fromBank < r.asked) toast(`Only ${plural(r.fromBank, "past paper question")} matched your choices, so that is how many there are.`);
+      else if (body.source === "mix" && r.fromBank < Math.floor(r.asked / 2)) toast(`${r.fromBank ? `Only ${plural(r.fromBank, "past paper question")} matched` : "No past paper questions matched"}, so Claude is writing the rest.`);
       openSession(r.id);
     } catch (e) {
       alertBox(genForm, e.message);
@@ -346,12 +352,15 @@
     if (quiz.id !== id) return;
     quiz.data = s;
     $("[data-quiz-title]").textContent = s.title;
+    if (s.resource && s.status !== "failed") showResource(s.resource, s.id);
+    else clearResource();
+    drawCompare(s);
     const busy = s.status === "generating" || s.status === "marking";
     if (busy) {
       const t0 = quiz.t0 || (quiz.t0 = Date.now());
       const secs = Math.round((Date.now() - t0) / 1000);
       quizStatus.textContent = s.status === "generating"
-        ? `Claude is writing ${plural((s.settings && s.settings.count) || s.questions, "question")} from your notes… (${secs} s; this can take a minute or two, and you can leave this page)`
+        ? `Claude is writing ${plural((s.settings && s.settings.count) || s.questions, "question")} from ${s.kind === "retrieval" || s.kind === "recall" ? "the document" : "your notes"}${s.settings && s.settings.fromBank ? ` to go with ${plural(s.settings.fromBank, "past paper question")}` : ""}… (${secs} s; this can take a minute or two, and you can leave this page)`
         : `Marking your answers… (${secs} s)`;
       quiz.poll = window.setTimeout(refreshSession, 2000);
     } else {
@@ -365,7 +374,8 @@
     if (s.status === "generating") return;
     if (s.status === "ready") {
       const marks = s.items.reduce((n, q) => n + q.marks, 0);
-      quizStatus.textContent = `${plural(s.items.length, "question")}, ${plural(marks, "mark")}. Check each answer as you go if you like, then hand ${s.items.length === 1 ? "it" : "them"} in for marking.`;
+      const intro = s.kind === "retrieval" ? "Find each answer in the document on the left. " : s.kind === "recall" ? "The document is closed now: answer from memory. " : "";
+      quizStatus.textContent = `${intro}${plural(s.items.length, "question")}, ${plural(marks, "mark")}. Check each answer as you go if you like, then hand ${s.items.length === 1 ? "it" : "them"} in for marking.${s.error ? ` ${s.error}` : ""}`;
     }
     if (s.status === "marked") {
       quizStatus.textContent = s.error || "Marked. Your answers, the marks and the feedback are saved in History.";
@@ -374,8 +384,15 @@
     if (s.status !== "marking" || !quizItems.children.length) renderItems(s);
     $("[data-quiz-actions]").hidden = s.status !== "ready";
     $("[data-quiz-after]").hidden = s.status !== "marked";
+    // After a retrieval quiz: the mini quiz without the document (or the one already taken).
+    const recallBtn = $("[data-quiz-recall]");
+    recallBtn.hidden = !(s.kind === "retrieval" && s.status === "marked");
+    recallBtn.textContent = s.recall ? (s.recall.status === "marked" ? `See your mini quiz without the document (${s.recall.score} / ${s.recall.total})` : "Go to your mini quiz without the document") : "Now try a mini quiz without the document";
     $("[data-quiz-tools]").hidden = !(s.status === "ready" || s.status === "marked") || s.items.length < 2;
     renderSummary(s);
+    // A retrieval quiz goes on to the mini quiz; retaking it away from its document would not be the same quiz.
+    $("[data-quiz-again]").hidden = s.kind === "retrieval";
+    if (s.kind === "retrieval") { $("[data-quiz-followup]").hidden = true; $("[data-quiz-missed]").hidden = true; }
     layout();
   }
 
@@ -427,6 +444,7 @@
     if ("choice" in a) return a.choice === null || a.choice === undefined;
     if ("choices" in a) return !(a.choices || []).length;
     if ("blanks" in a) return (a.blanks || []).every((x) => !String(x || "").trim());
+    if ("tokens" in a) return !(a.tokens || []).length;
     return true;
   }
 
@@ -495,6 +513,8 @@
         list.appendChild(l);
       });
       li.appendChild(list);
+    } else if (q.type === "calc") {
+      li.appendChild(calcBuilder(li, q, locked, ans));
     } else {
       const ta = make("textarea", "pr-written");
       ta.rows = Math.min(14, 3 + q.marks);
@@ -513,11 +533,18 @@
     if (s.status === "ready" && !q.check) {
       const act = make("div", "pr-actions pr-q-actions");
       if (q.hint) {
-        const hint = make("p", "pr-hint small", `Hint: ${q.hint}`);
+        const hint = make("p", "pr-hint small", `${s.kind === "retrieval" ? "Where to look" : "Hint"}: ${q.hint}`);
         hint.hidden = true;
-        const hb = make("button", "small", "Show a hint");
+        if (s.kind === "retrieval" && s.resource) {
+          const jump = make("button", "linklike small", "Take me there");
+          jump.type = "button";
+          jump.addEventListener("click", () => { if (!goToPlace(q.hint)) toast("Look for it in the document on the left."); });
+          hint.append(" ", jump);
+        }
+        const hintWord = s.kind === "retrieval" ? "where to look" : "a hint";
+        const hb = make("button", "small", `Show ${hintWord}`);
         hb.type = "button";
-        hb.addEventListener("click", () => { hint.hidden = !hint.hidden; hb.textContent = hint.hidden ? "Show a hint" : "Hide the hint"; });
+        hb.addEventListener("click", () => { hint.hidden = !hint.hidden; hb.textContent = hint.hidden ? `Show ${hintWord}` : "Hide it"; });
         act.appendChild(hb);
         li.appendChild(hint);
       }
@@ -567,7 +594,7 @@
     const explain = make("button", "small linklike", "Ask Claude to explain this");
     explain.type = "button";
     explain.addEventListener("click", () => {
-      const yours = q.type === "written" ? (a.answer && a.answer.text) || "" : q.type === "fill" ? ((a.answer && a.answer.blanks) || []).join(" / ") : q.type === "single" ? q.options[a.answer && a.answer.choice] || "" : ((a.answer && a.answer.choices) || []).map((i) => q.options[i]).join("; ");
+      const yours = q.type === "calc" ? `${fb.formula || "(no formula)"}${fb.value !== null && fb.value !== undefined ? ` = ${fmtNum(fb.value, (q.calc && q.calc.decimals) || 2)}` : ""}` : q.type === "written" ? (a.answer && a.answer.text) || "" : q.type === "fill" ? ((a.answer && a.answer.blanks) || []).join(" / ") : q.type === "single" ? q.options[a.answer && a.answer.choice] || "" : ((a.answer && a.answer.choices) || []).map((i) => q.options[i]).join("; ");
       const text = make("div");
       text.innerHTML = q.html;
       const scheme = make("div");
@@ -584,6 +611,23 @@
     top.append(explain);
     box.appendChild(top);
     if (fb.error) box.appendChild(make("p", "small", fb.error));
+    if (q.type === "calc" && q.calc) {
+      const c = q.calc;
+      const dp = c.decimals ?? 2;
+      const unit = c.unit ? ` ${c.unit}` : "";
+      const mine = make("p", "small pr-calc-mark");
+      const tokens = (a.answer && a.answer.tokens) || [];
+      mine.append(make("strong", "", "Your formula: "));
+      if (tokens.length) mine.append(formulaView(tokens, c), document.createTextNode(fb.value !== null && fb.value !== undefined ? ` = ${fmtNum(fb.value, dp)}${unit}` : " (not a complete formula)"));
+      else mine.append(document.createTextNode("none"));
+      box.appendChild(mine);
+      if (c.tokens) {
+        const model = make("p", "small pr-calc-mark");
+        model.append(make("strong", "", "The working: "), formulaView(c.tokens, c), document.createTextNode(` = ${fmtNum(c.answer, dp)}${unit}`));
+        box.appendChild(model);
+      }
+      if (fb.method && !fb.right) box.appendChild(make("p", "small", "You used the right values but put them together the wrong way, so you get method marks only."));
+    }
     if (fb.feedbackHtml) { const d = make("div", "prose small"); d.innerHTML = fb.feedbackHtml; box.appendChild(d); }
     else if (fb.feedback) box.appendChild(make("p", "small", fb.feedback));
     if (q.explanation) box.appendChild(make("p", "small pr-why", q.explanation));
@@ -626,6 +670,7 @@
       return { choice: c ? Number(c.value) : null };
     }
     if (q.type === "multi") return { choices: $$("input[type=checkbox]:checked", li).map((c) => Number(c.value)) };
+    if (q.type === "calc") return { tokens: (li._calcTokens || []).slice() };
     if (q.type === "fill") {
       const b = [];
       $$("input.pr-blank", li).forEach((i) => { b[Number(i.dataset.blank)] = i.value; });
@@ -832,6 +877,16 @@
       openSession(r.id);
     } catch (err) { alertBox($("[data-panel=quiz]"), err.message); } finally { btn.disabled = false; }
   });
+  $("[data-quiz-recall]").addEventListener("click", async (e) => {
+    if (!quiz.data) return;
+    if (quiz.data.recall) { openSession(quiz.data.recall.id); return; }
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const r = await api("POST", `practice/sessions/${quiz.id}/recall`);
+      openSession(r.id);
+    } catch (err) { alertBox($("[data-panel=quiz]"), err.message); } finally { btn.disabled = false; }
+  });
   $("[data-quiz-coach]").addEventListener("click", () => {
     if (!quiz.data) return;
     askCoach(`I just answered "${quiz.data.title}" and got ${quiz.data.score} out of ${quiz.data.total}. What went wrong, and what should I work on?`, false);
@@ -942,6 +997,11 @@
     body.innerHTML = q.html;
     if (q.type === "fill") showGaps(body);
     li.appendChild(body);
+    if (q.type === "calc" && q.calc) {
+      const tiles = make("p", "small pr-q-links", "Values: ");
+      q.calc.values.forEach((v) => tiles.appendChild(tokenChip(`v${q.calc.values.indexOf(v)}`, q.calc, "is-small")));
+      li.appendChild(tiles);
+    }
     if (q.options && q.options.length) {
       const ol = make("ol", "pr-hub-options small");
       q.options.forEach((o) => ol.appendChild(make("li", "", o)));
@@ -954,6 +1014,11 @@
     sc.innerHTML = q.schemeHtml || "";
     if (q.correct && q.correct.length) sc.prepend(make("p", "", `Correct: ${q.correct.map((i) => q.options[i]).join("; ")}`));
     if (q.accepted && q.accepted.length) sc.prepend(make("p", "", `Accepted answers: ${q.accepted.map((b, i) => `(${i + 1}) ${b.join(" / ")}`).join(" · ")}`));
+    if (q.type === "calc" && q.calc && q.calc.tokens) {
+      const w = make("p", "", "Working: ");
+      w.append(formulaView(q.calc.tokens, q.calc), document.createTextNode(` = ${fmtNum(q.calc.answer, q.calc.decimals ?? 2)}${q.calc.unit ? ` ${q.calc.unit}` : ""}`));
+      sc.prepend(w);
+    }
     d.appendChild(sc);
     const go = make("button", "small", "Practise this one");
     go.type = "button";
@@ -1573,15 +1638,21 @@
 
   // ---------- conversations: the exam coach and Ask Claude ----------
   /**
-   * A chat in one panel ([data-chat], [data-chat-form], [data-chat-suggest], [data-chat-clear] inside it), talking to
-   * practice/<path>. extra() adds to each message sent; onView(reply) draws anything else the reply carries.
+   * A chat in one panel ([data-chat], [data-chat-form], [data-chat-suggest] and the conversation bar [data-conv]
+   * inside it), talking to practice/<path>. Every conversation is saved: "New conversation" starts another, and the
+   * list goes back to an older one. extra() adds to each message sent; onView(reply) draws anything else the reply
+   * carries.
    */
-  function chatBox(panel, { path, suggest, empty, thinking, noteName, extra = () => ({}), onView = () => {}, clearText }) {
+  function chatBox(panel, { path, suggest, empty, thinking, noteName, extra = () => ({}), onView = () => {} }) {
     const log = $("[data-chat]", panel);
     const form = $("[data-chat-form]", panel);
     const ta = form.querySelector("textarea");
+    const pickThread = $("[data-conv-select]", panel);
+    const delThread = $("[data-conv-delete]", panel);
     let loading = Promise.resolve();
     let busy = false;
+    let thread = null; // the conversation shown, or null for a new one
+    let last = null;
     function message(m) {
       const d = make("div", `pr-msg ${m.role === "user" ? "is-user" : "is-coach"}`);
       if (m.role === "user") { d.textContent = m.text; return d; }
@@ -1606,8 +1677,24 @@
       d.appendChild(act);
       return d;
     }
+    /** The list of saved conversations, with the one shown chosen. */
+    function drawThreads(r) {
+      pickThread.replaceChildren();
+      if (!r.thread) pickThread.appendChild(new Option("New conversation", ""));
+      for (const t of r.threads || []) {
+        const label = `${t.title || "Conversation"} · ${when(t.updatedAt)}`;
+        pickThread.appendChild(new Option(label.length > 90 ? `${label.slice(0, 88)}…` : label, t.id));
+      }
+      pickThread.value = r.thread || "";
+      pickThread.disabled = !(r.threads || []).length;
+      pickThread.title = (r.threads || []).length ? `${plural(r.threads.length, "saved conversation")}` : "No saved conversations yet";
+      delThread.hidden = !r.thread;
+    }
     function draw(r) {
+      last = r;
+      thread = r.thread || null;
       onView(r);
+      drawThreads(r);
       log.replaceChildren();
       if (!r.messages.length) log.appendChild(make("p", "muted small", empty));
       for (const m of r.messages) log.appendChild(message(m));
@@ -1621,10 +1708,25 @@
         box.appendChild(b);
       }
     }
-    function load() {
-      loading = api("GET", `practice/${path}`).then(draw, (e) => { log.textContent = e.message; });
+    /** Show a saved conversation ("" for the most recent, "new" for a new one). */
+    let seq = 0;
+    function load(which) {
+      const q = which === undefined ? (thread || "") : which;
+      const n = ++seq;
+      // Only the last one asked for is drawn, when several are on their way.
+      loading = api("GET", `practice/${path}${q ? `?thread=${encodeURIComponent(q)}` : ""}`).then((r) => { if (n === seq) draw(r); }, (e) => { if (n === seq) log.textContent = e.message; });
       return loading;
     }
+    pickThread.addEventListener("change", () => { if (!busy) load(pickThread.value || "new"); });
+    $("[data-conv-new]", panel).addEventListener("click", () => {
+      if (busy) return;
+      load("new").then(() => ta.focus());
+    });
+    delThread.addEventListener("click", async () => {
+      if (!thread || busy) return;
+      if (!window.confirm("Delete this conversation? Notes you saved from it are kept. This cannot be undone.")) return;
+      try { draw(await api("DELETE", `practice/${path}/threads/${encodeURIComponent(thread)}`)); toast("Conversation deleted."); } catch (e) { toast(e.message, "error"); }
+    });
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = ta.value.trim();
@@ -1632,6 +1734,7 @@
       busy = true;
       const btn = form.querySelector("button[type=submit]");
       btn.disabled = true;
+      pickThread.disabled = true;
       $$("[data-chat-suggest] button", panel).forEach((b) => { b.disabled = true; });
       const none = log.querySelector(":scope > p.muted");
       if (none) none.remove();
@@ -1641,12 +1744,13 @@
       log.scrollTop = log.scrollHeight;
       ta.value = "";
       try {
-        draw(await api("POST", `practice/${path}`, { message: text, ...extra() }));
+        draw(await api("POST", `practice/${path}`, { message: text, thread: thread || "", ...extra() }));
       } catch (err) {
         wait.textContent = err.message;
         wait.classList.remove("pr-typing");
         wait.classList.add("pr-bad");
         ta.value = text;
+        if (last) drawThreads(last);
       } finally {
         busy = false;
         btn.disabled = false;
@@ -1654,19 +1758,19 @@
       }
     });
     ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
-    $("[data-chat-clear]", panel).addEventListener("click", async () => {
-      if (!window.confirm(clearText)) return;
-      try { draw(await api("POST", `practice/${path}/clear`)); } catch (e) { alertBox(form, e.message); }
-    });
-    /** Put a message in the box: sent straight away, or (send false) left there to edit first. */
-    async function ask(text, send) {
-      await loading;
+    /**
+     * Put a message in the box: sent straight away, or (send false) left there to edit first. A message from
+     * elsewhere on the page (explaining a question, a card, an idea) starts a new conversation, so the one open is
+     * kept as it was.
+     */
+    async function ask(text, send, fresh = true) {
+      await (fresh ? load("new") : loading);
       ta.value = text;
       if (send) form.requestSubmit();
       else { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
       form.scrollIntoView({ behavior: "smooth", block: "end" });
     }
-    return { load, ask };
+    return { load, ask, redraw: draw };
   }
 
   function drawStats(s) {
@@ -1711,12 +1815,12 @@
       "How do I write a good answer to a 9-mark question?",
       "Which topics am I strongest in?",
       "Quiz me with three quick questions on my weakest topic.",
+      "Set me retrieval quizzes on the topics I am struggling with.",
     ],
     empty: "Ask the coach how you are doing, or what to revise next.",
     thinking: "The coach is thinking",
     noteName: "Exam coach",
-    onView: (r) => drawStats(r.stats),
-    clearText: "Clear this conversation? Your answers and marks are kept.",
+    onView: (r) => { drawStats(r.stats); drawTasks($("[data-coach-tasks]"), r.tasks || [], "coach"); drawRag(r); },
   });
   /** Open the coach with a message: sent straight away, or (send false) left in the box to edit first. */
   function askCoach(text, send = true) {
@@ -1737,7 +1841,6 @@
     thinking: "Claude is reading your notes",
     noteName: "Ask Claude",
     extra: () => ({ topics: pick.askTopics ? pick.askTopics() : [] }),
-    clearText: "Start a new chat? This conversation is deleted; notes you saved from it are kept.",
   });
   /** Ask Claude about something (an answer, a card, an idea on a mind map): opens the chat and sends it. */
   function askClaude(text, send = true) {
@@ -2084,6 +2187,512 @@
     try { await api("DELETE", `practice/reports/${mm.data.id}`); mm.id = null; show("mindmaps"); } catch (e) { toast(e.message, "error"); }
   });
   window.addEventListener("resize", () => { if (!$("[data-panel=mindmap]").hidden && mm.tree) applyScale(); });
+
+  // ---------- where practice questions come from: the past paper bank, a mix, or Claude ----------
+  const SOURCES = ["bank", "mix", "claude"];
+  const SOURCE_TEXT = {
+    bank: ["Past paper questions only", "Questions from the past papers in the question bank that match your choices, ready at once. Claude does not write any (difficulty and focus do not apply)."],
+    mix: ["A mix of both", "About half the questions come from the past papers in the bank, and Claude writes the rest to match."],
+    claude: ["Only Claude's questions", "Claude writes every question from your notes, modelled on the past papers if you like."],
+  };
+  const sourceRange = $("[data-gen-source]");
+  const genSource = () => SOURCES[Number(sourceRange.value)] || "claude";
+  function sourceChanged() {
+    const src = genSource();
+    const [label, hint] = SOURCE_TEXT[src];
+    sourceRange.setAttribute("aria-valuetext", label);
+    const n = meta ? meta.paperQuestions : 0;
+    $("[data-gen-source-hint]").textContent = src !== "claude" && !n ? "No past papers have been added to the question bank yet, so Claude writes them all." : hint;
+    $$("[data-source-stop]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.sourceStop === sourceRange.value ? "true" : "false"));
+    $$("[data-gen-claude-only]", genForm).forEach((el) => { el.hidden = src === "bank"; });
+    $("[data-gen-submit]").textContent = src === "bank" ? "Find the questions" : "Write the questions";
+    try { localStorage.setItem("pr.genSource", src); } catch { /* storage blocked */ }
+  }
+  function sourceSetup() {
+    const has = !!(meta && meta.paperQuestions);
+    sourceRange.disabled = !has;
+    $$("[data-source-stop]").forEach((b) => { b.disabled = !has; });
+    let saved = "claude";
+    try { saved = localStorage.getItem("pr.genSource") || "claude"; } catch { /* storage blocked */ }
+    sourceRange.value = String(has ? Math.max(0, SOURCES.indexOf(saved)) : 2);
+    sourceChanged();
+  }
+  sourceRange.addEventListener("input", sourceChanged);
+  $$("[data-source-stop]").forEach((b) => b.addEventListener("click", () => { if (!sourceRange.disabled) { sourceRange.value = b.dataset.sourceStop; sourceChanged(); } }));
+
+  // ---------- calculation questions: build the formula from tiles ----------
+  // Tokens are "v0", "v1" ... (the question's value tiles), "n:8" (a number typed in) and + - * / ^ ( ). The same
+  // grammar is evaluated on the server (src/practice.rs, eval_tokens) when the answer is marked.
+  const OPS = ["+", "-", "*", "/", "^", "(", ")"];
+  const OP_LABEL = { "+": "+", "-": "−", "*": "×", "/": "÷", "^": "^", "(": "(", ")": ")" };
+  function evalTokens(tokens, values) {
+    let i = 0;
+    const peek = () => tokens[i];
+    function expr() {
+      let a = term();
+      while (a !== null && (peek() === "+" || peek() === "-")) { const op = tokens[i++]; const b = term(); if (b === null) return null; a = op === "+" ? a + b : a - b; }
+      return a;
+    }
+    function term() {
+      let a = power();
+      while (a !== null && (peek() === "*" || peek() === "/")) { const op = tokens[i++]; const b = power(); if (b === null || (op === "/" && b === 0)) return null; a = op === "*" ? a * b : a / b; }
+      return a;
+    }
+    function power() {
+      const b = unary();
+      if (b !== null && peek() === "^") { i++; const e = power(); return e === null ? null : Math.pow(b, e); }
+      return b;
+    }
+    function unary() {
+      if (peek() === "-") { i++; const v = unary(); return v === null ? null : -v; }
+      return primary();
+    }
+    function primary() {
+      const t = tokens[i++];
+      if (t === undefined) return null;
+      if (t === "(") { const v = expr(); if (v === null || peek() !== ")") return null; i++; return v; }
+      if (t.startsWith("n:")) { const n = Number(t.slice(2)); return Number.isFinite(n) ? n : null; }
+      if (/^v\d+$/.test(t)) { const v = values[Number(t.slice(1))]; return typeof v === "number" ? v : null; }
+      return null;
+    }
+    if (!tokens.length) return null;
+    const r = expr();
+    return r !== null && i === tokens.length && Number.isFinite(r) ? r : null;
+  }
+  const fmtNum = (n, dp = 2) => {
+    if (n === null || n === undefined || !Number.isFinite(n)) return "";
+    const r = Math.round(n * 10 ** Math.min(6, dp + 2)) / 10 ** Math.min(6, dp + 2);
+    return r.toLocaleString(undefined, { maximumFractionDigits: Math.min(6, dp + 2) });
+  };
+  function tokenLabel(t, calc) {
+    if (OPS.includes(t)) return OP_LABEL[t];
+    if (t.startsWith("n:")) return t.slice(2);
+    const v = calc.values[Number(t.slice(1))];
+    return v ? v.label : "?";
+  }
+  function tokenChip(t, calc, cls = "") {
+    const isOp = OPS.includes(t);
+    const c = make("span", `pr-tok ${isOp ? "is-op" : t.startsWith("n:") ? "is-num" : "is-val"} ${cls}`.trim());
+    if (isOp || t.startsWith("n:")) c.textContent = tokenLabel(t, calc);
+    else {
+      const v = calc.values[Number(t.slice(1))];
+      c.append(make("span", "pr-tok-label", v ? v.label : "?"), make("span", "pr-tok-value", v ? `${fmtNum(v.value, 6)}${v.unit ? ` ${v.unit}` : ""}` : ""));
+    }
+    return c;
+  }
+  /** A read-only formula, for the marking. */
+  function formulaView(tokens, calc) {
+    const d = make("span", "pr-formula-view");
+    tokens.forEach((t) => d.appendChild(tokenChip(t, calc, "is-small")));
+    return d;
+  }
+
+  /** The formula builder for one calculation question. Its tokens are kept on the question's list item. */
+  function calcBuilder(li, q, locked, ans) {
+    const calc = q.calc || { values: [], unit: "", decimals: 2 };
+    const values = calc.values.map((v) => v.value);
+    let tokens = Array.isArray(ans.tokens) ? ans.tokens.slice() : [];
+    li._calcTokens = tokens;
+    const box = make("div", `pr-calc${locked ? " is-locked" : ""}`);
+    const result = make("div", "pr-calc-result");
+    result.setAttribute("aria-live", "polite");
+    const formula = make("div", "pr-calc-formula");
+    formula.setAttribute("aria-label", "Your formula");
+    const changed = () => {
+      li._calcTokens = tokens;
+      drawFormula();
+      li.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const insertAt = (t, at) => { if (locked || tokens.length >= 80) return; tokens.splice(at === undefined ? tokens.length : at, 0, t); changed(); };
+    // Where a drop at this point lands among the formula's tiles.
+    const dropIndex = (x, y) => {
+      const chips = [...formula.querySelectorAll(".pr-tok")];
+      for (let i = 0; i < chips.length; i++) {
+        const r = chips[i].getBoundingClientRect();
+        if (y < r.top) return i;
+        if (y <= r.bottom && x < r.left + r.width / 2) return i;
+      }
+      return chips.length;
+    };
+    function drawFormula() {
+      formula.replaceChildren();
+      if (!tokens.length) formula.appendChild(make("span", "muted small pr-calc-empty", locked ? "No formula was built." : "Drag values and operators here (or click them) to build your formula."));
+      tokens.forEach((t, i) => {
+        const c = tokenChip(t, calc);
+        if (!locked) {
+          c.draggable = true;
+          c.tabIndex = 0;
+          c.title = "Drag to move, or click to take it out";
+          c.setAttribute("role", "button");
+          c.setAttribute("aria-label", `${tokenLabel(t, calc)}: remove from the formula`);
+          c.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", `move:${i}`); e.dataTransfer.effectAllowed = "move"; c.classList.add("is-dragging"); });
+          c.addEventListener("dragend", (e) => {
+            c.classList.remove("is-dragging");
+            // Dragged out of the formula: take it out.
+            if (e.dataTransfer.dropEffect === "none") { tokens.splice(i, 1); changed(); }
+          });
+          const remove = () => { tokens.splice(i, 1); changed(); };
+          c.addEventListener("click", remove);
+          c.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " " || e.key === "Backspace" || e.key === "Delete") { e.preventDefault(); remove(); } });
+        }
+        formula.appendChild(c);
+      });
+      const v = evalTokens(tokens, values);
+      result.replaceChildren();
+      if (!tokens.length) result.append(make("span", "muted", "= …"));
+      else if (v === null) result.append(make("span", "muted", "= the formula is not finished yet"));
+      else result.append(make("strong", "", `= ${fmtNum(v, calc.decimals)}${calc.unit ? ` ${calc.unit}` : ""}`));
+    }
+    if (!locked) {
+      formula.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = e.dataTransfer.types.includes("text/plain") ? "move" : "none"; formula.classList.add("is-over"); });
+      formula.addEventListener("dragleave", () => formula.classList.remove("is-over"));
+      formula.addEventListener("drop", (e) => {
+        e.preventDefault();
+        formula.classList.remove("is-over");
+        const data = e.dataTransfer.getData("text/plain");
+        let at = dropIndex(e.clientX, e.clientY);
+        if (data.startsWith("move:")) {
+          const from = Number(data.slice(5));
+          const [t] = tokens.splice(from, 1);
+          if (from < at) at--;
+          tokens.splice(at, 0, t);
+          changed();
+        } else if (data.startsWith("add:")) insertAt(data.slice(4), at);
+      });
+      const tray = make("div", "pr-calc-tray");
+      tray.appendChild(make("span", "pr-calc-tray-label small muted", "Values"));
+      const addable = (t, label) => {
+        const c = tokenChip(t, calc);
+        c.draggable = true;
+        c.tabIndex = 0;
+        c.setAttribute("role", "button");
+        c.setAttribute("aria-label", `Add ${label} to the formula`);
+        c.title = "Drag into the formula, or click to add it at the end";
+        c.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", `add:${t}`); e.dataTransfer.effectAllowed = "copyMove"; });
+        c.addEventListener("click", () => insertAt(t));
+        c.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); insertAt(t); } });
+        return c;
+      };
+      calc.values.forEach((v, i) => tray.appendChild(addable(`v${i}`, v.label)));
+      const ops = make("div", "pr-calc-tray pr-calc-ops");
+      ops.appendChild(make("span", "pr-calc-tray-label small muted", "Operators"));
+      OPS.forEach((o) => ops.appendChild(addable(o, OP_LABEL[o])));
+      const num = make("input", "pr-calc-num");
+      num.type = "number";
+      num.step = "any";
+      num.placeholder = "Number";
+      num.setAttribute("aria-label", "A number to add to the formula");
+      const addNum = make("button", "small", "Add number");
+      addNum.type = "button";
+      const pushNum = () => { const n = Number(num.value); if (num.value.trim() === "" || !Number.isFinite(n)) return; insertAt(`n:${n}`); num.value = ""; };
+      addNum.addEventListener("click", pushNum);
+      num.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); pushNum(); } });
+      ops.append(num, addNum);
+      const tools = make("div", "pr-actions pr-calc-tools");
+      const undo = make("button", "small", "Undo");
+      undo.type = "button";
+      undo.addEventListener("click", () => { if (tokens.length) { tokens.pop(); changed(); } });
+      const clear = make("button", "small", "Clear");
+      clear.type = "button";
+      clear.addEventListener("click", () => { tokens.length = 0; changed(); });
+      tools.append(undo, clear);
+      box.append(tray, ops);
+      const row = make("div", "pr-calc-row");
+      row.append(formula, result);
+      box.append(row, tools);
+    } else {
+      const row = make("div", "pr-calc-row");
+      row.append(formula, result);
+      box.append(row);
+    }
+    drawFormula();
+    return box;
+  }
+
+  // ---------- the document beside a retrieval quiz ----------
+  const assetV = (() => { const s = document.querySelector('script[src*="/static/practice.js"]'); return s ? (s.getAttribute("src").split("?")[1] || "") : ""; })();
+  const res = { key: null, data: null, view: "original" };
+  const resBox = $("[data-quiz-resource]");
+  const resBody = $("[data-resource-body]");
+  const container = host.closest(".container");
+  function clearResource() {
+    res.key = null;
+    res.data = null;
+    resBody.replaceChildren();
+    resBox.hidden = true;
+    $("[data-panel=quiz]").classList.remove("has-resource");
+    if (container) container.classList.remove("pr-wide");
+  }
+  function drawResourceView() {
+    const r = res.data;
+    resBody.replaceChildren();
+    $$("[data-resource-view]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.resourceView === res.view ? "true" : "false"));
+    const showOriginal = res.view === "original" && r.fileUrl;
+    $("[data-resource-open]").href = showOriginal ? (r.kind === "pdf" ? r.fileUrl : r.fileUrl.replace("/f/", "/o/")) : r.noteUrl;
+    if (showOriginal && (r.kind === "pptx" || r.kind === "docx")) {
+      // The same renderer as the document viewer page; it draws into the first [data-office] element.
+      const hostEl = make("div", "office-host");
+      hostEl.dataset.office = "";
+      hostEl.dataset.kind = r.kind;
+      hostEl.dataset.src = r.fileUrl;
+      hostEl.appendChild(make("div", "office-status", "Loading…"));
+      resBody.appendChild(hostEl);
+      const sc = document.createElement("script");
+      sc.src = `/static/office.js${assetV ? `?${assetV}` : ""}`;
+      sc.async = true;
+      sc.addEventListener("load", () => sc.remove());
+      document.body.appendChild(sc);
+    } else if (showOriginal && r.kind === "pdf") {
+      const f = make("iframe", "pr-resource-pdf");
+      f.src = r.fileUrl;
+      f.title = r.title;
+      resBody.appendChild(f);
+    } else {
+      const art = make("article", "prose pr-resource-note");
+      art.innerHTML = r.html || "<p>This document could not be shown.</p>";
+      // Links in the note open in a new tab, so the quiz stays open.
+      art.querySelectorAll("a[href]").forEach((a) => { a.target = "_blank"; a.rel = "noopener"; });
+      resBody.appendChild(art);
+    }
+  }
+  function showResource(r, key) {
+    resBox.hidden = false;
+    $("[data-panel=quiz]").classList.add("has-resource");
+    if (container) container.classList.add("pr-wide");
+    if (res.key === key) return;
+    res.key = key;
+    res.data = r;
+    res.view = r.fileUrl ? "original" : "note";
+    $("[data-resource-title]").textContent = r.title || "Document";
+    $("[data-resource-views]").hidden = !r.fileUrl;
+    drawResourceView();
+  }
+  $$("[data-resource-view]").forEach((b) => b.addEventListener("click", () => { if (res.data && res.view !== b.dataset.resourceView) { res.view = b.dataset.resourceView; drawResourceView(); } }));
+  /** Scroll the document to a slide, page or heading named in a hint ("Slide 4", "Page 2", "Encryption"). */
+  function goToPlace(hint) {
+    if (!res.data) return false;
+    // "Slide 4", "Slides 8 and 9", "page 2": the first one named.
+    const m = String(hint).match(/\b(slide|page)s?\s*(\d+)/i);
+    const kind = m ? m[1].toLowerCase() : "";
+    const n = m ? Number(m[2]) : 0;
+    if (res.view === "original" && res.data.kind === "pdf" && kind === "page") {
+      const f = resBody.querySelector("iframe");
+      if (f) { f.src = `${res.data.fileUrl}#page=${n}`; return true; }
+    }
+    if (res.view === "original" && res.data.kind === "pptx" && kind === "slide") {
+      const el = resBody.querySelector(`#slide-${n}`);
+      if (el) { el.scrollIntoView({ behavior: "smooth", block: "start" }); return true; }
+    }
+    const heads = [...resBody.querySelectorAll("h1, h2, h3, h4")];
+    const want = m ? `${m[1]} ${n}`.toLowerCase() : String(hint).toLowerCase().replace(/^(look at|see|on|in|under)\s+/, "").replace(/[."']/g, "").trim();
+    const h = heads.find((x) => x.textContent.trim().toLowerCase() === want) || heads.find((x) => want && x.textContent.toLowerCase().includes(want));
+    if (h) { h.scrollIntoView({ behavior: "smooth", block: "start" }); return true; }
+    return false;
+  }
+
+  // ---------- retrieval quizzes: choosing a document ----------
+  const rv = { topic: "", list: [], tasks: [], task: null, loaded: false, seq: 0 };
+  const KIND_LABEL = { pptx: "Slides", docx: "Word", pdf: "PDF", note: "Note" };
+  async function loadRetrieval() {
+    const status = $("[data-retrieval-status]");
+    const n = ++rv.seq;
+    status.textContent = "Finding your documents…";
+    let r;
+    try { r = await api("GET", `practice/resources${rv.topic ? `?topic=${encodeURIComponent(rv.topic)}` : ""}`); } catch (e) { status.textContent = e.message; return; }
+    if (n !== rv.seq) return;
+    const sel = $("[data-retrieval-topic]");
+    if (!rv.loaded) {
+      rv.loaded = true;
+      sel.replaceChildren(new Option("Every topic", ""));
+      for (const t of r.topics) sel.appendChild(new Option(t, t));
+    }
+    sel.value = rv.topic;
+    rv.list = r.resources;
+    rv.tasks = r.tasks || [];
+    drawTasks($("[data-retrieval-tasks]"), rv.tasks, "retrieval");
+    drawResources();
+  }
+  function drawResources() {
+    const ul = $("[data-retrieval-list]");
+    const status = $("[data-retrieval-status]");
+    const q = $("[data-retrieval-q]").value.trim().toLowerCase();
+    const shown = rv.list.filter((r) => !q || r.title.toLowerCase().includes(q) || r.note.toLowerCase().includes(q));
+    ul.replaceChildren();
+    const task = rv.task && rv.tasks.find((t) => t.id === rv.task);
+    status.textContent = !rv.list.length
+      ? (rv.topic ? `There are no documents linked to ${rv.topic} yet.` : "There are no documents in this vault yet.")
+      : `${plural(shown.length, "document")}${rv.topic ? ` on ${rv.topic}` : ""}${task ? `. This quiz is the work your coach set on ${task.topic}.` : ""}`;
+    for (const r of shown.slice(0, 200)) {
+      const li = make("li", "pr-resource-item");
+      li.append(make("span", `pr-kind is-${r.kind}`, KIND_LABEL[r.kind] || "Note"));
+      const main = make("div", "pr-resource-main");
+      main.append(make("strong", "", r.title));
+      if (r.topics.length) main.append(make("span", "small muted", r.topics.slice(0, 4).join(" · ")));
+      li.appendChild(main);
+      const view = make("a", "small", "View");
+      view.href = r.fileUrl ? (r.kind === "pdf" ? r.fileUrl : r.fileUrl.replace("/f/", "/o/")) : r.noteUrl;
+      view.target = "_blank";
+      view.rel = "noopener";
+      const go = make("button", "primary small", "Start a retrieval quiz");
+      go.type = "button";
+      go.addEventListener("click", () => startRetrieval(r, go));
+      const act = make("span", "pr-actions");
+      act.append(view, go);
+      li.appendChild(act);
+      ul.appendChild(li);
+    }
+  }
+  async function startRetrieval(r, btn) {
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    try {
+      const out = await api("POST", "practice/retrieval", { note: r.note, count: Number($("[data-retrieval-count]").value) || 8, task: rv.task, topic: rv.topic });
+      rv.task = null;
+      openSession(out.id);
+    } catch (e) {
+      toast(e.message, "error");
+      btn.disabled = false;
+      btn.textContent = "Start a retrieval quiz";
+    }
+  }
+  /** Open the Retrieval tab on a topic (from the coach's topics or the work it set). */
+  function retrievalOn(topic, task = null) {
+    rv.topic = topic || "";
+    rv.task = task;
+    $("[data-retrieval-q]").value = "";
+    show("retrieval");
+  }
+  $("[data-retrieval-topic]").addEventListener("change", (e) => { rv.topic = e.target.value; rv.task = null; loadRetrieval(); });
+  $("[data-retrieval-q]").addEventListener("input", drawResources);
+
+  // ---------- work the coach sets ----------
+  function drawTasks(box, tasks, where) {
+    const open = tasks.filter((t) => t.status !== "done");
+    const done = tasks.filter((t) => t.status === "done");
+    box.hidden = !open.length && !(where === "coach" && done.length);
+    box.replaceChildren();
+    if (box.hidden) return;
+    const head = make("div", "pr-tasks-head");
+    head.append(make("strong", "", "Work from your coach"));
+    if (done.length) head.append(make("span", "small muted", `${done.length} done`));
+    box.appendChild(head);
+    if (!open.length) { box.appendChild(make("p", "small muted", "All done. Ask the coach for more, or grade your topics again.")); return; }
+    const ul = make("ul", "pr-task-list");
+    for (const t of open) {
+      const li = make("li", "pr-task");
+      const main = make("div", "pr-task-main");
+      main.append(make("span", "", `Retrieval quiz on ${t.topic}`));
+      if (t.reason) main.append(make("span", "small muted", t.reason));
+      li.appendChild(main);
+      const act = make("span", "pr-actions");
+      if (t.status === "started" && t.sessionId) {
+        const b = make("button", "small primary", "Continue");
+        b.type = "button";
+        b.addEventListener("click", () => openSession(t.sessionId));
+        act.appendChild(b);
+      } else {
+        const b = make("button", "small primary", "Start");
+        b.type = "button";
+        b.title = "Choose one of your documents on this topic";
+        b.addEventListener("click", () => retrievalOn(t.topic, t.id));
+        act.appendChild(b);
+      }
+      const x = make("button", "small linklike", "Dismiss");
+      x.type = "button";
+      x.addEventListener("click", async () => {
+        try {
+          const r = await api("DELETE", `practice/coach/tasks/${t.id}`);
+          rv.tasks = r.tasks;
+          drawTasks($("[data-retrieval-tasks]"), r.tasks, "retrieval");
+          drawTasks($("[data-coach-tasks]"), r.tasks, "coach");
+        } catch (e) { toast(e.message, "error"); }
+      });
+      act.appendChild(x);
+      li.appendChild(act);
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+  }
+
+  // ---------- the coach's RAG grade for each topic ----------
+  const GRADE_WORD = { red: "Red", amber: "Amber", green: "Green", none: "Not graded", "": "Not graded" };
+  let autoGraded = false;
+  function drawRag(r) {
+    const list = $("[data-rag-list]");
+    const box = $("[data-rag]");
+    const topics = r.topics || [];
+    box.hidden = !topics.length;
+    if (!topics.length) return;
+    list.replaceChildren();
+    const order = { red: 0, amber: 1, green: 2, none: 3, "": 3 };
+    const sorted = topics.slice().sort((a, b) => (order[a.grade] - order[b.grade]) || a.topic.localeCompare(b.topic));
+    const counts = { red: 0, amber: 0, green: 0, none: 0 };
+    for (const t of sorted) {
+      counts[t.grade && t.grade !== "" ? t.grade : "none"]++;
+      const li = make("li");
+      const b = make("button", `pr-rag-item is-${t.grade || "none"}`);
+      b.type = "button";
+      b.disabled = !t.resources;
+      const top = make("span", "pr-rag-top");
+      top.append(make("span", `pr-rag-dot is-${t.grade || "none"}`), make("strong", "pr-rag-name", t.topic));
+      if (t.result) top.append(make("span", "pr-rag-pct small", `${Math.round(t.result.percent)}%`));
+      b.append(top);
+      if (t.reason) b.append(make("span", "pr-rag-reason small muted", t.reason));
+      b.append(make("span", "pr-rag-docs small", t.resources ? `${plural(t.resources, "document")} · retrieval quiz` : "No documents on this topic yet"));
+      b.title = `${t.topic}: ${GRADE_WORD[t.grade || ""]}${t.result ? `, ${t.result.got} / ${t.result.of} marks over ${plural(t.result.answers, "answer")}` : ""}`;
+      b.addEventListener("click", () => retrievalOn(t.topic));
+      li.appendChild(b);
+      list.appendChild(li);
+    }
+    $("[data-rag-summary]").textContent = `${counts.red} red · ${counts.amber} amber · ${counts.green} green${counts.none ? ` · ${counts.none} not graded` : ""}`;
+    const g = r.graded;
+    const since = g ? (r.answers || 0) - g.answers : 0;
+    $("[data-rag-when]").textContent = g ? `Graded ${when(g.at)}${since > 0 ? `, ${plural(since, "answer")} ago` : ""}` : "";
+    const btn = $("[data-rag-grade]");
+    btn.textContent = g ? "Grade my topics again" : "Grade my topics";
+    btn.disabled = host.dataset.configured !== "1";
+    // The first time, grade straight away once there are answers to go on.
+    if (!g && r.answers > 0 && !autoGraded && host.dataset.configured === "1") { autoGraded = true; gradeTopics(); }
+  }
+  async function gradeTopics() {
+    const btn = $("[data-rag-grade]");
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "The coach is grading your topics…";
+    try {
+      coachChat.redraw(await api("POST", "practice/coach/grades"));
+      toast("Your topics have been graded.");
+    } catch (e) {
+      toast(e.message, "error");
+      btn.textContent = label;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  $("[data-rag-grade]").addEventListener("click", gradeTopics);
+
+  /** For a retrieval quiz and the mini quiz after it: the two scores side by side. */
+  function drawCompare(s) {
+    const box = $("[data-quiz-compare]");
+    let open = null, closed = null;
+    if (s.kind === "recall" && s.parent && s.parent.status === "marked") { open = s.parent; closed = s.status === "marked" ? s : null; }
+    if (s.kind === "retrieval" && s.status === "marked") { open = s; closed = s.recall && s.recall.status === "marked" ? s.recall : null; }
+    box.hidden = !(open && closed);
+    if (box.hidden) return;
+    box.replaceChildren();
+    const cell = (label, x) => {
+      const d = make("div", "pr-compare-cell");
+      d.append(make("span", "small muted", label), make("strong", "", `${x.score} / ${x.total}`), make("span", "muted", `${pct(x.score, x.total)}%`));
+      return d;
+    };
+    const a = pct(open.score, open.total), b = pct(closed.score, closed.total);
+    box.append(cell("With the document open", open), cell("Without it", closed),
+      make("p", "small pr-compare-note",
+        a < 50 ? "Finding the answers in the document was hard too, so start there: read it through carefully, then do another retrieval quiz on it before testing yourself again."
+          : b >= a ? "You remembered it as well as you could find it. Well done."
+          : b >= a - 20 ? "You remembered most of it. Go over the questions you missed without the document."
+          : "There is a gap between finding it and remembering it. Do another retrieval quiz on this soon, then try again from memory."));
+  }
 
   // ---------- links into a tab with filters set (from the admin page's past papers) ----------
   // #hub?years=2024, #hub?spec=1.2 Networks&source=, #hub?paper=12, #questions?paper=3 (a paper guide's id).

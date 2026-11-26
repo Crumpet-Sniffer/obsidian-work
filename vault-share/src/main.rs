@@ -182,6 +182,8 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/practice/coach", get(practice_h::coach).post(practice_h::coach_send))
         // So does Ask Claude.
         .route("/v/{id}/api/practice/chat", get(practice_h::chat).post(practice_h::chat_send))
+        // Grading every topic waits for the coach's grades.
+        .route("/v/{id}/api/practice/coach/grades", post(practice_h::coach_grade))
         // Checking one written answer waits for Claude to mark it.
         .route("/v/{id}/api/practice/sessions/{sid}/check", post(practice_h::check))
         // Pictures shown to the filing model travel in the request (Anthropic takes at most 32 MB).
@@ -230,8 +232,12 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/practice/decks", get(practice_h::decks).post(practice_h::make_deck))
         .route("/v/{id}/api/practice/decks/{did}", get(practice_h::deck).delete(practice_h::delete_deck))
         .route("/v/{id}/api/practice/decks/{did}/progress", axum::routing::put(practice_h::deck_progress))
-        .route("/v/{id}/api/practice/coach/clear", post(practice_h::coach_clear))
-        .route("/v/{id}/api/practice/chat/clear", post(practice_h::chat_clear))
+        .route("/v/{id}/api/practice/coach/threads/{tid}", axum::routing::delete(practice_h::coach_delete_thread))
+        .route("/v/{id}/api/practice/chat/threads/{tid}", axum::routing::delete(practice_h::chat_delete_thread))
+        .route("/v/{id}/api/practice/coach/tasks/{tid}", axum::routing::delete(practice_h::coach_delete_task))
+        .route("/v/{id}/api/practice/resources", get(practice_h::resources))
+        .route("/v/{id}/api/practice/retrieval", post(practice_h::retrieval))
+        .route("/v/{id}/api/practice/sessions/{sid}/recall", post(practice_h::recall))
         .route("/v/{id}/api/practice/history/clear", post(practice_h::clear_history))
         .route("/v/{id}/api/practice/docs", post(practice_h::add_doc))
         .route("/v/{id}/api/practice/docs/{did}", axum::routing::delete(practice_h::delete_doc))

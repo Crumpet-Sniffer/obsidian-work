@@ -17,6 +17,7 @@
     <button type="button" role="tab" data-tab="cards" aria-selected="false" title="Flashcards Claude makes from your notes">Flashcard decks</button>
     <button type="button" role="tab" data-tab="guides" aria-selected="false" title="Study guides, briefings, cheat sheets and glossaries written from your notes">Study guides and summaries</button>
     <button type="button" role="tab" data-tab="mindmaps" aria-selected="false" title="Mind maps of how the ideas in your notes connect">Mind maps</button>
+    <button type="button" role="tab" data-tab="retrieval" aria-selected="false" title="Open one of your documents and find the answers in it, then see what you remember without it">Retrieval quizzes</button>
     <button type="button" role="tab" data-tab="ask" aria-selected="false" title="Chat with Claude about your notes: explanations, follow-up questions and help">Ask Claude</button>
     <button type="button" role="tab" data-tab="history" aria-selected="false" title="Everything you have answered, with your marks and feedback">My answers and marks</button>
     <button type="button" role="tab" data-tab="coach" aria-selected="false" title="How you are doing, and what to revise next">Exam coach: my progress</button>
@@ -26,6 +27,16 @@
     <h2>Write me practice questions</h2>
     <p class="small muted">Claude writes questions from your notes on the topics you choose, then marks your answers: choice and fill-in questions straight away, written answers against a mark scheme. With past papers in the question hub, it copies how your exams word questions and mark schemes.</p>
     <form class="pr-form" data-gen-form>
+      <fieldset class="pr-source" data-gen-source-box>
+        <legend>Where the questions come from</legend>
+        <input type="range" name="source" min="0" max="2" step="1" value="2" data-gen-source aria-describedby="pr-source-hint" aria-valuetext="Only Claude's questions">
+        <div class="pr-source-labels">
+          <button type="button" data-source-stop="0" tabindex="-1">Past paper questions only</button>
+          <button type="button" data-source-stop="1" tabindex="-1">A mix of both</button>
+          <button type="button" data-source-stop="2" tabindex="-1">Only Claude's questions</button>
+        </div>
+        <p class="muted small" id="pr-source-hint" data-gen-source-hint></p>
+      </fieldset>
       <div class="pr-row" data-gen-paper-row hidden>
         <label>Write them for
           <select name="profile" data-gen-paper><option value="">Any paper (no paper guide)</option></select>
@@ -37,6 +48,11 @@
       <fieldset class="pr-choices" data-choices="types"><legend>Question types</legend></fieldset>
       <fieldset class="pr-choices" data-choices="marks"><legend>Mark levels</legend></fieldset>
       <div class="pr-row">
+        <label>Number of questions
+          <input type="number" name="count" min="1" max="30" value="10" required>
+        </label>
+      </div>
+      <div class="pr-row" data-gen-claude-only>
         <label>How hard
           <select name="difficulty">
             <option value="easy">Easy</option>
@@ -45,12 +61,9 @@
             <option value="mixed">A mix</option>
           </select>
         </label>
-        <label>Number of questions
-          <input type="number" name="count" min="1" max="30" value="10" required>
-        </label>
         <label class="check pr-papers"><input type="checkbox" name="use_papers" checked> Model them on the past papers in the hub</label>
       </div>
-      <label class="pr-focus"><span>What should they focus on? <span class="muted small">(optional)</span></span>
+      <label class="pr-focus" data-gen-claude-only><span>What should they focus on? <span class="muted small">(optional)</span></span>
         <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: scenario questions about a small business, or the differences between symmetric and asymmetric encryption"></textarea>
       </label>
       <div class="pr-actions">
@@ -204,6 +217,29 @@
     <p class="small muted pr-keys">Click a <strong>&#9656;</strong> to open or close a branch &middot; click an idea to ask Claude about it &middot; drag to move around</p>
   </section>
 
+  <section class="card pr-panel pr-retrieval" data-panel="retrieval" role="tabpanel" hidden>
+    <h2>Retrieval quizzes</h2>
+    <p class="small muted">Open one of your documents (slides, a Word document, a PDF or a note) and answer questions beside it by finding the answers in it. Each question's hint says where to look. When you have handed them in, try a short mini quiz without the document to see what you remember.</p>
+    <div class="pr-tasks" data-retrieval-tasks hidden></div>
+    <div class="pr-row pr-retrieval-pick">
+      <label>Topic
+        <select data-retrieval-topic><option value="">Every topic</option></select>
+      </label>
+      <label>Questions
+        <select data-retrieval-count>
+          <option value="5">5</option>
+          <option value="8" selected>8</option>
+          <option value="12">12</option>
+        </select>
+      </label>
+      <label class="pr-retrieval-find">Find a document
+        <input type="search" data-retrieval-q placeholder="Search by name…" maxlength="120" autocomplete="off">
+      </label>
+    </div>
+    <p class="small muted" data-retrieval-status aria-live="polite"></p>
+    <ul class="pr-resources" data-retrieval-list></ul>
+  </section>
+
   <section class="card pr-panel pr-ask" data-panel="ask" role="tabpanel" hidden>
     <h2>Ask Claude</h2>
     <p class="small muted">Ask Claude about your notes: to explain an idea, go over a question you got wrong, make sense of a mark scheme, or test you. Claude answers from your notes and links the ones it used. Only you can see this conversation.</p>
@@ -212,13 +248,19 @@
       <fieldset class="pr-choices" data-choices="ask-topics"><legend class="sr-only">Topics</legend></fieldset>
       <p class="muted small">Choose none to let Claude read notes from across the whole vault.</p>
     </details>
+    <div class="pr-convbar" data-conv>
+      <label class="pr-conv-pick">Conversation
+        <select data-conv-select></select>
+      </label>
+      <button type="button" data-conv-new>New conversation</button>
+      <button type="button" class="small danger" data-conv-delete hidden>Delete</button>
+    </div>
     <div class="pr-chat" data-chat aria-live="polite"></div>
     <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
     <form class="pr-chat-form" data-chat-form>
       <textarea name="message" rows="2" maxlength="8000" placeholder="Ask anything about your notes, or try: Explain this topic as if I were new to it"></textarea>
       <div class="pr-actions">
         <button type="submit" class="primary">Send</button>
-        <button type="button" data-chat-clear>Start a new chat</button>
       </div>
     </form>
   </section>
@@ -235,14 +277,31 @@
   <section class="card pr-panel pr-coach" data-panel="coach" role="tabpanel" hidden>
     <h2>Exam coach</h2>
     <p class="small muted">Claude looks at everything you have answered here and your flashcards, tells you where you are losing marks, and what would help. Only you can see this conversation.</p>
+    <div class="pr-tasks" data-coach-tasks hidden></div>
+    <section class="pr-rag" data-rag aria-labelledby="pr-rag-h">
+      <div class="pr-rag-bar">
+        <h3 id="pr-rag-h">Your topics</h3>
+        <span class="muted small" data-rag-summary></span>
+        <span class="muted small" data-rag-when></span>
+        <button type="button" class="small" data-rag-grade>Grade my topics</button>
+      </div>
+      <p class="pr-rag-key small muted"><span class="pr-rag-dot is-red"></span> Red: losing marks <span class="pr-rag-dot is-amber"></span> Amber: some way to go <span class="pr-rag-dot is-green"></span> Green: secure <span class="pr-rag-dot is-none"></span> Not graded yet &middot; choose a topic to do a retrieval quiz on it with your documents open.</p>
+      <ul class="pr-rag-list" data-rag-list></ul>
+    </section>
     <div class="pr-stats" data-stats></div>
+    <div class="pr-convbar" data-conv>
+      <label class="pr-conv-pick">Conversation
+        <select data-conv-select></select>
+      </label>
+      <button type="button" data-conv-new>New conversation</button>
+      <button type="button" class="small danger" data-conv-delete hidden>Delete</button>
+    </div>
     <div class="pr-chat" data-chat aria-live="polite"></div>
     <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
     <form class="pr-chat-form" data-chat-form>
       <textarea name="message" rows="2" maxlength="4000" placeholder="Ask anything, or try: Where am I losing the most marks?"></textarea>
       <div class="pr-actions">
         <button type="submit" class="primary">Send</button>
-        <button type="button" data-chat-clear>Start again</button>
       </div>
     </form>
   </section>
@@ -254,6 +313,20 @@
       <span class="pr-score" data-quiz-score></span>
     </div>
     <p class="muted" data-quiz-status aria-live="polite"></p>
+    <div class="pr-compare" data-quiz-compare hidden></div>
+    <div class="pr-quiz-split" data-quiz-split>
+    <aside class="pr-resource" data-quiz-resource hidden aria-label="The document for this quiz">
+      <div class="pr-resource-head">
+        <strong data-resource-title></strong>
+        <span class="pr-seg" role="group" aria-label="Show" data-resource-views hidden>
+          <button type="button" data-resource-view="original" aria-pressed="true">Original</button>
+          <button type="button" data-resource-view="note" aria-pressed="false">Notes</button>
+        </span>
+        <a class="small" data-resource-open target="_blank" rel="noopener">Open in a new tab</a>
+      </div>
+      <div class="pr-resource-body" data-resource-body tabindex="0"></div>
+    </aside>
+    <div class="pr-quiz-main">
     <div class="pr-summary" data-quiz-summary hidden></div>
     <div class="pr-quiz-tools" data-quiz-tools hidden>
       <div class="pr-seg" role="group" aria-label="How to show the questions">
@@ -273,7 +346,10 @@
         <button type="submit" class="primary" data-quiz-submit>Hand in for marking</button>
       </div>
     </form>
+    </div>
+    </div>
     <div class="pr-actions" data-quiz-after hidden>
+      <button type="button" class="primary" data-quiz-recall hidden>Now try a mini quiz without the document</button>
       <button type="button" class="primary" data-quiz-followup>Make me a follow-up quiz</button>
       <button type="button" data-quiz-missed>Retake the ones I lost marks on</button>
       <button type="button" data-quiz-again>Try them all again</button>

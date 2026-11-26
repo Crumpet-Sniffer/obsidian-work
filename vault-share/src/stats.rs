@@ -148,14 +148,33 @@ impl Sampler {
     }
 }
 
-pub async fn stats(State(st): State<AppState>, _user: CurrentUser) -> ApiResult {
+/// How far back the spend figure in the tracker looks.
+const SPEND_WINDOW: i64 = 30 * 60;
+
+pub async fn stats(State(st): State<AppState>, user: CurrentUser) -> ApiResult {
     let st2 = st.clone();
-    let snap = tokio::task::spawn_blocking(move || {
+    let mut snap = tokio::task::spawn_blocking(move || {
         let pid = st2.worker_pid.load(std::sync::atomic::Ordering::Relaxed);
         let mut s = st2.stats.lock().unwrap_or_else(|e| e.into_inner());
         s.sample(&st2.cfg.data_dir, pid)
     })
     .await?;
+    // What calls to Claude cost in the last half hour: the whole site's for an admin, otherwise the account's own.
+    let since = crate::db::now() - SPEND_WINDOW;
+    let (micro, calls) = st.db.usage_since(since, if user.is_admin { None } else { Some(user.id) }).await?;
+    let rate = crate::handlers::ingest::usd_gbp(&st.db).await?.value;
+    let gbp = crate::spend::gbp(micro, rate);
+    if snap.is_null() {
+        snap = json!({});
+    }
+    snap["spend"] = json!({
+        "amount": crate::spend::fmt_gbp(gbp),
+        "gbp": gbp,
+        "usd": micro as f64 / 1_000_000.0,
+        "calls": calls,
+        "minutes": SPEND_WINDOW / 60,
+        "everyone": user.is_admin,
+    });
     ok(snap)
 }
 

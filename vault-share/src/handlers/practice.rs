@@ -36,7 +36,7 @@ fn new_id() -> String {
 pub async fn page(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> AppResult {
     let v = authorize(&st, &user, &id).await?;
     let s = Settings::load(&st.db).await?;
-    Ok(render(&PracticePage {
+    let mut res = render(&PracticePage {
         page: PageCtx::for_user(&user),
         csrf: user.csrf.clone(),
         vault_id: v.id,
@@ -44,7 +44,10 @@ pub async fn page(State(st): State<AppState>, user: CurrentUser, Path(id): Path<
         configured: s.api_key.is_some(),
         is_admin: user.is_admin,
         max_file_mb: st.cfg.max_file_bytes / 1024 / 1024,
-    }))
+    });
+    // Retrieval quizzes show slide decks and documents (drawn in the page) and PDFs (framed) beside the questions.
+    res.headers_mut().insert(axum::http::header::CONTENT_SECURITY_POLICY, axum::http::HeaderValue::from_static(crate::security::PRACTICE_CSP));
+    Ok(res)
 }
 
 /// Past papers and exam documents for a vault: adding them, the paper guides, the years and clearing the hub. On the
@@ -207,6 +210,15 @@ fn question_json(idx: &VaultIndex, vault_id: &str, q: &Question, reveal: bool) -
         "hint": q.hint,
         "style": q.style,
     });
+    if q.qtype == "calc" {
+        v["calc"] = json!({ "values": q.calc.get("values").cloned().unwrap_or(json!([])), "unit": q.calc.get("unit").cloned().unwrap_or(json!("")), "decimals": q.calc.get("decimals").cloned().unwrap_or(json!(2)) });
+        if reveal {
+            let reference: Vec<String> = q.calc.get("tokens").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+            v["calc"]["answer"] = q.calc.get("answer").cloned().unwrap_or(Value::Null);
+            v["calc"]["tokens"] = json!(reference);
+            v["calc"]["formula"] = json!(practice::calc_formula_text(&q.calc, &reference));
+        }
+    }
     if reveal {
         v["explanation"] = json!(q.explanation);
         v["optionNotes"] = json!(q.option_notes);
@@ -310,7 +322,8 @@ pub async fn hub(State(st): State<AppState>, user: CurrentUser, Path(id): Path<S
             "paper" => x.source == "paper",
             "generated" => x.source == "generated",
             "mine" => x.source == "generated" && x.user_id == Some(user.id),
-            _ => true,
+            // Retrieval quiz questions belong with their document, not in the bank.
+            _ => x.source != "retrieval",
         };
         let hay = || format!("{} {} {}", x.text, x.number, x.paper_title).to_lowercase();
         from && (papers.is_empty() || x.paper_id.is_some_and(|p| papers.contains(&p))) && (words.is_empty() || {
@@ -444,6 +457,10 @@ pub struct GenerateBody {
     /// The student's own words on what to focus on.
     #[serde(default)]
     focus: String,
+    /// Where the questions come from: "claude" (Claude writes them all, the default), "bank" (past paper questions
+    /// from the question bank only) or "mix" (half from the bank, the rest written by Claude).
+    #[serde(default)]
+    source: String,
 }
 
 /// The student's focus request, tidied: at most 1000 characters.
@@ -472,12 +489,18 @@ fn summary_title(count: usize, noun: &str, topics: &[String]) -> String {
     format!("{count} {noun}{} · {what}", if count == 1 { "" } else { "s" })
 }
 
-/// Start writing questions. Returns the new session at once; it becomes "ready" when Claude has written them.
+/// Start writing questions. Returns the new session at once; it becomes "ready" when Claude has written them. Past
+/// paper questions from the bank are put in straight away ("bank"), or alongside Claude's ("mix").
 pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<GenerateBody>) -> ApiResult {
     check_csrf(&user, &headers)?;
     let v = authorize(&st, &user, &id).await?;
     let s = Settings::load(&st.db).await?;
-    if s.api_key.is_none() {
+    let source = match b.source.as_str() {
+        "bank" => "bank",
+        "mix" => "mix",
+        _ => "claude",
+    };
+    if s.api_key.is_none() && source != "bank" {
         return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
     let idx = index_for(&st, &v.id).await?;
@@ -510,14 +533,75 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
         }
         None => Vec::new(),
     };
+    // Past paper questions from the bank, for "bank" and "mix".
+    let from_bank: Vec<i64> = if source == "claude" {
+        Vec::new()
+    } else {
+        let all = st.db.questions(v.id.clone()).await?;
+        let answered: HashSet<i64> = st.db.marked_attempts(user.id, v.id.clone()).await?.iter().filter_map(|a| a.question_id).collect();
+        let want = if source == "bank" { b.count } else { b.count / 2 };
+        let paper = profile.as_ref().map(|p| (p.qualification.as_str(), p.paper_number.as_str()));
+        practice::pick_from_bank(&all, &answered, &topics, &types, &marks, paper, &spec, want)
+    };
     let focus = clean_focus(&b.focus);
-    let mut title = summary_title(b.count, "question", &topics);
-    if let Some(p) = &profile {
-        title = format!("{} · {}", summary_title(b.count, "question", &[]).split(" · ").next().unwrap_or(""), p.title);
+    let what = |n: usize| {
+        let mut t = summary_title(n, "question", &topics);
+        if let Some(p) = &profile {
+            t = format!("{} · {}", summary_title(n, "question", &[]).split(" · ").next().unwrap_or(""), p.title);
+        }
+        t
+    };
+    if source == "bank" {
+        if from_bank.is_empty() {
+            return Err(ApiErr::Bad("No past paper questions in the bank match these choices. Choose more topics, question types or mark levels, or move the slider to let Claude write some.".into()));
+        }
+        let n = from_bank.len();
+        let session = Session {
+            id: new_id(),
+            vault_id: v.id.clone(),
+            user_id: user.id,
+            title: format!("{} (past papers)", what(n)),
+            kind: "hub".into(),
+            settings: json!({ "topics": topics, "types": types, "marks": marks, "source": "bank", "asked": b.count }),
+            status: "ready".into(),
+            error: String::new(),
+            question_ids: from_bank,
+            score: 0,
+            total: 0,
+            created_at: 0,
+        };
+        st.db.create_practice_session(session.clone()).await?;
+        return ok(json!({ "id": session.id, "fromBank": n, "asked": b.count }));
     }
-    let job = Generation { topics, types, marks, difficulty: b.difficulty, count: b.count, use_papers: b.use_papers, profile, spec, focus, follow_up: String::new(), avoid: Vec::new() };
+    let n_bank = from_bank.len();
+    let claude_count = b.count - n_bank;
+    let title = if n_bank > 0 { format!("{} (mixed)", what(b.count)) } else { what(b.count) };
+    let job = Generation {
+        topics,
+        types,
+        marks,
+        difficulty: b.difficulty,
+        count: claude_count,
+        use_papers: b.use_papers,
+        profile,
+        spec,
+        focus,
+        follow_up: String::new(),
+        avoid: Vec::new(),
+        kind: "generated",
+        prefill: from_bank,
+        resource: None,
+        extra: json!({ "source": source, "fromBank": n_bank }),
+    };
     let created = start_generation(&st, &user, &v.id, title, job).await?;
-    ok(json!({ "id": created }))
+    ok(json!({ "id": created, "fromBank": n_bank, "asked": b.count }))
+}
+
+/// A document the questions are written from (retrieval quizzes and the mini quiz after them).
+struct ResourceJob {
+    note: String,
+    title: String,
+    text: String,
 }
 
 /// What to write for one set of questions.
@@ -531,10 +615,18 @@ struct Generation {
     profile: Option<Profile>,
     spec: Vec<String>,
     focus: String,
-    /// For a follow-up quiz: the questions the student lost marks on, and what they missed.
+    /// For a follow-up quiz: the questions the student lost marks on, and what they missed. For the mini quiz after a
+    /// retrieval quiz: the questions answered with the document open, and how they went.
     follow_up: String,
     /// Question texts not to write again (a follow-up's earlier questions).
     avoid: Vec<String>,
+    /// The session's kind: "generated", "retrieval" (open book) or "recall" (the closed-book mini quiz).
+    kind: &'static str,
+    /// Questions already chosen from the bank, practised with the ones Claude writes.
+    prefill: Vec<i64>,
+    resource: Option<ResourceJob>,
+    /// More settings to keep with the session.
+    extra: Value,
 }
 
 /// The words of a question, lower-cased, for spotting one written again with small changes.
@@ -553,20 +645,28 @@ fn near_copy(a: &HashSet<String>, b: &HashSet<String>) -> bool {
 
 /// Create the session and write its questions in the background. Returns the session's id.
 async fn start_generation(st: &AppState, user: &CurrentUser, vault: &str, title: String, g: Generation) -> Result<String, ApiErr> {
-    let settings = json!({
+    let mut settings = json!({
         "topics": g.topics, "types": g.types, "marks": g.marks, "difficulty": g.difficulty, "count": g.count, "usePapers": g.use_papers,
-        "profile": g.profile.as_ref().map(|p| p.id), "spec": g.spec, "focus": g.focus, "followUp": !g.follow_up.is_empty(),
+        "profile": g.profile.as_ref().map(|p| p.id), "spec": g.spec, "focus": g.focus, "followUp": !g.follow_up.is_empty() && g.kind == "generated",
     });
+    if let Some(extra) = g.extra.as_object() {
+        for (k, val) in extra {
+            settings[k] = val.clone();
+        }
+    }
+    if let Some(r) = &g.resource {
+        settings["resource"] = json!({ "note": r.note, "title": r.title });
+    }
     let session = Session {
         id: new_id(),
         vault_id: vault.to_string(),
         user_id: user.id,
         title,
-        kind: "generated".into(),
+        kind: g.kind.into(),
         settings: settings.clone(),
         status: "generating".into(),
         error: String::new(),
-        question_ids: Vec::new(),
+        question_ids: g.prefill.clone(),
         score: 0,
         total: 0,
         created_at: 0,
@@ -577,9 +677,20 @@ async fn start_generation(st: &AppState, user: &CurrentUser, vault: &str, title:
     let created = session.id.clone();
     tokio::spawn(async move {
         let sid = session.id.clone();
-        match write_questions(&st2, &w, &session.vault_id, &g).await {
+        let written = if g.count == 0 { Ok(Vec::new()) } else { write_questions(&st2, &w, &session.vault_id, &g).await };
+        match written {
             Ok(ids) => {
-                let _ = st2.db.set_session(sid, "ready", String::new(), Some(ids), None).await;
+                let mut all: Vec<i64> = g.prefill.iter().copied().chain(ids).collect();
+                if !g.prefill.is_empty() {
+                    use rand::seq::SliceRandom;
+                    all.shuffle(&mut rand::thread_rng());
+                }
+                let _ = st2.db.set_session(sid, "ready", String::new(), Some(all), None).await;
+            }
+            // With questions from the bank already chosen, practise those and say what went wrong with the rest.
+            Err(e) if !g.prefill.is_empty() => {
+                let note = format!("Claude's questions could not be written ({e}), so these are past paper questions only.");
+                let _ = st2.db.set_session(sid, "ready", note, Some(g.prefill.clone()), None).await;
             }
             Err(e) => {
                 let _ = st2.db.set_session(sid, "failed", e, None, None).await;
@@ -593,43 +704,66 @@ async fn write_questions(st: &AppState, who: &Who, vault: &str, g: &Generation) 
     let (topics, types, marks, difficulty, count, use_papers, profile, spec) =
         (&g.topics[..], &g.types[..], &g.marks[..], g.difficulty.as_str(), g.count, g.use_papers, g.profile.as_ref(), &g.spec[..]);
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
-    let idx = index_for(st, vault).await.map_err(|_| "The vault could not be read.".to_string())?;
-    let (s2, t2) = (s.clone(), topics.to_vec());
-    let notes = tokio::task::spawn_blocking(move || practice::notes_context(&idx, &s2, &t2)).await.map_err(|_| "The notes could not be read.".to_string())?;
-    if notes.trim().is_empty() {
-        return Err("There are no notes on these topics to write questions from.".into());
-    }
-    let examples = if use_papers {
-        let all = st.db.questions(vault.to_string()).await.map_err(|_| "The question hub could not be read.".to_string())?;
-        practice::examples(&all, topics, types, marks, profile.map(|p| (p.qualification.as_str(), p.paper_number.as_str())))
-    } else {
-        String::new()
-    };
     let type_names: Vec<&str> = types.iter().map(|t| TYPES.iter().find(|x| x.0 == t).map(|x| x.1).unwrap_or(t)).collect();
-    let mut msg = format!("<notes>\n{notes}</notes>\n\n");
-    if let Some(p) = profile {
-        msg.push_str(&format!("<paper_profile>\n{}\n</paper_profile>\n\n", p.markdown()));
-    }
-    if !examples.is_empty() {
-        msg.push_str(&format!("<past_paper_examples>\n{examples}</past_paper_examples>\n\n"));
-    }
-    msg.push_str(&format!(
-        "Write {count} question{}.\nQuestion types: {} (type ids: {}).\nMark levels: {}.\nTopics: {}.\nDifficulty: {difficulty}.",
-        if count == 1 { "" } else { "s" },
-        type_names.join(", "),
-        types.join(", "),
-        marks.iter().map(|m| format!("{m} mark{}", if *m == 1 { "" } else { "s" })).collect::<Vec<_>>().join(", "),
-        if topics.is_empty() { "any, from the notes".to_string() } else { topics.join("; ") },
-    ));
-    if profile.is_some() {
-        msg.push_str(&format!("\nThe questions are for this paper. Specification areas (use these exact labels in spec_areas): {}.", spec.join("; ")));
-    }
-    if !g.follow_up.is_empty() {
+    let (mut msg, prompt, what) = if let Some(r) = &g.resource {
+        // A retrieval quiz, or the mini quiz after one: written from one document.
+        let mut msg = format!("<resource title=\"{}\">\n{}\n</resource>\n\n", r.title.replace('"', "'"), r.text);
+        if !g.follow_up.is_empty() {
+            msg.push_str(&format!("<earlier>\n{}</earlier>\n\n", g.follow_up));
+        }
+        // The mini quiz drops questions too like the earlier ones, so a few spare are asked for.
+        let asked = if g.kind == "recall" { count + 3 } else { count };
         msg.push_str(&format!(
-            "\n\n<follow_up>\n{}\n</follow_up>\nThe student has already answered every question in <follow_up>. Write {count} completely new questions on the same ideas: a different scenario, wording and angle for each. Never copy or lightly reword a question from <follow_up>.",
-            g.follow_up
+            "Write {asked} question{}.\nQuestion types: {} (type ids: {}).\nTopics: {}.",
+            if asked == 1 { "" } else { "s" },
+            type_names.join(", "),
+            types.join(", "),
+            if topics.is_empty() { "(none)".to_string() } else { topics.join("; ") },
         ));
-    }
+        let (prompt, what) = if g.kind == "recall" { (crate::prompts::RECALL, "writing a mini quiz") } else { (crate::prompts::RETRIEVAL, "writing a retrieval quiz") };
+        (msg, prompt.to_string(), what)
+    } else {
+        let idx = index_for(st, vault).await.map_err(|_| "The vault could not be read.".to_string())?;
+        let (s2, t2) = (s.clone(), topics.to_vec());
+        let notes = tokio::task::spawn_blocking(move || practice::notes_context(&idx, &s2, &t2)).await.map_err(|_| "The notes could not be read.".to_string())?;
+        if notes.trim().is_empty() {
+            return Err("There are no notes on these topics to write questions from.".into());
+        }
+        let examples = if use_papers {
+            let all = st.db.questions(vault.to_string()).await.map_err(|_| "The question hub could not be read.".to_string())?;
+            practice::examples(&all, topics, types, marks, profile.map(|p| (p.qualification.as_str(), p.paper_number.as_str())))
+        } else {
+            String::new()
+        };
+        let mut msg = format!("<notes>\n{notes}</notes>\n\n");
+        if let Some(p) = profile {
+            msg.push_str(&format!("<paper_profile>\n{}\n</paper_profile>\n\n", p.markdown()));
+        }
+        if !examples.is_empty() {
+            msg.push_str(&format!("<past_paper_examples>\n{examples}</past_paper_examples>\n\n"));
+        }
+        msg.push_str(&format!(
+            "Write {count} question{}.\nQuestion types: {} (type ids: {}).\nMark levels: {}.\nTopics: {}.\nDifficulty: {difficulty}.",
+            if count == 1 { "" } else { "s" },
+            type_names.join(", "),
+            types.join(", "),
+            marks.iter().map(|m| format!("{m} mark{}", if *m == 1 { "" } else { "s" })).collect::<Vec<_>>().join(", "),
+            if topics.is_empty() { "any, from the notes".to_string() } else { topics.join("; ") },
+        ));
+        if types.iter().any(|t| t == "calc") {
+            msg.push_str(&format!("\n\n{}", crate::prompts::CALC));
+        }
+        if profile.is_some() {
+            msg.push_str(&format!("\nThe questions are for this paper. Specification areas (use these exact labels in spec_areas): {}.", spec.join("; ")));
+        }
+        if !g.follow_up.is_empty() {
+            msg.push_str(&format!(
+                "\n\n<follow_up>\n{}\n</follow_up>\nThe student has already answered every question in <follow_up>. Write {count} completely new questions on the same ideas: a different scenario, wording and angle for each. Never copy or lightly reword a question from <follow_up>.",
+                g.follow_up
+            ));
+        }
+        (msg, s.generate_prompt().to_string(), "writing questions")
+    };
     if !g.focus.is_empty() {
         msg.push_str(&format!("\n\n<student_request>\n{}\n</student_request>", g.focus.replace("</student_request>", "")));
     }
@@ -639,7 +773,7 @@ async fn write_questions(st: &AppState, who: &Who, vault: &str, g: &Generation) 
         "required": ["questions"],
         "additionalProperties": false,
     });
-    let v = practice::ask(st, who, vault, "writing questions", s.generate_prompt(), None, json!([{ "role": "user", "content": msg }]), Some(schema), 32_000).await?;
+    let v = practice::ask(st, who, vault, what, &prompt, None, json!([{ "role": "user", "content": msg }]), Some(schema), 32_000).await?;
     let qs: Vec<Question> = v
         .get("questions")
         .and_then(Value::as_array)
@@ -668,7 +802,8 @@ async fn write_questions(st: &AppState, who: &Who, vault: &str, g: &Generation) 
     if qs.is_empty() {
         return Err("Claude's questions could not be used. Try again.".into());
     }
-    st.db.add_questions(vault.to_string(), "generated", who.0, qs).await.map_err(|_| "The questions could not be saved.".to_string())
+    let source = if g.resource.is_some() { "retrieval" } else { "generated" };
+    st.db.add_questions(vault.to_string(), source, who.0, qs).await.map_err(|_| "The questions could not be saved.".to_string())
 }
 
 // ---------------------------------------------------------------- sessions
@@ -778,7 +913,44 @@ pub async fn session(State(st): State<AppState>, user: CurrentUser, Path((id, si
         .await?;
         out["items"] = json!(list);
     }
+    if let Some(note) = s.settings.pointer("/resource/note").and_then(Value::as_str) {
+        if s.kind == "retrieval" && idx_has(&st, &v.id, note).await {
+            let idx = index_for(&st, &v.id).await?;
+            let (vid, n) = (v.id.clone(), note.to_string());
+            let r = tokio::task::spawn_blocking(move || {
+                let text = std::fs::read_to_string(idx.disk_path(&n).unwrap_or_default()).unwrap_or_default();
+                let body = crate::markdown::strip_frontmatter(&text).to_string();
+                let html = practice::render(&idx, &vid, &body);
+                let mut res = practice::Resource { note: n.clone(), title: String::new(), original: String::new(), kind: "note".into(), topics: Vec::new() };
+                if let Some(found) = practice::resources_one(&idx, &n) {
+                    res = found;
+                }
+                let mut j = resource_json(&vid, &res);
+                j["html"] = json!(html);
+                j
+            })
+            .await?;
+            out["resource"] = r;
+        }
+    }
+    if s.kind == "recall" {
+        if let Some(pid) = s.settings.get("parent").and_then(Value::as_str) {
+            if let Ok(p) = own_session(&st, &user, &v.id, pid).await {
+                out["parent"] = json!({ "id": p.id, "title": p.title, "score": p.score, "total": p.total, "status": p.status });
+            }
+        }
+    }
+    if s.kind == "retrieval" {
+        let later = st.db.practice_sessions(user.id, v.id.clone(), 200).await?;
+        if let Some(r) = later.iter().find(|x| x.kind == "recall" && x.settings.get("parent").and_then(Value::as_str) == Some(s.id.as_str())) {
+            out["recall"] = json!({ "id": r.id, "score": r.score, "total": r.total, "status": r.status });
+        }
+    }
     ok(out)
+}
+
+async fn idx_has(st: &AppState, vault: &str, rel: &str) -> bool {
+    index_for(st, vault).await.map(|i| i.contains(rel)).unwrap_or(false)
 }
 
 #[derive(Deserialize)]
@@ -802,6 +974,20 @@ fn clean_answer(q: &Question, a: Option<&Value>) -> Value {
                 .map(|i| a.get("blanks").and_then(|x| x.get(i)).and_then(Value::as_str).unwrap_or("").chars().take(200).collect())
                 .collect();
             json!({ "blanks": b })
+        }
+        "calc" => {
+            let n_values = q.calc.get("values").and_then(Value::as_array).map(|x| x.len()).unwrap_or(0);
+            let ok = |t: &str| {
+                practice::CALC_OPS.contains(&t)
+                    || t.strip_prefix('v').and_then(|k| k.parse::<usize>().ok()).is_some_and(|k| k < n_values)
+                    || t.strip_prefix("n:").and_then(|n| n.parse::<f64>().ok()).is_some_and(|n| n.is_finite())
+            };
+            let tokens: Vec<String> = a
+                .get("tokens")
+                .and_then(Value::as_array)
+                .map(|x| x.iter().filter_map(Value::as_str).filter(|t| t.len() <= 40 && ok(t)).map(str::to_string).take(practice::CALC_MAX_TOKENS).collect())
+                .unwrap_or_default();
+            json!({ "tokens": tokens })
         }
         _ => json!({ "text": a.get("text").and_then(Value::as_str).unwrap_or("").chars().filter(|c| !c.is_control() || *c == '\n').take(20_000).collect::<String>() }),
     }
@@ -978,7 +1164,23 @@ pub async fn follow_up(State(st): State<AppState>, user: CurrentUser, Path((id, 
     let base = s.title.trim_start_matches("Follow-up · ").trim_end_matches(" (again)").to_string();
     let title: String = format!("Follow-up · {base}").chars().take(150).collect();
     let avoid: Vec<String> = attempts.iter().map(|a| Question::from_snapshot(&a.question).text).collect();
-    let job = Generation { topics, types, marks, difficulty, count, use_papers, profile, spec, focus: String::new(), follow_up: brief, avoid };
+    let job = Generation {
+        topics,
+        types,
+        marks,
+        difficulty,
+        count,
+        use_papers,
+        profile,
+        spec,
+        focus: String::new(),
+        follow_up: brief,
+        avoid,
+        kind: "generated",
+        prefill: Vec::new(),
+        resource: None,
+        extra: json!({}),
+    };
     let created = start_generation(&st, &user, &v.id, title, job).await?;
     ok(json!({ "id": created }))
 }
@@ -1169,14 +1371,32 @@ pub async fn delete_deck(State(st): State<AppState>, user: CurrentUser, Path((id
     ok(json!({ "ok": true }))
 }
 
-// ---------------------------------------------------------------- exam coach
+// ---------------------------------------------------------------- conversations (the exam coach and Ask Claude), kept as threads
 
-const COACH_HISTORY: i64 = 30;
+#[derive(Deserialize, Default)]
+pub struct ThreadQuery {
+    /// The saved conversation to show; empty for the most recent one, "new" for none (a new conversation).
+    #[serde(default)]
+    thread: String,
+}
 
-async fn coach_view(st: &AppState, user: &CurrentUser, vault: &str) -> Result<Value, ApiErr> {
+fn thread_json(t: &practice::Thread) -> Value {
+    json!({ "id": t.id, "title": t.title, "createdAt": t.created_at, "updatedAt": t.updated_at, "messages": t.messages })
+}
+
+/// One channel's saved conversations, and the messages of the one shown.
+async fn conversation_view(st: &AppState, user: &CurrentUser, vault: &str, channel: &'static str, thread: &str) -> Result<Value, ApiErr> {
+    let threads = st.db.chat_threads(user.id, vault.to_string(), channel).await?;
+    let current = match thread {
+        "new" => None,
+        "" => threads.first().cloned(),
+        t => threads.iter().find(|x| x.id == t).cloned(),
+    };
+    let msgs = match &current {
+        Some(t) => st.db.thread_messages(t.id.clone(), 400).await?,
+        None => Vec::new(),
+    };
     let idx = index_for(st, vault).await?;
-    let msgs = st.db.coach_messages(user.id, vault.to_string(), "coach", 200).await?;
-    let stats = practice::stats(st, user.id, vault).await?;
     let vid = vault.to_string();
     let list = tokio::task::spawn_blocking(move || {
         msgs.iter()
@@ -1187,21 +1407,126 @@ async fn coach_view(st: &AppState, user: &CurrentUser, vault: &str) -> Result<Va
             .collect::<Vec<_>>()
     })
     .await?;
-    Ok(json!({ "messages": list, "stats": stats }))
+    Ok(json!({
+        "messages": list,
+        "thread": current.as_ref().map(|t| t.id.clone()),
+        "threads": threads.iter().map(thread_json).collect::<Vec<_>>(),
+    }))
 }
 
-pub async fn coach(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> ApiResult {
+/// The thread a new message goes into: the one named (if it is the account's), or a new one titled after the message.
+async fn thread_for(st: &AppState, user: &CurrentUser, vault: &str, channel: &'static str, thread: &str, first: &str) -> Result<String, ApiErr> {
+    if !thread.is_empty() && thread != "new" {
+        return st.db.own_thread(thread.to_string(), user.id, vault.to_string(), channel).await?.map(|t| t.id).ok_or(ApiErr::NotFound);
+    }
+    let one_line = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title: String = one_line.chars().take(80).collect();
+    if one_line.chars().count() > 80 {
+        title = format!("{}…", title.trim_end());
+    }
+    Ok(st.db.create_thread(user.id, vault.to_string(), channel, title).await?)
+}
+
+/// The conversation as sent back to Claude: it must start with the student, so a leading reply left by the history
+/// limit is dropped.
+fn as_messages(history: &[(String, String, i64)]) -> Vec<Value> {
+    history
+        .iter()
+        .skip_while(|(r, _, _)| r != "user")
+        .map(|(r, c, _)| json!({ "role": if r == "assistant" { "assistant" } else { "user" }, "content": c }))
+        .collect()
+}
+
+// ---------------------------------------------------------------- exam coach
+
+const COACH_HISTORY: i64 = 30;
+/// A line the coach ends its reply with to set the student a retrieval quiz on a topic.
+const SET_RETRIEVAL: &str = "SET-RETRIEVAL-QUIZ:";
+
+fn task_json(t: &practice::CoachTask) -> Value {
+    json!({ "id": t.id, "kind": t.kind, "topic": t.topic, "reason": t.reason, "status": t.status, "sessionId": t.session_id, "createdAt": t.created_at, "updatedAt": t.updated_at })
+}
+
+/// The topics that have documents to do a retrieval quiz with, and how many each has.
+async fn resource_counts(st: &AppState, vault: &str) -> Result<Vec<(String, usize)>, ApiErr> {
+    let s = Settings::load(&st.db).await?;
+    let idx = index_for(st, vault).await?;
+    Ok(tokio::task::spawn_blocking(move || {
+        let topics = practice::vault_topics(&idx, &s);
+        let res = practice::resources(&idx, &s, &topics);
+        topics.into_iter().map(|t| {
+            let n = res.iter().filter(|r| r.topics.contains(&t)).count();
+            (t, n)
+        }).collect::<Vec<_>>()
+    })
+    .await?)
+}
+
+async fn coach_view(st: &AppState, user: &CurrentUser, vault: &str, thread: &str) -> Result<Value, ApiErr> {
+    let mut out = conversation_view(st, user, vault, "coach", thread).await?;
+    let stats = practice::stats(st, user.id, vault).await?;
+    let counts = resource_counts(st, vault).await?;
+    let grades = st.db.coach_grades(user.id, vault.to_string()).await?;
+    let graded: Vec<Value> = grades.as_ref().and_then(|g| g.0.as_array().cloned()).unwrap_or_default();
+    // Every topic, with its grade (if graded) and how many documents it has.
+    let topics: Vec<Value> = counts
+        .iter()
+        .map(|(t, n)| {
+            let g = graded.iter().find(|x| x.get("topic").and_then(Value::as_str).is_some_and(|y| y.eq_ignore_ascii_case(t)));
+            let result = stats.get("topics").and_then(Value::as_array).and_then(|a| a.iter().find(|x| x.get("name").and_then(Value::as_str) == Some(t.as_str()))).cloned();
+            json!({
+                "topic": t,
+                "grade": g.and_then(|x| x.get("grade")).cloned().unwrap_or(json!("")),
+                "reason": g.and_then(|x| x.get("reason")).cloned().unwrap_or(json!("")),
+                "resources": n,
+                "result": result,
+            })
+        })
+        .collect();
+    out["stats"] = stats.clone();
+    out["topics"] = json!(topics);
+    out["graded"] = json!(grades.as_ref().map(|g| json!({ "answers": g.1, "at": g.2 })));
+    out["answers"] = stats.get("answers").cloned().unwrap_or(json!(0));
+    out["tasks"] = json!(st.db.coach_tasks(user.id, vault.to_string()).await?.iter().map(task_json).collect::<Vec<_>>());
+    Ok(out)
+}
+
+pub async fn coach(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, Query(q): Query<ThreadQuery>) -> ApiResult {
     let v = authorize(&st, &user, &id).await?;
-    ok(coach_view(&st, &user, &v.id).await?)
+    ok(coach_view(&st, &user, &v.id, &q.thread).await?)
 }
 
 #[derive(Deserialize)]
 pub struct CoachBody {
     message: String,
+    #[serde(default)]
+    thread: String,
+}
+
+/// Take the coach's SET-RETRIEVAL-QUIZ lines out of its reply: the reply without them, and the topics named (only
+/// the vault's topics that have documents, at most three).
+fn take_assignments(reply: &str, allowed: &[String]) -> (String, Vec<String>) {
+    let mut topics: Vec<String> = Vec::new();
+    let mut kept: Vec<&str> = Vec::new();
+    for line in reply.lines() {
+        let l = line.trim().trim_matches('*').trim_matches('`').trim();
+        if let Some(rest) = l.strip_prefix(SET_RETRIEVAL) {
+            let name = rest.trim().trim_matches(|c: char| c == '"' || c == '[' || c == ']' || c == '.');
+            if let Some(t) = allowed.iter().find(|a| a.eq_ignore_ascii_case(name)) {
+                if !topics.contains(t) && topics.len() < 3 {
+                    topics.push(t.clone());
+                }
+            }
+        } else {
+            kept.push(line);
+        }
+    }
+    (kept.join("\n").trim_end().to_string(), topics)
 }
 
 /// Send a message to the coach and wait for the reply. The reply is worked out in its own task, so it is still
-/// saved if the page is closed while waiting.
+/// saved if the page is closed while waiting. The coach can set retrieval quizzes on topics the student is
+/// struggling with; they are added to the student's list of work.
 pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<CoachBody>) -> ApiResult {
     check_csrf(&user, &headers)?;
     let v = authorize(&st, &user, &id).await?;
@@ -1213,48 +1538,307 @@ pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id):
     if s.api_key.is_none() {
         return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
     }
-    st.db.add_coach_message(user.id, v.id.clone(), "coach", "user", text).await?;
+    let thread = thread_for(&st, &user, &v.id, "coach", &b.thread, &text).await?;
+    st.db.add_coach_message(user.id, v.id.clone(), "coach", thread.clone(), "user", text).await?;
     let stats = practice::stats(&st, user.id, &v.id).await?;
-    let idx = index_for(&st, &v.id).await?;
-    let topics = practice::vault_topics(&idx, &s);
-    let history = st.db.coach_messages(user.id, v.id.clone(), "coach", COACH_HISTORY).await?;
-    // The conversation must start with the student; drop a leading reply left by the history limit.
-    let msgs: Vec<Value> = history
-        .iter()
-        .skip_while(|(r, _, _)| r != "user")
-        .map(|(r, c, _)| json!({ "role": if r == "assistant" { "assistant" } else { "user" }, "content": c }))
-        .collect();
+    let counts = resource_counts(&st, &v.id).await?;
+    let topics: Vec<String> = counts.iter().map(|(t, _)| t.clone()).collect();
+    let with_docs: Vec<String> = counts.iter().filter(|(_, n)| *n > 0).map(|(t, _)| t.clone()).collect();
+    let history = st.db.thread_messages(thread.clone(), COACH_HISTORY).await?;
+    let msgs = as_messages(&history);
     let mut context = format!(
         "Course: {}. Topics in the student's notes: {}.\n\nThe student's practice results so far (JSON; percentages are of marks available):\n{}",
         v.name,
         if topics.is_empty() { "(none yet)".to_string() } else { topics.join("; ") },
         serde_json::to_string_pretty(&stats).unwrap_or_default()
     );
+    if let Some((grades, _, _)) = st.db.coach_grades(user.id, v.id.clone()).await? {
+        context.push_str(&format!("\n\nThe RAG grades you last gave each topic (JSON):\n{}", grades));
+    }
+    let tasks = st.db.coach_tasks(user.id, v.id.clone()).await?;
+    let waiting: Vec<String> = tasks.iter().filter(|t| t.status != "done").map(|t| t.topic.clone()).collect();
+    if !with_docs.is_empty() {
+        context.push_str(&format!(
+            "\n\nYou can set the student a retrieval quiz on a topic: they open one of their documents on it (slides or notes) and answer questions by finding the answers in it, then take a short quiz without it. Set one when they are struggling with a topic or ask you for work, by ending your reply with a line \"{SET_RETRIEVAL} <exact topic name>\" for each topic (at most three). The site takes these lines out of your reply and adds the quizzes to the student's list, so also say in your reply what you have set and why. Topics with documents to quiz on: {}.{}",
+            with_docs.join("; "),
+            if waiting.is_empty() { String::new() } else { format!(" Already set and not yet done: {}.", waiting.join("; ")) }
+        ));
+    }
     let guides: String = st.db.profiles(v.id.clone()).await?.iter().map(|p| p.markdown()).collect::<Vec<_>>().join("\n");
     if !guides.is_empty() {
         context.push_str(&format!("\n\nGuides to the student's exam papers:\n<paper_guides>\n{}\n</paper_guides>", guides.chars().take(60_000).collect::<String>()));
     }
     let st2 = st.clone();
-    let (w, vid, prompt) = (who(&user), v.id.clone(), s.coach_prompt().to_string());
+    let (w, vid, prompt, th) = (who(&user), v.id.clone(), s.coach_prompt().to_string(), thread.clone());
     let task = tokio::spawn(async move {
         let r = practice::ask(&st2, &w, &vid, "exam coach", &prompt, Some(context), json!(msgs), None, 6000).await;
         if let Ok(Value::String(reply)) = &r {
-            let _ = st2.db.add_coach_message(w.0, vid.clone(), "coach", "assistant", reply.clone()).await;
+            let (mut kept, set) = take_assignments(reply, &with_docs);
+            let mut added = Vec::new();
+            for t in set {
+                if st2.db.add_coach_task(w.0, vid.clone(), "retrieval", t.clone(), "Set by your coach in a conversation.".into()).await.unwrap_or(false) {
+                    added.push(t);
+                }
+            }
+            if !added.is_empty() {
+                kept.push_str(&format!("\n\n*Added to your work from the coach: a retrieval quiz on {}.*", added.join(", ")));
+            }
+            let _ = st2.db.add_coach_message(w.0, vid.clone(), "coach", th.clone(), "assistant", kept).await;
         }
         r
     });
     match task.await {
-        Ok(Ok(_)) => ok(coach_view(&st, &user, &v.id).await?),
+        Ok(Ok(_)) => ok(coach_view(&st, &user, &v.id, &thread).await?),
         Ok(Err(e)) => Err(ApiErr::Bad(e)),
         Err(e) => Err(ApiErr::Internal(e.into())),
     }
 }
 
-pub async fn coach_clear(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap) -> ApiResult {
+/// Delete one saved conversation with the coach. Answers, marks, grades and work set are kept.
+pub async fn coach_delete_thread(State(st): State<AppState>, user: CurrentUser, Path((id, tid)): Path<(String, String)>, headers: HeaderMap) -> ApiResult {
     check_csrf(&user, &headers)?;
     let v = authorize(&st, &user, &id).await?;
-    st.db.clear_coach(user.id, v.id.clone(), "coach").await?;
-    ok(coach_view(&st, &user, &v.id).await?)
+    if !st.db.delete_thread(tid, user.id).await? {
+        return Err(ApiErr::NotFound);
+    }
+    ok(coach_view(&st, &user, &v.id, "").await?)
+}
+
+/// The coach grades every topic red, amber or green from the student's results, and sets retrieval quizzes on the
+/// ones that need them.
+pub async fn coach_grade(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let s = Settings::load(&st.db).await?;
+    if s.api_key.is_none() {
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
+    }
+    let counts = resource_counts(&st, &v.id).await?;
+    if counts.is_empty() {
+        return Err(ApiErr::Bad("This vault has no topic pages to grade.".into()));
+    }
+    let stats = practice::stats(&st, user.id, &v.id).await?;
+    let answers = stats.get("answers").and_then(Value::as_i64).unwrap_or(0);
+    let topics: Vec<String> = counts.iter().map(|(t, _)| t.clone()).collect();
+    let msg = format!(
+        "<topics>\n{}\n</topics>\n\n<results>\n{}\n</results>\n\nGrade every topic in <topics>.",
+        topics.join("\n"),
+        serde_json::to_string_pretty(&stats).unwrap_or_default()
+    );
+    let schema = json!({
+        "type": "object",
+        "properties": { "grades": { "type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "topic": { "type": "string" },
+                "grade": { "type": "string", "enum": ["red", "amber", "green", "none"] },
+                "reason": { "type": "string" },
+                "set_retrieval": { "type": "boolean" },
+            },
+            "required": ["topic", "grade", "reason", "set_retrieval"],
+            "additionalProperties": false,
+        } } },
+        "required": ["grades"],
+        "additionalProperties": false,
+    });
+    let (st2, w, vid) = (st.clone(), who(&user), v.id.clone());
+    let task = tokio::spawn(async move {
+        practice::ask(&st2, &w, &vid, "grading topics", crate::prompts::GRADES, None, json!([{ "role": "user", "content": msg }]), Some(schema), 16_000).await
+    });
+    let reply = match task.await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return Err(ApiErr::Bad(e)),
+        Err(e) => return Err(ApiErr::Internal(e.into())),
+    };
+    let given: Vec<Value> = reply.get("grades").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut grades: Vec<Value> = Vec::new();
+    let mut to_set: Vec<(String, String)> = Vec::new();
+    for (t, n) in &counts {
+        let g = given.iter().find(|x| x.get("topic").and_then(Value::as_str).is_some_and(|y| y.trim().eq_ignore_ascii_case(t)));
+        let grade = g.and_then(|x| x.get("grade")).and_then(Value::as_str).filter(|x| ["red", "amber", "green", "none"].contains(x)).unwrap_or("none");
+        let reason: String = g.and_then(|x| x.get("reason")).and_then(Value::as_str).unwrap_or("Not practised yet.").chars().take(300).collect();
+        if g.and_then(|x| x.get("set_retrieval")).and_then(Value::as_bool).unwrap_or(false) && *n > 0 && grade != "green" && to_set.len() < 5 {
+            to_set.push((t.clone(), reason.clone()));
+        }
+        grades.push(json!({ "topic": t, "grade": grade, "reason": reason }));
+    }
+    st.db.save_coach_grades(user.id, v.id.clone(), json!(grades), answers).await?;
+    for (t, reason) in to_set {
+        st.db.add_coach_task(user.id, v.id.clone(), "retrieval", t, reason).await?;
+    }
+    ok(coach_view(&st, &user, &v.id, "").await?)
+}
+
+/// Remove a piece of work the coach set.
+pub async fn coach_delete_task(State(st): State<AppState>, user: CurrentUser, Path((id, tid)): Path<(String, i64)>, headers: HeaderMap) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    if !st.db.delete_coach_task(tid, user.id).await? {
+        return Err(ApiErr::NotFound);
+    }
+    ok(json!({ "tasks": st.db.coach_tasks(user.id, v.id.clone()).await?.iter().map(task_json).collect::<Vec<_>>() }))
+}
+
+// ---------------------------------------------------------------- retrieval quizzes
+
+#[derive(Deserialize, Default)]
+pub struct ResourcesQuery {
+    #[serde(default)]
+    topic: String,
+}
+
+fn resource_json(vault: &str, r: &practice::Resource) -> Value {
+    json!({
+        "note": r.note,
+        "title": r.title,
+        "kind": r.kind,
+        "original": r.original,
+        "topics": r.topics,
+        "noteUrl": file_url_note(vault, &r.note),
+        "fileUrl": if r.original.is_empty() { String::new() } else { file_url(vault, &r.original) },
+    })
+}
+
+fn file_url_note(vault: &str, note: &str) -> String {
+    crate::vault::note_url(vault, note)
+}
+
+/// The documents to do a retrieval quiz with: on one topic, or on every topic.
+pub async fn resources(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, Query(q): Query<ResourcesQuery>) -> ApiResult {
+    let v = authorize(&st, &user, &id).await?;
+    let s = Settings::load(&st.db).await?;
+    let idx = index_for(&st, &v.id).await?;
+    let vid = v.id.clone();
+    let topic = q.topic.trim().to_string();
+    let out = tokio::task::spawn_blocking(move || {
+        let all = practice::vault_topics(&idx, &s);
+        let chosen: Vec<String> = if topic.is_empty() { all.clone() } else { all.iter().filter(|t| t.eq_ignore_ascii_case(&topic)).cloned().collect() };
+        let list = practice::resources(&idx, &s, &chosen);
+        json!({ "topics": all, "resources": list.iter().map(|r| resource_json(&vid, r)).collect::<Vec<_>>() })
+    })
+    .await?;
+    let mut out = out;
+    out["tasks"] = json!(st.db.coach_tasks(user.id, v.id.clone()).await?.iter().map(task_json).collect::<Vec<_>>());
+    ok(out)
+}
+
+#[derive(Deserialize)]
+pub struct RetrievalBody {
+    note: String,
+    #[serde(default)]
+    count: Option<usize>,
+    /// The coach's task this quiz does, if any.
+    #[serde(default)]
+    task: Option<i64>,
+    /// The topic it was chosen from, if any.
+    #[serde(default)]
+    topic: String,
+}
+
+const RETRIEVAL_TYPES: &[&str] = &["single", "multi", "fill", "written"];
+
+/// Start a retrieval quiz: Claude writes questions answered by finding the information in one document, which is
+/// shown beside them.
+pub async fn retrieval(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<RetrievalBody>) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let s = Settings::load(&st.db).await?;
+    if s.api_key.is_none() {
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
+    }
+    let idx = index_for(&st, &v.id).await?;
+    if !crate::vault::is_note(&b.note) || !idx.contains(&b.note) {
+        return Err(ApiErr::Bad("That document is no longer in the vault.".into()));
+    }
+    let (idx2, s2, note) = (idx.clone(), s.clone(), b.note.clone());
+    let (res, text) = tokio::task::spawn_blocking(move || {
+        let all = practice::vault_topics(&idx2, &s2);
+        let found = practice::resources(&idx2, &s2, &all).into_iter().find(|r| r.note == note);
+        (found, practice::resource_text(&idx2, &note))
+    })
+    .await?;
+    if text.trim().len() < 200 {
+        return Err(ApiErr::Bad("This document has too little text to write a retrieval quiz from.".into()));
+    }
+    let title = b.note.rsplit('/').next().unwrap_or(&b.note).trim_end_matches(".md").to_string();
+    let mut topics = res.as_ref().map(|r| r.topics.clone()).unwrap_or_default();
+    if topics.is_empty() && !b.topic.is_empty() {
+        topics.push(b.topic.clone());
+    }
+    let count = b.count.unwrap_or(8).clamp(3, 15);
+    let job = Generation {
+        topics,
+        types: RETRIEVAL_TYPES.iter().map(|t| t.to_string()).collect(),
+        marks: vec![1, 2, 3],
+        difficulty: "mixed".into(),
+        count,
+        use_papers: false,
+        profile: None,
+        spec: Vec::new(),
+        focus: String::new(),
+        follow_up: String::new(),
+        avoid: Vec::new(),
+        kind: "retrieval",
+        prefill: Vec::new(),
+        resource: Some(ResourceJob { note: b.note.clone(), title: title.clone(), text }),
+        extra: json!({ "task": b.task }),
+    };
+    let sid = start_generation(&st, &user, &v.id, format!("Retrieval quiz · {title}"), job).await?;
+    if let Some(t) = b.task {
+        st.db.set_coach_task(t, user.id, "started", Some(sid.clone())).await?;
+    }
+    ok(json!({ "id": sid }))
+}
+
+/// After a retrieval quiz: a short quiz on the same document without it in front of the student.
+pub async fn recall(State(st): State<AppState>, user: CurrentUser, Path((id, sid)): Path<(String, String)>, headers: HeaderMap) -> ApiResult {
+    check_csrf(&user, &headers)?;
+    let v = authorize(&st, &user, &id).await?;
+    let s = own_session(&st, &user, &v.id, &sid).await?;
+    if s.kind != "retrieval" {
+        return Err(ApiErr::Bad("A mini quiz follows a retrieval quiz.".into()));
+    }
+    if s.status != "marked" {
+        return Err(ApiErr::Bad("Hand in the retrieval quiz first.".into()));
+    }
+    let settings = Settings::load(&st.db).await?;
+    if settings.api_key.is_none() {
+        return Err(ApiErr::Bad("No Anthropic API key is set. An admin can add one under Admin → Claude settings.".into()));
+    }
+    let note = s.settings.pointer("/resource/note").and_then(Value::as_str).unwrap_or("").to_string();
+    let idx = index_for(&st, &v.id).await?;
+    if note.is_empty() || !idx.contains(&note) {
+        return Err(ApiErr::Bad("The document of this quiz is no longer in the vault.".into()));
+    }
+    let (idx2, n2) = (idx.clone(), note.clone());
+    let text = tokio::task::spawn_blocking(move || practice::resource_text(&idx2, &n2)).await?;
+    let attempts = st.db.attempts(s.id.clone()).await?;
+    let mut earlier = String::new();
+    for a in &attempts {
+        let q = Question::from_snapshot(&a.question);
+        earlier.push_str(&format!("<question marks=\"{}/{}\">\n{}\n</question>\n", a.marks.unwrap_or(0), a.total, q.text.chars().take(600).collect::<String>()));
+    }
+    let title = s.settings.pointer("/resource/title").and_then(Value::as_str).unwrap_or("this document").to_string();
+    let topics: Vec<String> = s.settings.get("topics").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+    let job = Generation {
+        topics,
+        types: RETRIEVAL_TYPES.iter().map(|t| t.to_string()).collect(),
+        marks: vec![1, 2, 3],
+        difficulty: "mixed".into(),
+        count: 5,
+        use_papers: false,
+        profile: None,
+        spec: Vec::new(),
+        focus: String::new(),
+        follow_up: earlier,
+        avoid: attempts.iter().map(|a| Question::from_snapshot(&a.question).text).collect(),
+        kind: "recall",
+        prefill: Vec::new(),
+        resource: Some(ResourceJob { note, title: title.clone(), text }),
+        extra: json!({ "parent": s.id, "task": s.settings.get("task").cloned().unwrap_or(Value::Null) }),
+    };
+    let created = start_generation(&st, &user, &v.id, format!("Mini quiz without the document · {title}"), job).await?;
+    ok(json!({ "id": created }))
 }
 
 // ---------------------------------------------------------------- Ask Claude (a tutor on the notes)
@@ -1262,25 +1846,9 @@ pub async fn coach_clear(State(st): State<AppState>, user: CurrentUser, Path(id)
 /// Messages of the conversation sent back to Claude with each new one.
 const CHAT_HISTORY: i64 = 40;
 
-async fn chat_view(st: &AppState, user: &CurrentUser, vault: &str) -> Result<Value, ApiErr> {
-    let idx = index_for(st, vault).await?;
-    let msgs = st.db.coach_messages(user.id, vault.to_string(), "chat", 200).await?;
-    let vid = vault.to_string();
-    let list = tokio::task::spawn_blocking(move || {
-        msgs.iter()
-            .map(|(role, content, ts)| {
-                let html = if role == "assistant" { practice::render(&idx, &vid, content) } else { String::new() };
-                json!({ "role": role, "text": content, "html": html, "at": ts })
-            })
-            .collect::<Vec<_>>()
-    })
-    .await?;
-    Ok(json!({ "messages": list }))
-}
-
-pub async fn chat(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> ApiResult {
+pub async fn chat(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, Query(q): Query<ThreadQuery>) -> ApiResult {
     let v = authorize(&st, &user, &id).await?;
-    ok(chat_view(&st, &user, &v.id).await?)
+    ok(conversation_view(&st, &user, &v.id, "chat", &q.thread).await?)
 }
 
 #[derive(Deserialize)]
@@ -1289,6 +1857,8 @@ pub struct ChatBody {
     /// The topics whose notes Claude reads; none means notes from across the vault.
     #[serde(default)]
     topics: Vec<String>,
+    #[serde(default)]
+    thread: String,
 }
 
 /// Ask Claude about the notes and wait for the reply. Like the coach, the reply is worked out in its own task so it
@@ -1309,13 +1879,10 @@ pub async fn chat_send(State(st): State<AppState>, user: CurrentUser, Path(id): 
     let topics: Vec<String> = all.iter().filter(|t| b.topics.iter().any(|c| c.eq_ignore_ascii_case(t))).cloned().collect();
     let (s2, t2) = (s.clone(), topics.clone());
     let notes = tokio::task::spawn_blocking(move || practice::notes_context(&idx, &s2, &t2)).await?;
-    st.db.add_coach_message(user.id, v.id.clone(), "chat", "user", text).await?;
-    let history = st.db.coach_messages(user.id, v.id.clone(), "chat", CHAT_HISTORY).await?;
-    let msgs: Vec<Value> = history
-        .iter()
-        .skip_while(|(r, _, _)| r != "user")
-        .map(|(r, c, _)| json!({ "role": if r == "assistant" { "assistant" } else { "user" }, "content": c }))
-        .collect();
+    let thread = thread_for(&st, &user, &v.id, "chat", &b.thread, &text).await?;
+    st.db.add_coach_message(user.id, v.id.clone(), "chat", thread.clone(), "user", text).await?;
+    let history = st.db.thread_messages(thread.clone(), CHAT_HISTORY).await?;
+    let msgs = as_messages(&history);
     let context = format!(
         "Course: {}. Topics in the student's notes: {}.\n\n<notes>\n{}</notes>",
         v.name,
@@ -1323,26 +1890,29 @@ pub async fn chat_send(State(st): State<AppState>, user: CurrentUser, Path(id): 
         if notes.trim().is_empty() { "(The vault has no notes yet.)\n".to_string() } else { notes }
     );
     let st2 = st.clone();
-    let (w, vid) = (who(&user), v.id.clone());
+    let (w, vid, th) = (who(&user), v.id.clone(), thread.clone());
     let task = tokio::spawn(async move {
         let r = practice::ask(&st2, &w, &vid, "ask Claude", crate::prompts::CHAT, Some(context), json!(msgs), None, 8000).await;
         if let Ok(Value::String(reply)) = &r {
-            let _ = st2.db.add_coach_message(w.0, vid.clone(), "chat", "assistant", reply.clone()).await;
+            let _ = st2.db.add_coach_message(w.0, vid.clone(), "chat", th.clone(), "assistant", reply.clone()).await;
         }
         r
     });
     match task.await {
-        Ok(Ok(_)) => ok(chat_view(&st, &user, &v.id).await?),
+        Ok(Ok(_)) => ok(conversation_view(&st, &user, &v.id, "chat", &thread).await?),
         Ok(Err(e)) => Err(ApiErr::Bad(e)),
         Err(e) => Err(ApiErr::Internal(e.into())),
     }
 }
 
-pub async fn chat_clear(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap) -> ApiResult {
+/// Delete one saved conversation with Claude. Notes saved from it are kept.
+pub async fn chat_delete_thread(State(st): State<AppState>, user: CurrentUser, Path((id, tid)): Path<(String, String)>, headers: HeaderMap) -> ApiResult {
     check_csrf(&user, &headers)?;
     let v = authorize(&st, &user, &id).await?;
-    st.db.clear_coach(user.id, v.id.clone(), "chat").await?;
-    ok(chat_view(&st, &user, &v.id).await?)
+    if !st.db.delete_thread(tid, user.id).await? {
+        return Err(ApiErr::NotFound);
+    }
+    ok(conversation_view(&st, &user, &v.id, "chat", "").await?)
 }
 
 // ---------------------------------------------------------------- clearing the answer history

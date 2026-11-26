@@ -226,6 +226,10 @@ pub async fn file(
     // Browsers refuse to render PDFs in a sandboxed CSP, and PDFs cannot run page script anyway.
     if !matches!(kind, Kind::Pdf) {
         h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(FILE_CSP));
+    } else {
+        // A PDF may be framed by this site's own pages (beside a retrieval quiz), never by another site's.
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(crate::security::PDF_CSP));
+        h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
     }
     let name = path.rsplit('/').next().unwrap_or("file");
     let inline = matches!(kind, Kind::Image | Kind::Audio | Kind::Video | Kind::Pdf);

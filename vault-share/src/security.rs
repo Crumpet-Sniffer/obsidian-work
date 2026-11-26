@@ -27,6 +27,13 @@ pub const OFFICE_CSP: &str = "default-src 'none'; script-src 'self'; style-src '
     img-src 'self' data: blob: https:; media-src 'self'; font-src 'self' data: blob:; connect-src 'self'; \
     form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
 
+/// CSP for the Practice page: like OFFICE_CSP (a retrieval quiz shows a Word or PowerPoint document beside its
+/// questions, drawn by the same renderer), and it may frame this site's own PDFs. Script sources are unchanged.
+pub const PRACTICE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';     img-src 'self' data: blob: https:; media-src 'self'; font-src 'self' data: blob:; connect-src 'self';     frame-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
+
+/// CSP for PDFs: they may be shown inside this site's own pages (beside a retrieval quiz), not anyone else's.
+pub const PDF_CSP: &str = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'self'";
+
 /// CSP for user-uploaded files: even if an SVG/HTML-ish file is opened directly it runs
 /// in a sandboxed, script-less opaque origin.
 pub const FILE_CSP: &str =

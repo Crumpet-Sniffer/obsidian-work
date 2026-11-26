@@ -25,6 +25,7 @@ pub const TYPES: &[(&str, &str)] = &[
     ("multi", "Select multiple options"),
     ("fill", "Fill in the blanks"),
     ("written", "Written answer"),
+    ("calc", "Calculation (build the formula)"),
 ];
 pub const DIFFICULTIES: &[&str] = &["easy", "medium", "hard", "mixed"];
 /// Mark levels offered even before any past paper is in the hub.
@@ -184,8 +185,10 @@ fn strings() -> Value {
 
 /// One question, as Claude writes or extracts it.
 pub fn question_schema(with_number: bool) -> Value {
+    // Calculations are only written by Claude (past papers' calculations stay written answers).
+    let types: Vec<&str> = TYPES.iter().map(|t| t.0).filter(|t| !with_number || *t != "calc").collect();
     let mut props = json!({
-        "type": { "type": "string", "enum": TYPES.iter().map(|t| t.0).collect::<Vec<_>>() },
+        "type": { "type": "string", "enum": types },
         "text": { "type": "string" },
         "options": strings(),
         "correct": { "type": "array", "items": { "type": "integer" } },
@@ -201,6 +204,16 @@ pub fn question_schema(with_number: bool) -> Value {
         props["explanation"] = json!({ "type": "string" });
         props["option_feedback"] = strings();
         props["style"] = json!({ "type": "string" });
+        props["calc"] = object(json!({
+            "values": { "type": "array", "items": object(json!({
+                "label": { "type": "string" },
+                "value": { "type": "number" },
+                "unit": { "type": "string" },
+            })) },
+            "formula": { "type": "string" },
+            "unit": { "type": "string" },
+            "decimals": { "type": "integer" },
+        }));
     }
     if with_number {
         props["number"] = json!({ "type": "string" });
@@ -244,6 +257,8 @@ pub struct Question {
     pub option_notes: Vec<String>,
     /// Its type as the exam names it ("Multiple choice", "Calculation", "25-mark essay"), from the paper guides.
     pub style: String,
+    /// For a calculation: `{values: [{label, value, unit}], tokens: [..], answer, unit, decimals}` (see `Calc`).
+    pub calc: Value,
 }
 
 impl Question {
@@ -255,6 +270,7 @@ impl Question {
             "topics": self.topics, "difficulty": self.difficulty, "paper": self.paper_title, "source": self.source,
             "qualification": self.qualification, "paperNumber": self.paper_number, "spec": self.spec, "profile": self.profile_id,
             "hint": self.hint, "explanation": self.explanation, "optionNotes": self.option_notes, "style": self.style,
+            "calc": self.calc,
         })
     }
 
@@ -285,6 +301,7 @@ impl Question {
             explanation: s("explanation"),
             option_notes: serde_json::from_value(v.get("optionNotes").cloned().unwrap_or(json!([]))).unwrap_or_default(),
             style: s("style"),
+            calc: v.get("calc").cloned().unwrap_or(Value::Null),
         }
     }
 }
@@ -347,6 +364,14 @@ pub fn clean_question(v: &Value, topics: &[String], spec_allowed: &[String]) -> 
         }
         _ => {}
     }
+    let calc = if qtype == "calc" {
+        match clean_calc(v.get("calc").unwrap_or(&Value::Null)) {
+            Some(c) => c,
+            None => return None,
+        }
+    } else {
+        Value::Null
+    };
     if qtype != "single" && qtype != "multi" {
         options.clear();
         correct.clear();
@@ -419,6 +444,7 @@ pub fn clean_question(v: &Value, topics: &[String], spec_allowed: &[String]) -> 
         explanation: clip(s("explanation"), 3000),
         option_notes,
         style: clip(s("style"), 60),
+        calc,
     })
 }
 
@@ -453,6 +479,7 @@ fn q_row(r: &rusqlite::Row) -> rusqlite::Result<Question> {
         explanation: answer.get("explanation").and_then(Value::as_str).unwrap_or("").to_string(),
         option_notes: serde_json::from_value(answer.get("optionNotes").cloned().unwrap_or(json!([]))).unwrap_or_default(),
         style: r.get(19)?,
+        calc: answer.get("calc").cloned().unwrap_or(Value::Null),
     })
 }
 
@@ -469,7 +496,7 @@ fn insert_q(tx: &rusqlite::Transaction, vault: &str, paper: Option<i64>, source:
             q.text,
             q.qtype,
             serde_json::to_string(&q.options).unwrap_or_default(),
-            json!({ "correct": q.correct, "blanks": q.blanks, "hint": q.hint, "explanation": q.explanation, "optionNotes": q.option_notes }).to_string(),
+            json!({ "correct": q.correct, "blanks": q.blanks, "hint": q.hint, "explanation": q.explanation, "optionNotes": q.option_notes, "calc": q.calc }).to_string(),
             q.marks,
             q.scheme,
             serde_json::to_string(&q.topics).unwrap_or_default(),
@@ -647,6 +674,29 @@ fn r_row(r: &rusqlite::Row) -> rusqlite::Result<Report> {
         content: r.get(7)?,
         created_at: r.get(8)?,
     })
+}
+
+/// A saved conversation with the coach or Ask Claude.
+#[derive(Clone, Debug)]
+pub struct Thread {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub messages: i64,
+}
+
+/// Work the coach has set: a retrieval quiz on a topic the student is struggling with.
+#[derive(Clone, Debug)]
+pub struct CoachTask {
+    pub id: i64,
+    pub kind: String,
+    pub topic: String,
+    pub reason: String,
+    pub status: String,
+    pub session_id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 const D_COLS: &str = "id, user_id, title, settings, status, error, cards, progress, created_at";
@@ -958,33 +1008,179 @@ impl Db {
         self.call(move |c| c.execute("DELETE FROM flash_decks WHERE id = ?1 AND user_id = ?2", params![id, user]).map(|n| n > 0)).await
     }
 
-    // ---------- exam coach
+    // ---------- conversations: the exam coach ("coach") and Ask Claude ("chat"), kept as threads
 
-    /// A conversation's messages ("coach" or "chat"), the last `limit` of them, oldest first.
-    pub async fn coach_messages(&self, user: i64, vault: String, channel: &'static str, limit: i64) -> Result<Vec<(String, String, i64)>> {
+    /// An account's saved conversations on one channel, most recently used first.
+    pub async fn chat_threads(&self, user: i64, vault: String, channel: &'static str) -> Result<Vec<Thread>> {
         self.call(move |c| {
             let mut st = c.prepare(
-                "SELECT role, content, created_at FROM (SELECT id, role, content, created_at FROM coach_messages WHERE user_id = ?1 AND vault_id = ?2 AND channel = ?3 ORDER BY id DESC LIMIT ?4) ORDER BY id",
+                "SELECT t.id, t.title, t.created_at, t.updated_at, (SELECT COUNT(*) FROM coach_messages m WHERE m.thread = t.id)
+                 FROM chat_threads t WHERE t.user_id = ?1 AND t.vault_id = ?2 AND t.channel = ?3 ORDER BY t.updated_at DESC, t.rowid DESC LIMIT 200",
             )?;
-            let rows = st.query_map(params![user, vault, channel, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect();
+            let rows = st
+                .query_map(params![user, vault, channel], |r| Ok(Thread { id: r.get(0)?, title: r.get(1)?, created_at: r.get(2)?, updated_at: r.get(3)?, messages: r.get(4)? }))?
+                .collect();
             rows
         })
         .await
     }
 
-    pub async fn add_coach_message(&self, user: i64, vault: String, channel: &'static str, role: &'static str, content: String) -> Result<()> {
+    /// One of the account's threads on a channel, if it is theirs.
+    pub async fn own_thread(&self, id: String, user: i64, vault: String, channel: &'static str) -> Result<Option<Thread>> {
+        self.call(move |c| {
+            c.query_row(
+                "SELECT t.id, t.title, t.created_at, t.updated_at, (SELECT COUNT(*) FROM coach_messages m WHERE m.thread = t.id)
+                 FROM chat_threads t WHERE t.id = ?1 AND t.user_id = ?2 AND t.vault_id = ?3 AND t.channel = ?4",
+                params![id, user, vault, channel],
+                |r| Ok(Thread { id: r.get(0)?, title: r.get(1)?, created_at: r.get(2)?, updated_at: r.get(3)?, messages: r.get(4)? }),
+            )
+            .optional()
+        })
+        .await
+    }
+
+    /// Start a new conversation, titled after its first message.
+    pub async fn create_thread(&self, user: i64, vault: String, channel: &'static str, title: String) -> Result<String> {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let id2 = id.clone();
         self.call(move |c| {
             c.execute(
-                "INSERT INTO coach_messages (vault_id, user_id, channel, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![vault, user, channel, role, content, now()],
+                "INSERT INTO chat_threads (id, vault_id, user_id, channel, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                params![id2, vault, user, channel, title, now()],
+            )
+            .map(|_| ())
+        })
+        .await?;
+        Ok(id)
+    }
+
+    /// A thread's messages, the last `limit` of them, oldest first.
+    pub async fn thread_messages(&self, thread: String, limit: i64) -> Result<Vec<(String, String, i64)>> {
+        self.call(move |c| {
+            let mut st = c.prepare(
+                "SELECT role, content, created_at FROM (SELECT id, role, content, created_at FROM coach_messages WHERE thread = ?1 ORDER BY id DESC LIMIT ?2) ORDER BY id",
+            )?;
+            let rows = st.query_map(params![thread, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect();
+            rows
+        })
+        .await
+    }
+
+    pub async fn add_coach_message(&self, user: i64, vault: String, channel: &'static str, thread: String, role: &'static str, content: String) -> Result<()> {
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO coach_messages (vault_id, user_id, channel, thread, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![vault, user, channel, thread, role, content, now()],
+            )?;
+            c.execute("UPDATE chat_threads SET updated_at = ?2 WHERE id = ?1", params![thread, now()]).map(|_| ())
+        })
+        .await
+    }
+
+    /// Delete one saved conversation and its messages. True if it was the account's.
+    pub async fn delete_thread(&self, id: String, user: i64) -> Result<bool> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let n = tx.execute("DELETE FROM chat_threads WHERE id = ?1 AND user_id = ?2", params![id, user])?;
+            if n > 0 {
+                tx.execute("DELETE FROM coach_messages WHERE thread = ?1", params![id])?;
+            }
+            tx.commit()?;
+            Ok(n > 0)
+        })
+        .await
+    }
+
+    // ---------- the coach's RAG grades and the work it sets
+
+    /// The last grading: (grades JSON, marked answers it was made from, when).
+    pub async fn coach_grades(&self, user: i64, vault: String) -> Result<Option<(Value, i64, i64)>> {
+        self.call(move |c| {
+            c.query_row("SELECT grades, answers, updated_at FROM coach_grades WHERE user_id = ?1 AND vault_id = ?2", params![user, vault], |r| {
+                Ok((serde_json::from_str(&r.get::<_, String>(0)?).unwrap_or(json!([])), r.get(1)?, r.get(2)?))
+            })
+            .optional()
+        })
+        .await
+    }
+
+    pub async fn save_coach_grades(&self, user: i64, vault: String, grades: Value, answers: i64) -> Result<()> {
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO coach_grades (vault_id, user_id, grades, answers, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (vault_id, user_id) DO UPDATE SET grades = excluded.grades, answers = excluded.answers, updated_at = excluded.updated_at",
+                params![vault, user, grades.to_string(), answers, now()],
             )
             .map(|_| ())
         })
         .await
     }
 
-    pub async fn clear_coach(&self, user: i64, vault: String, channel: &'static str) -> Result<()> {
-        self.call(move |c| c.execute("DELETE FROM coach_messages WHERE user_id = ?1 AND vault_id = ?2 AND channel = ?3", params![user, vault, channel]).map(|_| ())).await
+    /// Work the coach has set: still to do first, then done, newest first.
+    pub async fn coach_tasks(&self, user: i64, vault: String) -> Result<Vec<CoachTask>> {
+        self.call(move |c| {
+            let mut st = c.prepare(
+                "SELECT id, kind, topic, reason, status, session_id, created_at, updated_at FROM coach_tasks WHERE user_id = ?1 AND vault_id = ?2
+                 ORDER BY status = 'done', updated_at DESC, id DESC LIMIT 60",
+            )?;
+            let rows = st
+                .query_map(params![user, vault], |r| {
+                    Ok(CoachTask {
+                        id: r.get(0)?,
+                        kind: r.get(1)?,
+                        topic: r.get(2)?,
+                        reason: r.get(3)?,
+                        status: r.get(4)?,
+                        session_id: r.get(5)?,
+                        created_at: r.get(6)?,
+                        updated_at: r.get(7)?,
+                    })
+                })?
+                .collect();
+            rows
+        })
+        .await
+    }
+
+    /// Set a retrieval quiz on a topic, unless one on it is already waiting to be done. True if it was added.
+    pub async fn add_coach_task(&self, user: i64, vault: String, kind: &'static str, topic: String, reason: String) -> Result<bool> {
+        self.call(move |c| {
+            let waiting: i64 = c.query_row(
+                "SELECT COUNT(*) FROM coach_tasks WHERE user_id = ?1 AND vault_id = ?2 AND kind = ?3 AND topic = ?4 COLLATE NOCASE AND status != 'done'",
+                params![user, vault, kind, topic],
+                |r| r.get(0),
+            )?;
+            if waiting > 0 {
+                return Ok(false);
+            }
+            c.execute(
+                "INSERT INTO coach_tasks (vault_id, user_id, kind, topic, reason, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 'set', ?6, ?6)",
+                params![vault, user, kind, topic, reason, now()],
+            )?;
+            Ok(true)
+        })
+        .await
+    }
+
+    /// Move a task on: "started" (with the session doing it) or "done". True if it was the account's.
+    pub async fn set_coach_task(&self, id: i64, user: i64, status: &'static str, session: Option<String>) -> Result<bool> {
+        self.call(move |c| {
+            let n = c.execute("UPDATE coach_tasks SET status = ?3, updated_at = ?4 WHERE id = ?1 AND user_id = ?2", params![id, user, status, now()])?;
+            if let Some(s) = session {
+                c.execute("UPDATE coach_tasks SET session_id = ?2 WHERE id = ?1", params![id, s])?;
+            }
+            Ok(n > 0)
+        })
+        .await
+    }
+
+    /// When a session the coach set is handed in and marked, its task is done.
+    pub async fn finish_coach_task_for(&self, session: String) -> Result<()> {
+        self.call(move |c| c.execute("UPDATE coach_tasks SET status = 'done', updated_at = ?2 WHERE session_id = ?1 AND status != 'done'", params![session, now()]).map(|_| ())).await
+    }
+
+    pub async fn delete_coach_task(&self, id: i64, user: i64) -> Result<bool> {
+        self.call(move |c| c.execute("DELETE FROM coach_tasks WHERE id = ?1 AND user_id = ?2", params![id, user]).map(|n| n > 0)).await
     }
 
     // ---------- answer history
@@ -1101,6 +1297,87 @@ pub fn notes_context(idx: &VaultIndex, s: &Settings, topics: &[String]) -> Strin
     out
 }
 
+// ---------------------------------------------------------------- resources for retrieval quizzes
+
+/// A document a student can study from with a retrieval quiz beside it: a note, and the original file it was made
+/// from (a slide deck, Word document or PDF) when there is one.
+#[derive(Clone, Debug)]
+pub struct Resource {
+    pub note: String,
+    pub title: String,
+    /// The original's path, or empty.
+    pub original: String,
+    /// "pptx", "docx", "pdf" or "note".
+    pub kind: String,
+    pub topics: Vec<String>,
+}
+
+fn resource_of(idx: &VaultIndex, note: &str) -> Resource {
+    let title = note.rsplit('/').next().unwrap_or(note).trim_end_matches(".md").to_string();
+    let original = idx
+        .disk_path(note)
+        .and_then(|d| std::fs::read_to_string(d).ok())
+        .and_then(|t| markdown::frontmatter_source(&t))
+        .and_then(|src| idx.resolve(&src).map(str::to_string))
+        .filter(|o| {
+            let l = o.to_ascii_lowercase();
+            l.ends_with(".pptx") || l.ends_with(".docx") || l.ends_with(".pdf")
+        })
+        .unwrap_or_default();
+    let kind = original.rsplit('.').next().filter(|_| !original.is_empty()).map(|e| e.to_ascii_lowercase()).unwrap_or_else(|| "note".into());
+    Resource { note: note.to_string(), title, original, kind, topics: Vec::new() }
+}
+
+/// The notes on each topic that can be studied from (every note linking to the topic page, not index or topic pages),
+/// with their originals. With no topics in the vault, every note outside the originals and images folders.
+pub fn resources(idx: &VaultIndex, s: &Settings, topics: &[String]) -> Vec<Resource> {
+    let folder = s.topics.trim_end_matches('/').to_string();
+    let skip = |p: &str| {
+        p.starts_with(&format!("{}/", s.originals))
+            || p.starts_with(&format!("{}/", s.attachments.split('/').next().unwrap_or("")))
+            || p.split('/').any(|seg| seg.starts_with('.'))
+            || p.starts_with(&format!("{folder}/"))
+            || p.to_lowercase().ends_with(" - index.md")
+            || p.to_lowercase().ends_with(" - spec map.md")
+    };
+    let mut out: Vec<Resource> = Vec::new();
+    if topics.is_empty() {
+        for n in idx.notes().filter(|p| !skip(p)).take(400) {
+            out.push(resource_of(idx, n));
+        }
+    } else {
+        let links = idx.links();
+        for t in topics {
+            let page = format!("{folder}/{t}.md");
+            let mut notes: Vec<String> = links.backlinks.get(&page).map(|v| v.iter().filter(|p| !skip(p)).cloned().collect()).unwrap_or_default();
+            notes.sort();
+            for n in notes {
+                match out.iter_mut().find(|r| r.note == n) {
+                    Some(r) => r.topics.push(t.clone()),
+                    None => {
+                        let mut r = resource_of(idx, &n);
+                        r.topics.push(t.clone());
+                        out.push(r);
+                    }
+                }
+            }
+        }
+    }
+    // Documents with an original to look at first, then by name.
+    out.sort_by(|a, b| (a.original.is_empty(), a.title.to_lowercase()).cmp(&(b.original.is_empty(), b.title.to_lowercase())));
+    out
+}
+
+/// One note as a resource (with its original, if it has one), when it is in the vault.
+pub fn resources_one(idx: &VaultIndex, note: &str) -> Option<Resource> {
+    idx.contains(note).then(|| resource_of(idx, note))
+}
+
+/// A resource's text for Claude to write retrieval questions from: the note, without frontmatter.
+pub fn resource_text(idx: &VaultIndex, note: &str) -> String {
+    cut(&note_text(idx, note), NOTES_BUDGET)
+}
+
 /// Past paper questions most like what was asked for, as examples of the course's style.
 pub fn examples(all: &[Question], topics: &[String], types: &[String], marks: &[i64], paper: Option<(&str, &str)>) -> String {
     let same_paper = |q: &Question| paper.is_none_or(|(qual, num)| q.qualification.eq_ignore_ascii_case(qual) && q.paper_number.eq_ignore_ascii_case(num));
@@ -1129,6 +1406,222 @@ pub fn examples(all: &[Question], topics: &[String], types: &[String], marks: &[
         ));
     }
     out
+}
+
+// ---------------------------------------------------------------- calculations: building a formula from tiles
+
+/// Tokens of a formula built on the page: "v0", "v1" ... (the question's value tiles), "n:8" (a number typed in),
+/// and the operators + - * / ^ ( ). The same grammar is evaluated in the browser (static/practice.js) to show the
+/// result as the formula is built.
+pub const CALC_OPS: &[&str] = &["+", "-", "*", "/", "^", "(", ")"];
+pub const CALC_MAX_TOKENS: usize = 80;
+pub const CALC_MAX_VALUES: usize = 10;
+
+/// Claude's formula ("{1} * {2} / 8") as tokens, with {n} the n-th value tile (from 1).
+fn formula_tokens(f: &str, n_values: usize) -> Option<Vec<String>> {
+    let f = f.replace(['×', '·'], "*").replace(['÷'], "/").replace(['−', '–'], "-");
+    let chars: Vec<char> = f.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            i += 1;
+        } else if c == '{' {
+            let end = chars[i..].iter().position(|x| *x == '}')? + i;
+            let n: usize = chars[i + 1..end].iter().collect::<String>().trim().parse().ok()?;
+            if n == 0 || n > n_values {
+                return None;
+            }
+            out.push(format!("v{}", n - 1));
+            i = end + 1;
+        } else if c.is_ascii_digit() || c == '.' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            let num: f64 = chars[start..i].iter().collect::<String>().parse().ok()?;
+            out.push(format!("n:{num}"));
+        } else if CALC_OPS.contains(&c.to_string().as_str()) {
+            out.push(c.to_string());
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+    (!out.is_empty() && out.len() <= CALC_MAX_TOKENS).then_some(out)
+}
+
+/// Evaluate formula tokens against the question's values. None when the formula is incomplete or undefined
+/// (unbalanced brackets, a division by zero, a result that is not a finite number).
+pub fn eval_tokens(tokens: &[String], values: &[f64]) -> Option<f64> {
+    struct P<'a> {
+        t: &'a [String],
+        i: usize,
+        v: &'a [f64],
+    }
+    impl P<'_> {
+        fn peek(&self) -> Option<&str> {
+            self.t.get(self.i).map(String::as_str)
+        }
+        fn expr(&mut self) -> Option<f64> {
+            let mut a = self.term()?;
+            while let Some(op @ ("+" | "-")) = self.peek() {
+                let plus = op == "+";
+                self.i += 1;
+                let b = self.term()?;
+                a = if plus { a + b } else { a - b };
+            }
+            Some(a)
+        }
+        fn term(&mut self) -> Option<f64> {
+            let mut a = self.power()?;
+            while let Some(op @ ("*" | "/")) = self.peek() {
+                let times = op == "*";
+                self.i += 1;
+                let b = self.power()?;
+                if !times && b == 0.0 {
+                    return None;
+                }
+                a = if times { a * b } else { a / b };
+            }
+            Some(a)
+        }
+        fn power(&mut self) -> Option<f64> {
+            let base = self.unary()?;
+            if self.peek() == Some("^") {
+                self.i += 1;
+                let e = self.power()?;
+                return Some(base.powf(e));
+            }
+            Some(base)
+        }
+        fn unary(&mut self) -> Option<f64> {
+            if self.peek() == Some("-") {
+                self.i += 1;
+                return Some(-self.unary()?);
+            }
+            self.primary()
+        }
+        fn primary(&mut self) -> Option<f64> {
+            let tok = self.peek()?.to_string();
+            self.i += 1;
+            if tok == "(" {
+                let v = self.expr()?;
+                if self.peek() != Some(")") {
+                    return None;
+                }
+                self.i += 1;
+                return Some(v);
+            }
+            if let Some(n) = tok.strip_prefix("n:") {
+                return n.parse::<f64>().ok().filter(|x| x.is_finite());
+            }
+            if let Some(k) = tok.strip_prefix('v') {
+                return k.parse::<usize>().ok().and_then(|k| self.v.get(k).copied());
+            }
+            None
+        }
+    }
+    if tokens.is_empty() || tokens.len() > CALC_MAX_TOKENS {
+        return None;
+    }
+    let mut p = P { t: tokens, i: 0, v: values };
+    let r = p.expr()?;
+    (p.i == tokens.len() && r.is_finite()).then_some(r)
+}
+
+fn calc_values(calc: &Value) -> Vec<f64> {
+    calc.get("values").and_then(Value::as_array).map(|a| a.iter().map(|x| x.get("value").and_then(Value::as_f64).unwrap_or(0.0)).collect()).unwrap_or_default()
+}
+
+/// True when `got` is the expected answer, allowing for rounding to the question's decimal places (or 0.5%).
+pub fn calc_close(got: f64, expected: f64, decimals: i64) -> bool {
+    let step = 0.5 * 10f64.powi(-(decimals.clamp(0, 6) as i32));
+    (got - expected).abs() <= step.max(expected.abs() * 0.005).max(1e-9)
+}
+
+/// Check the calculation part Claude wrote: value tiles, and a formula over them that gives a finite answer.
+fn clean_calc(v: &Value) -> Option<Value> {
+    let values: Vec<Value> = v
+        .get("values")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|x| {
+            let value = x.get("value").and_then(Value::as_f64).filter(|n| n.is_finite())?;
+            let label = clip(x.get("label").and_then(Value::as_str).unwrap_or(""), 80);
+            let unit = clip(x.get("unit").and_then(Value::as_str).unwrap_or(""), 30);
+            Some(json!({ "label": if label.is_empty() { "Value".to_string() } else { label }, "value": value, "unit": unit }))
+        })
+        .take(CALC_MAX_VALUES)
+        .collect();
+    if values.is_empty() {
+        return None;
+    }
+    let tokens = formula_tokens(v.get("formula").and_then(Value::as_str).unwrap_or(""), values.len())?;
+    if !tokens.iter().any(|t| t.starts_with('v')) {
+        return None;
+    }
+    let nums: Vec<f64> = values.iter().map(|x| x["value"].as_f64().unwrap_or(0.0)).collect();
+    let answer = eval_tokens(&tokens, &nums)?;
+    let decimals = v.get("decimals").and_then(Value::as_i64).unwrap_or(2).clamp(0, 6);
+    Some(json!({
+        "values": values,
+        "tokens": tokens,
+        "answer": answer,
+        "unit": clip(v.get("unit").and_then(Value::as_str).unwrap_or(""), 30),
+        "decimals": decimals,
+    }))
+}
+
+/// The formula in words, for the marking: "File size (MB) × 8 ÷ Bandwidth (Mbps)".
+pub fn calc_formula_text(calc: &Value, tokens: &[String]) -> String {
+    let values = calc.get("values").and_then(Value::as_array).cloned().unwrap_or_default();
+    tokens
+        .iter()
+        .map(|t| {
+            if let Some(n) = t.strip_prefix("n:") {
+                n.to_string()
+            } else if let Some(k) = t.strip_prefix('v').and_then(|k| k.parse::<usize>().ok()) {
+                values.get(k).and_then(|x| x.get("label")).and_then(Value::as_str).unwrap_or("?").to_string()
+            } else {
+                match t.as_str() {
+                    "*" => "×".into(),
+                    "/" => "÷".into(),
+                    "-" => "−".into(),
+                    o => o.to_string(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Mark a calculation: full marks when the formula gives the right answer; with 2 marks or more, half of them (method
+/// marks) when it uses exactly the right values but gives a different answer.
+fn mark_calc(q: &Question, answer: &Value) -> (i64, Value) {
+    let total = q.marks;
+    let tokens: Vec<String> = answer.get("tokens").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+    let values = calc_values(&q.calc);
+    let expected = q.calc.get("answer").and_then(Value::as_f64).unwrap_or(f64::NAN);
+    let decimals = q.calc.get("decimals").and_then(Value::as_i64).unwrap_or(2);
+    let got = eval_tokens(&tokens, &values);
+    let right = got.is_some_and(|g| expected.is_finite() && calc_close(g, expected, decimals));
+    let used = |t: &[String]| -> std::collections::BTreeSet<String> { t.iter().filter(|x| x.starts_with('v')).cloned().collect() };
+    let reference: Vec<String> = q.calc.get("tokens").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+    let method = !right && got.is_some() && !tokens.is_empty() && used(&tokens) == used(&reference);
+    let marks = if right { total } else if method && total >= 2 { total / 2 } else { 0 };
+    (
+        marks,
+        json!({
+            "right": right,
+            "method": method,
+            "value": got,
+            "expected": expected,
+            "formula": calc_formula_text(&q.calc, &tokens),
+            "modelFormula": calc_formula_text(&q.calc, &reference),
+        }),
+    )
 }
 
 // ---------------------------------------------------------------- marking
@@ -1174,6 +1667,7 @@ pub fn mark_objective(q: &Question, answer: &Value) -> (i64, Value) {
             let marks = (ok.iter().filter(|b| **b).count() as f64 * per).floor() as i64;
             (marks.min(total), json!({ "blanks": ok }))
         }
+        "calc" => mark_calc(q, answer),
         _ => (0, json!({})),
     }
 }
@@ -1275,6 +1769,37 @@ pub async fn mark_session(st: AppState, who: Who, session: Session) {
     }
     let note = if unmarked > 0 { format!("{unmarked} answer(s) could not be marked; the score leaves them out.") } else { String::new() };
     let _ = st.db.set_session(session.id.clone(), "marked", note, None, Some((score, total))).await;
+    // Work the coach set (a retrieval quiz) is done once it has been handed in and marked.
+    let _ = st.db.finish_coach_task_for(session.id.clone()).await;
+}
+
+/// Past paper questions from the bank for a set of practice questions: those matching the chosen topics, answer
+/// types, mark levels and paper (and its specification areas), ones not answered before first, in random order. When
+/// too few match the mark levels, other mark levels are used too.
+#[allow(clippy::too_many_arguments)]
+pub fn pick_from_bank(all: &[Question], answered: &HashSet<i64>, topics: &[String], types: &[String], marks: &[i64], paper: Option<(&str, &str)>, spec: &[String], n: usize) -> Vec<i64> {
+    use rand::seq::SliceRandom;
+    let fits = |q: &Question, strict_marks: bool| {
+        q.source == "paper"
+            && types.contains(&q.qtype)
+            && (topics.is_empty() || q.topics.iter().any(|t| topics.iter().any(|w| w.eq_ignore_ascii_case(t))))
+            && (!strict_marks || marks.contains(&q.marks))
+            && paper.is_none_or(|(qual, num)| q.qualification.eq_ignore_ascii_case(qual) && q.paper_number.eq_ignore_ascii_case(num))
+            && (spec.is_empty() || paper.is_none() || q.spec.iter().any(|t| spec.iter().any(|w| w.eq_ignore_ascii_case(t))))
+    };
+    let mut rng = rand::thread_rng();
+    let mut out: Vec<i64> = Vec::new();
+    for strict in [true, false] {
+        let mut pool: Vec<&Question> = all.iter().filter(|q| fits(q, strict) && !out.contains(&q.id)).collect();
+        pool.shuffle(&mut rng);
+        // Not answered before first.
+        pool.sort_by_key(|q| answered.contains(&q.id));
+        out.extend(pool.iter().take(n.saturating_sub(out.len())).map(|q| q.id));
+        if out.len() >= n {
+            break;
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------- course documents and paper guides
@@ -2115,7 +2640,7 @@ mod tests {
             blanks: vec![vec!["CPU".into(), "processor".into()], vec!["RAM".into()]], marks, scheme: String::new(),
             topics: vec![], difficulty: String::new(), created_at: 0,
             qualification: String::new(), paper_number: String::new(), spec: vec![], profile_id: None,
-            hint: String::new(), explanation: String::new(), option_notes: vec![], style: String::new(),
+            hint: String::new(), explanation: String::new(), option_notes: vec![], style: String::new(), calc: Value::Null,
         };
         assert_eq!(mark_objective(&q("multi", 2), &json!({ "choices": [0, 2] })).0, 2);
         assert_eq!(mark_objective(&q("multi", 2), &json!({ "choices": [0, 1] })).0, 0);
@@ -2125,5 +2650,29 @@ mod tests {
         single.correct = vec![1];
         assert_eq!(mark_objective(&single, &json!({ "choice": 1 })).0, 1);
         assert_eq!(mark_objective(&single, &json!({ "choice": null })).0, 0);
+    }
+
+    #[test]
+    fn calculations() {
+        let t = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let vals = [10.0, 4.0, 8.0];
+        assert_eq!(eval_tokens(&t(&["v0", "*", "v2", "/", "v1"]), &vals), Some(20.0));
+        assert_eq!(eval_tokens(&t(&["(", "v0", "+", "v1", ")", "*", "n:2"]), &vals), Some(28.0));
+        assert_eq!(eval_tokens(&t(&["n:2", "^", "n:3", "^", "n:2"]), &vals), Some(512.0));
+        assert_eq!(eval_tokens(&t(&["-", "v1", "+", "v0"]), &vals), Some(6.0));
+        assert_eq!(eval_tokens(&t(&["v0", "/", "n:0"]), &vals), None);
+        assert_eq!(eval_tokens(&t(&["(", "v0"]), &vals), None);
+        assert_eq!(eval_tokens(&t(&["v0", "v1"]), &vals), None);
+        assert_eq!(formula_tokens("{1} × {3} ÷ {2}", 3), Some(t(&["v0", "*", "v2", "/", "v1"])));
+        assert_eq!(formula_tokens("{4} * 2", 3), None);
+        let c = clean_calc(&json!({ "values": [{ "label": "File size", "value": 10, "unit": "MB" }, { "label": "Speed", "value": 4, "unit": "Mbps" }, { "label": "Bits per byte", "value": 8, "unit": "" }], "formula": "{1} * {3} / {2}", "unit": "s", "decimals": 1 })).unwrap();
+        assert_eq!(c["answer"].as_f64(), Some(20.0));
+        let mut q = Question::from_snapshot(&json!({ "type": "calc", "marks": 2, "calc": c }));
+        q.qtype = "calc".into();
+        assert_eq!(mark_objective(&q, &json!({ "tokens": ["v2", "*", "v0", "/", "v1"] })).0, 2);
+        // the right values, the wrong way round: method marks only
+        assert_eq!(mark_objective(&q, &json!({ "tokens": ["v1", "*", "v2", "/", "v0"] })).0, 1);
+        assert_eq!(mark_objective(&q, &json!({ "tokens": ["v0", "/", "v1"] })).0, 0);
+        assert!(calc_close(20.04, 20.0, 1) && !calc_close(20.2, 20.0, 1));
     }
 }

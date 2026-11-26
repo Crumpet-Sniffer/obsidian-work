@@ -629,7 +629,19 @@ if (current) current.scrollIntoView({ block: "center" });
       meter("CPU", appCpu, `Site CPU (server and ingest worker): ${appCpu === null ? "measuring" : Math.round(appCpu) + "%"} of ${a.cpuLimit ? a.cpuLimit + " CPUs allowed" : "the machine"}`),
       meter("RAM", appMem, `Site memory: ${fmt(appMemUsed)}${appMemOf ? ` of ${fmt(appMemOf)}${a.memLimit ? " allowed" : ""}` : ""}`, fmt(appMemUsed)),
     );
-    btn.replaceChildren(g1, g2);
+    // Claude API spend in the last half hour, next to the NAS figures.
+    const sp = s.spend;
+    const g3 = document.createElement("span");
+    if (sp) {
+      g3.className = "rm-group rm-spend";
+      g3.title = `Claude API spend in the last ${sp.minutes} minutes${sp.everyone ? " (everyone on the site)" : ""}: ${sp.amount} over ${sp.calls} call${sp.calls === 1 ? "" : "s"}`;
+      g3.append(
+        Object.assign(document.createElement("span"), { className: "rm-name", textContent: "API" }),
+        Object.assign(document.createElement("span"), { className: "rm-v", textContent: sp.amount }),
+        Object.assign(document.createElement("span"), { className: "rm-l", textContent: `${sp.minutes}m` }),
+      );
+    }
+    btn.replaceChildren(...(sp ? [g3, g1, g2] : [g1, g2]));
 
     const dl = document.createElement("dl");
     dl.className = "res-dl";
@@ -643,8 +655,18 @@ if (current) current.scrollIntoView({ block: "center" });
     row(dl2, "CPU", appCpu === null ? "measuring…" : `${appCpu.toFixed(1)}% of ${a.cpuLimit ? `the ${a.cpuLimit} CPUs it may use` : "the machine"}`);
     row(dl2, "Memory", `${fmt(a.mem || 0)} in its processes${a.memContainer ? `, ${fmt(a.memContainer)} for the container` : ""}${a.memLimit ? ` (limit ${fmt(a.memLimit)})` : ""}`);
     row(dl2, "Ingest worker", a.worker ? "running" : "not running");
-    const foot = Object.assign(document.createElement("p"), { className: "small muted", textContent: "Updated every 3 seconds while this page is open." });
-    panel.replaceChildren(h1, dl, h2, dl2, foot);
+    const extra = [];
+    if (sp) {
+      const h3 = Object.assign(document.createElement("h3"), { textContent: "Claude API spend" });
+      const dl3 = document.createElement("dl");
+      dl3.className = "res-dl";
+      const usd = Number(sp.usd) || 0;
+      row(dl3, `Last ${sp.minutes} minutes`, `${sp.amount} (US$${usd.toFixed(usd < 0.1 ? 3 : 2)})`);
+      row(dl3, "Calls to Claude", String(sp.calls));
+      extra.push(h3, dl3);
+    }
+    const foot = Object.assign(document.createElement("p"), { className: "small muted", textContent: "Updated every 3 seconds while this page is open. Spend is estimated from list prices; the daily chart is on the admin page." });
+    panel.replaceChildren(...extra, h1, dl, h2, dl2, foot);
     el.hidden = false;
   }
 
