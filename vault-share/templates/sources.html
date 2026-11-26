@@ -31,6 +31,12 @@
 
   <section class="card">
     <h2>In this vault</h2>
+    <div class="list-tools" data-list-tools hidden>
+      <label class="list-find"><span class="sr-only">Find a source</span>
+        <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+        <input type="search" data-list-find placeholder="Find a source by name or folder…" autocomplete="off">
+      </label>
+    </div>
     <p class="muted" data-list-status>Loading…</p>
     <div class="table-wrap">
       <table class="table" data-list hidden>
@@ -38,6 +44,7 @@
         <tbody></tbody>
       </table>
     </div>
+    <div class="more-row"><button type="button" data-list-more hidden>Show more</button></div>
     <p class="small muted">Removing a source moves the original file and its note to the vault's hidden trash, and takes the note out of topic and index pages.</p>
   </section>
 </div>

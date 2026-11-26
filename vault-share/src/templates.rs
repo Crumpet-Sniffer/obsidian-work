@@ -230,6 +230,8 @@ pub struct AuditView {
     pub username: String,
     pub ip: String,
     pub action: String,
+    /// The event in words ("Signed in"), for the activity log.
+    pub event: String,
     pub detail: String,
 }
 

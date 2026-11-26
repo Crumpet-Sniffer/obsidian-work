@@ -166,6 +166,7 @@
 
   // ---------- choice groups with "Select all" ----------
   // values: [{value, label}]. Returns a function giving the ticked values.
+  const FOLD = 12;
   function choices(name, values, { checked = true, anyHint = "" } = {}) {
     const box = $(`[data-choices="${name}"]`);
     if (!box) return () => [];
@@ -182,6 +183,8 @@
     allBox.type = "checkbox";
     all.append(allBox, document.createTextNode(" Select all"));
     const list = make("div", "pr-choice-list");
+    // Short labels ("2 marks", "2024") get narrower columns than topic names.
+    if (values.every((v) => String(v.label).length <= 12)) list.classList.add("is-short");
     const boxes = values.map((v) => {
       const l = make("label", "check pr-chip");
       const c = make("input");
@@ -214,6 +217,9 @@
         const q = find.value.trim().toLowerCase();
         boxes.forEach((b) => { b.parentElement.hidden = !!q && !b.parentElement.querySelector(".pr-chip-label").textContent.toLowerCase().includes(q); });
         all.lastChild.nodeValue = q ? " Select all shown" : " Select all";
+        // A search looks through all of them, so the "Show all" fold is set aside while there is one.
+        list.classList.toggle("is-searching", !!q);
+        if (more) more.hidden = !!q;
       });
       // Enter in the search box must not submit the form.
       find.addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
@@ -222,6 +228,18 @@
     top.append(count);
     sync();
     box.append(top, list);
+    // A long list shows its first few rows, with a button for the rest, instead of a box that scrolls.
+    let more = null;
+    if (values.length > FOLD) {
+      boxes.forEach((b, i) => { if (i >= FOLD) b.parentElement.classList.add("is-extra"); });
+      list.classList.add("is-folded");
+      more = make("button", "linklike small pr-more-chips");
+      more.type = "button";
+      const label = () => { more.textContent = list.classList.contains("is-folded") ? `Show all ${values.length}` : "Show fewer"; };
+      more.addEventListener("click", () => { list.classList.toggle("is-folded"); label(); });
+      label();
+      box.append(more);
+    }
     if (anyHint) box.appendChild(make("p", "muted small", anyHint));
     return () => boxes.filter((b) => b.checked).map((b) => b.value);
   }
@@ -892,7 +910,7 @@
         const got = a.marks ?? 0;
         const of = a.total ?? q.marks;
         const pill = make("span", `pr-mark ${got === 0 ? "is-zero" : "is-part"}`, `${got} / ${of}`);
-        const link = make("button", "linklike", short);
+        const link = make("button", "linklike pr-lost-q", short);
         link.type = "button";
         link.title = "Go to this question";
         link.addEventListener("click", () => goTo(i));
@@ -1290,6 +1308,7 @@
     try { r = await api("GET", "practice/decks"); } catch { return; }
     const box = $("[data-decks]");
     box.replaceChildren();
+    box.appendChild(make("h2", "pr-h2", "Your flashcard decks"));
     if (!r.decks.length) { box.appendChild(make("p", "muted small", "No flashcards yet.")); return; }
     const ul = make("ul", "pr-decks");
     for (const d of r.decks) {
@@ -1639,17 +1658,27 @@
 
   // Listening: the browser reads the guide aloud.
   const speech = window.speechSynthesis;
+  /** A button's content as one of the page's icons and a word. */
+  function iconLabel(b, id, text) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "ic");
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", `#${id}`);
+    svg.appendChild(use);
+    b.replaceChildren(svg, make("span", "", text));
+  }
   function stopListening() {
     if (speech && (speech.speaking || speech.pending)) speech.cancel();
     const b = $("[data-report-listen]");
-    if (b) { b.setAttribute("aria-pressed", "false"); b.textContent = "▶ Listen"; }
+    if (b) { b.setAttribute("aria-pressed", "false"); iconLabel(b, "i-play", "Listen"); }
   }
   if (!speech) $("[data-report-listen]").hidden = true;
   $("[data-report-listen]").addEventListener("click", (e) => {
     const b = e.currentTarget;
     if (!rp.data || !speech) return;
-    if (speech.speaking && !speech.paused) { speech.pause(); b.textContent = "▶ Resume"; b.setAttribute("aria-pressed", "false"); return; }
-    if (speech.paused) { speech.resume(); b.textContent = "❚❚ Pause"; b.setAttribute("aria-pressed", "true"); return; }
+    if (speech.speaking && !speech.paused) { speech.pause(); iconLabel(b, "i-play", "Resume"); b.setAttribute("aria-pressed", "false"); return; }
+    if (speech.paused) { speech.resume(); iconLabel(b, "i-pause", "Pause"); b.setAttribute("aria-pressed", "true"); return; }
     // Read it a paragraph at a time: long texts in one go stop part-way in some browsers.
     const parts = $$("h1, h2, h3, h4, p, li, td, th", $("[data-report-body]")).map((x) => x.textContent.trim()).filter(Boolean);
     const voice = speech.getVoices().find((v) => /^en[-_]GB/i.test(v.lang)) || speech.getVoices().find((v) => /^en/i.test(v.lang));
@@ -1660,7 +1689,7 @@
       if (i === parts.length - 1) u.onend = () => stopListening();
       speech.speak(u);
     });
-    b.textContent = "❚❚ Pause";
+    iconLabel(b, "i-pause", "Pause");
     b.setAttribute("aria-pressed", "true");
   });
   window.addEventListener("beforeunload", () => { if (speech) speech.cancel(); });
@@ -1813,10 +1842,13 @@
       log.appendChild(Object.assign(make("div", "pr-msg is-user"), { textContent: text }));
       const wait = make("div", "pr-msg is-coach muted pr-typing", thinking);
       log.appendChild(wait);
-      log.scrollTop = log.scrollHeight;
+      wait.scrollIntoView({ behavior: "smooth", block: "nearest" });
       ta.value = "";
       try {
         draw(await api("POST", `practice/${path}`, { message: text, thread: thread || "", ...extra() }));
+        // The conversation is part of the page (no box of its own to scroll), so bring the reply's start into view.
+        const reply = log.lastElementChild;
+        if (reply) reply.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (err) {
         wait.textContent = err.message;
         wait.classList.remove("pr-typing");
@@ -2563,7 +2595,7 @@
   }
 
   // ---------- retrieval quizzes: choosing a document ----------
-  const rv = { topic: "", list: [], tasks: [], task: null, loaded: false, seq: 0 };
+  const rv = { topic: "", list: [], tasks: [], task: null, loaded: false, seq: 0, limit: 20, lastQ: "" };
   const KIND_LABEL = { pptx: "Slides", docx: "Word", pdf: "PDF", note: "Note" };
   async function loadRetrieval() {
     const status = $("[data-retrieval-status]");
@@ -2584,24 +2616,31 @@
     drawTasks($("[data-retrieval-tasks]"), rv.tasks, "retrieval");
     drawResources();
   }
+  const RES_PAGE = 20;
+  $("[data-retrieval-more]").addEventListener("click", () => { rv.limit += RES_PAGE; drawResources(); });
   function drawResources() {
     const ul = $("[data-retrieval-list]");
     const status = $("[data-retrieval-status]");
     const q = $("[data-retrieval-q]").value.trim().toLowerCase();
     const shown = rv.list.filter((r) => !q || r.title.toLowerCase().includes(q) || r.note.toLowerCase().includes(q));
     ul.replaceChildren();
+    if (rv.lastQ !== q) { rv.limit = RES_PAGE; rv.lastQ = q; }
     const task = rv.task && rv.tasks.find((t) => t.id === rv.task);
     status.textContent = !rv.list.length
       ? (rv.topic ? `There are no documents linked to ${rv.topic} yet.` : "There are no documents in this vault yet.")
       : `${plural(shown.length, "document")}${rv.topic ? ` on ${rv.topic}` : ""}${task ? `. This quiz is the work your coach set on ${task.topic}.` : ""}`;
-    for (const r of shown.slice(0, 200)) {
+    const more = $("[data-retrieval-more]");
+    const left = shown.length - Math.min(shown.length, rv.limit);
+    more.hidden = left <= 0;
+    more.textContent = `Show ${Math.min(left, RES_PAGE)} more (${left} not shown)`;
+    for (const r of shown.slice(0, rv.limit)) {
       const li = make("li", "pr-resource-item");
-      li.append(make("span", `pr-kind is-${r.kind}`, KIND_LABEL[r.kind] || "Note"));
+      li.append(make("span", `pr-doc-kind is-${r.kind}`, KIND_LABEL[r.kind] || "Note"));
       const main = make("div", "pr-resource-main");
       main.append(make("strong", "", r.title));
       if (r.topics.length) main.append(make("span", "small muted", r.topics.slice(0, 4).join(" · ")));
       li.appendChild(main);
-      const view = make("a", "small", "View");
+      const view = make("a", "button small", "View");
       view.href = r.fileUrl ? (r.kind === "pdf" ? r.fileUrl : r.fileUrl.replace("/f/", "/o/")) : r.noteUrl;
       view.target = "_blank";
       view.rel = "noopener";
@@ -2634,7 +2673,7 @@
     $("[data-retrieval-q]").value = "";
     show("retrieval");
   }
-  $("[data-retrieval-topic]").addEventListener("change", (e) => { rv.topic = e.target.value; rv.task = null; loadRetrieval(); });
+  $("[data-retrieval-topic]").addEventListener("change", (e) => { rv.topic = e.target.value; rv.task = null; rv.limit = RES_PAGE; loadRetrieval(); });
   $("[data-retrieval-q]").addEventListener("input", drawResources);
 
   // ---------- work the coach sets ----------

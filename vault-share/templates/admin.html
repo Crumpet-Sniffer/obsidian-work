@@ -27,7 +27,7 @@
       <td><a href="/admin/vaults/{{ v.id }}">{{ v.name }}</a></td>
       <td>{{ v.files }}</td>
       <td>{{ v.size }}</td>
-      <td class="muted small">{{ v.updated }}</td>
+      <td class="muted small nowrap">{{ v.updated }}</td>
       <td class="actions"><a class="button" href="/v/{{ v.id }}/sources">Sources</a> <a class="button" href="/admin/vaults/{{ v.id }}/papers">Past papers</a> <a class="button" href="/admin/vaults/{{ v.id }}">Manage</a></td>
     </tr>
     {% endfor %}
@@ -85,14 +85,15 @@
     <details class="ms-more" id="prompts">
       <summary>System prompts</summary>
       <p class="small muted">The instructions Claude is given for each kind of call. Edit them to change how sources are filed; your filing guidance above is added after them either way. Tick "Use the default" (or empty the box) to go back to the built-in prompt, which also picks up later improvements to it.</p>
+      <div class="prompt-list">
       {% for p in ms.prompts %}
-      <div class="prompt-field">
-        <label><span>{{ p.label }}{% if p.custom %} <span class="pill">edited</span>{% endif %}</span>
-          <textarea name="{{ p.field }}" rows="10" maxlength="20000">{{ p.text }}</textarea>
-        </label>
-        <div class="prompt-foot"><span class="small muted">{{ p.help }}</span>{% if p.custom %}<label class="check small"><input type="checkbox" name="reset_{{ p.field }}" value="1"> Use the default</label>{% endif %}</div>
-      </div>
+      <details class="prompt-field">
+        <summary><span class="prompt-name">{{ p.label }}{% if p.custom %} <span class="pill">edited</span>{% endif %}</span><span class="small muted">{{ p.help }}</span></summary>
+        <textarea name="{{ p.field }}" rows="6" maxlength="20000" aria-label="{{ p.label }}" data-autosize>{{ p.text }}</textarea>
+        {% if p.custom %}<label class="check small"><input type="checkbox" name="reset_{{ p.field }}" value="1"> Use the default</label>{% endif %}
+      </details>
       {% endfor %}
+      </div>
     </details>
     <details class="ms-more">
       <summary>Folders and images</summary>
@@ -115,10 +116,10 @@
   <h2>API spend</h2>
   <p class="small muted">Estimated cost of filing sources, from the token counts of each call and Anthropic's list prices. Anthropic charges in US dollars; the invoice is the true figure.</p>
   <dl class="tiles">
-    <div><dt>Today</dt><dd>{{ spend.today }}</dd></div>
-    <div><dt>Last 7 days</dt><dd>{{ spend.week }}</dd></div>
+    <div><dt>Today</dt><dd>{{ spend.today }}</dd><span class="small muted">{{ spend.calls_today }} call{% if spend.calls_today != 1 %}s{% endif %}</span></div>
+    <div><dt>Last 7 days</dt><dd>{{ spend.week }}</dd><span class="small muted">{{ spend.calls_week }} call{% if spend.calls_week != 1 %}s{% endif %}</span></div>
     <div><dt>Last 30 days</dt><dd>{{ spend.month }}</dd><span class="small muted">{{ spend.calls_month }} call{% if spend.calls_month != 1 %}s{% endif %}</span></div>
-    <div><dt>All time</dt><dd>{{ spend.all_time }}</dd></div>
+    <div><dt>All time</dt><dd>{{ spend.all_time }}</dd><span class="small muted">{{ spend.calls_all }} call{% if spend.calls_all != 1 %}s{% endif %}</span></div>
   </dl>
   <h3 class="chart-title">Spend per day, last 30 days (£)</h3>
   <div class="chart-wrap" data-chart>
@@ -164,19 +165,19 @@
   <p class="small muted">A one-time password is generated for each new account, and its owner must set their own on first sign-in. Users can open and edit every vault, create vaults, and add and remove sources. Admins can also create accounts, delete vaults and change these settings.</p>
   <div class="table-wrap">
   <table class="table">
-    <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Last sign-in</th><th></th></tr></thead>
+    <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created (UTC)</th><th>Last sign-in (UTC)</th><th></th></tr></thead>
     <tbody>
     {% for u in users %}
     <tr>
-      <td>{{ u.username }}{% if u.is_me %} <span class="muted">(you)</span>{% endif %}</td>
+      <td class="nowrap">{{ u.username }}{% if u.is_me %} <span class="muted">(you)</span>{% endif %}</td>
       <td>{% if u.is_admin %}admin{% else %}user{% endif %}</td>
       <td>
         {% if u.disabled %}<span class="pill bad">disabled</span>
         {% else if u.must_change %}<span class="pill">awaiting first sign-in</span>
         {% else %}<span class="pill ok">active</span>{% endif %}
       </td>
-      <td class="muted small">{{ u.created }}</td>
-      <td class="muted small">{{ u.last_login }}</td>
+      <td class="muted small nowrap">{{ u.created.trim_end_matches(" UTC") }}</td>
+      <td class="muted small nowrap">{{ u.last_login.trim_end_matches(" UTC") }}</td>
       <td class="actions">
         {% if !u.is_me %}
         <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Reset the password for {{ u.username }}? They will be signed out.">
@@ -215,7 +216,7 @@
     <tbody>
     {% for a in audit %}
     <tr{% if a.action.contains("failed") || a.action.contains("throttled") %} class="warn"{% endif %}>
-      <td class="nowrap">{{ a.ts }}</td><td>{{ a.username }}</td><td>{{ a.ip }}</td><td>{{ a.action }}</td><td>{{ a.detail }}</td>
+      <td class="nowrap">{{ a.ts }}</td><td>{{ a.username }}</td><td class="nowrap muted">{% if a.ip.is_empty() %}–{% else %}{{ a.ip }}{% endif %}</td><td class="nowrap">{{ a.event }}</td><td class="audit-detail">{{ a.detail }}</td>
     </tr>
     {% endfor %}
     </tbody>

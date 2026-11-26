@@ -498,11 +498,24 @@ if (current) current.scrollIntoView({ block: "center" });
 })();
 
 // A note that opens with its own name as a heading would show the title twice: keep the page title only.
+// Notes opened later (a split pane, a note loaded in place) are checked too.
 (() => {
-  const title = document.querySelector("article.note > .note-title");
-  const first = document.querySelector("article.note > .prose > h1:first-child");
   const norm = (el) => el.textContent.trim().replace(/\s+/g, " ").toLowerCase();
-  if (title && first && norm(title) === norm(first)) first.classList.add("is-title-echo");
+  const check = () => {
+    document.querySelectorAll("article.note").forEach((note) => {
+      const first = note.querySelector(":scope > .prose > h1:first-child:not(.is-title-echo)");
+      if (!first) return;
+      const title = note.querySelector(":scope > .note-title") || note.closest(".view")?.querySelector(".view-title, .note-title");
+      if (title && norm(title) === norm(first)) first.classList.add("is-title-echo");
+    });
+  };
+  check();
+  let queued = false;
+  new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; check(); });
+  }).observe(document.body, { childList: true, subtree: true });
 })();
 
 // Charts drawn by the server: show what a column stands for while the pointer (or keyboard focus) is on it.
@@ -545,8 +558,15 @@ if (current) current.scrollIntoView({ block: "center" });
   // Only admins look after the server; students do not need to see it.
   if (!document.body.dataset.admin) return;
   const topNav = document.querySelector(".topbar .nav");
-  // On note pages the bottom status bar has room; the tab bar is kept for tabs.
-  const statusBar = document.querySelector(".status-bar");
+  // In the notes workspace the meter goes in the bottom status bar, which has room; the tab bar is kept for
+  // tabs. Pages without a status bar (graph, search, a new tab, an original file) are given one.
+  let statusBar = document.querySelector(".status-bar");
+  const wsMain = document.querySelector(".app > .main");
+  if (!topNav && !statusBar && wsMain) {
+    statusBar = document.createElement("div");
+    statusBar.className = "status-bar";
+    wsMain.appendChild(statusBar);
+  }
   const tabbar = document.querySelector(".tabbar");
   const host = topNav || statusBar || tabbar;
   if (!host) return;
@@ -717,4 +737,43 @@ if (current) current.scrollIntoView({ block: "center" });
       if (s && d.contains(document.activeElement)) s.focus();
     });
   });
+})();
+
+// ---------- text boxes that grow to fit what is in them (no scrollbar inside the box) ----------
+(() => {
+  "use strict";
+  const grow = (t) => {
+    if (!t.offsetParent) return;
+    t.style.height = "auto";
+    t.style.height = t.scrollHeight + 2 + "px";
+  };
+  document.querySelectorAll("textarea[data-autosize]").forEach((t) => {
+    t.addEventListener("input", () => grow(t));
+    const d = t.closest("details");
+    if (d) d.addEventListener("toggle", () => grow(t));
+    grow(t);
+  });
+  window.addEventListener("resize", () => document.querySelectorAll("textarea[data-autosize]").forEach(grow));
+})();
+
+// ---------- tables on a phone: each row becomes a small card, each value under its column's name ----------
+// The column names are copied onto the cells (data-label) for the CSS to show; tables drawn later are labelled too.
+(() => {
+  "use strict";
+  const label = () => {
+    document.querySelectorAll("table.table").forEach((t) => {
+      const heads = [...t.querySelectorAll("thead th")].map((th) => th.textContent.trim());
+      if (!heads.length) return;
+      t.querySelectorAll("tbody tr").forEach((tr) => {
+        [...tr.children].forEach((td, i) => { if (!td.hasAttribute("data-label")) td.setAttribute("data-label", heads[i] || ""); });
+      });
+    });
+  };
+  label();
+  let queued = false;
+  new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; label(); });
+  }).observe(document.body, { childList: true, subtree: true });
 })();

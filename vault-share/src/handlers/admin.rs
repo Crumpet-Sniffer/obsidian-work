@@ -80,6 +80,7 @@ pub async fn dashboard(
             ts: fmt_ts(a.ts),
             username: a.username.unwrap_or_default(),
             ip: a.ip.unwrap_or_default(),
+            event: audit_label(&a.action),
             action: a.action,
             detail: a.detail,
         })
@@ -190,7 +191,7 @@ pub async fn dashboard(
         })
         .chain(ingest::MODELS.iter().map(|(id, label)| Opt {
             value: id.to_string(),
-            label: format!("{label} reads them first and passes on their text and a description"),
+            label: format!("{label}: reads them first, passes on text and a description"),
             selected: *id == s.image_model,
         }))
         .collect(),
@@ -779,4 +780,52 @@ pub async fn download_backup(
         h.insert(axum::http::header::CONTENT_DISPOSITION, v);
     }
     Ok(res)
+}
+
+/// An activity-log event in words: "login_failed" becomes "Sign-in failed". Unknown events are shown with
+/// their underscores as spaces.
+fn audit_label(action: &str) -> String {
+    let known = match action {
+        "bootstrap_admin" => "First admin created",
+        "claude_call" => "Call to Claude",
+        "course_doc_added" => "Exam document added",
+        "course_doc_removed" => "Exam document removed",
+        "file_deleted" => "File deleted",
+        "file_renamed" => "File renamed",
+        "file_uploaded" => "File uploaded",
+        "folder_created" => "Folder created",
+        "login" => "Signed in",
+        "login_failed" => "Sign-in failed",
+        "login_throttled" => "Sign-in blocked (too many tries)",
+        "logout" => "Signed out",
+        "note_created" => "Note created",
+        "paper_added" => "Past paper added",
+        "paper_removed" => "Past paper removed",
+        "password_change_failed" => "Password change failed",
+        "password_changed" => "Password changed",
+        "practice_remark" => "Mark challenged",
+        "source_uploaded" => "Source uploaded",
+        "sources_cancelled" => "Sources cancelled",
+        "sources_finished" => "Sources filed",
+        "sources_queued" => "Sources queued",
+        "spend_rate" => "Exchange rate changed",
+        "user_created" => "Account created",
+        "user_deleted" => "Account deleted",
+        "user_demoted" => "Made a user",
+        "user_disabled" => "Account disabled",
+        "user_enabled" => "Account enabled",
+        "user_password_reset" => "Password reset",
+        "user_promoted" => "Made an admin",
+        "vault_created" => "Vault created",
+        "vault_deleted" => "Vault deleted",
+        "vault_replaced" => "Vault replaced",
+        "vault_settings" => "Vault settings changed",
+        _ => "",
+    };
+    if !known.is_empty() {
+        return known.to_string();
+    }
+    let words = action.replace('_', " ");
+    let mut c = words.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }

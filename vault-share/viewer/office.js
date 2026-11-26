@@ -20,7 +20,8 @@ async function main() {
   const res = await fetch(host.dataset.src, { credentials: "same-origin" });
   if (!res.ok) throw new Error("HTTP " + res.status);
   const buf = await res.arrayBuffer();
-  status.remove();
+  // Laying out a long document takes a few seconds: say so until it is drawn, rather than show a blank page.
+  status.textContent = "Laying out the document…";
 
   if (kind === "docx") {
     const styles = el("docx-styles", host);
@@ -30,10 +31,12 @@ async function main() {
       renderHeaders: true, renderFooters: true, renderFootnotes: true, renderEndnotes: true,
       renderComments: false, experimental: true,
     });
+    status.remove();
     return;
   }
 
   const count = await renderPptx(buf, host);
+  status.remove();
   // Links like [[deck.pptx#slide-3]] open at that slide.
   const m = location.hash.match(/slide[-_ ]?(\d+)/i);
   if (m && count) {

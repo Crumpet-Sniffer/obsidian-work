@@ -13,7 +13,7 @@
   {% endif %}
   <section class="card">
     <h2>Add past papers and exam documents</h2>
-    <p class="muted">Upload one .zip of everything from the exam board's assessment resources: past papers, mark schemes, the specification, examiner reports and guidance. Claude sorts it, splits each paper into questions with their mark schemes, and builds the paper guides. It takes a few minutes per paper, and you can leave the page. The questions appear in the question bank on the vault's Practice page.</p>
+    <p class="small muted">Upload one .zip of everything from the exam board's assessment resources: past papers, mark schemes, the specification, examiner reports and guidance. Claude sorts it, splits each paper into questions with their mark schemes, and builds the paper guides. It takes a few minutes per paper, and you can leave the page. The questions appear in the question bank on the vault's Practice page.</p>
     <details class="pr-more how">
       <summary>How it works</summary>
       <div class="small muted">
@@ -31,7 +31,7 @@
       <h3 class="pr-h3">A specification</h3>
       <form class="pr-upload" data-spec-form>
         <label>Specification <input type="file" name="spec" accept=".pdf,.docx,.pptx" required></label>
-        <label>Qualification <span class="muted">(optional)</span> <input name="qualification" maxlength="150" list="pr-quals" placeholder="Read from the document"></label>
+        <label><span>Qualification <span class="muted">(optional)</span></span><input name="qualification" maxlength="150" list="pr-quals" placeholder="Read from the document"></label>
         <div><button type="submit" class="primary">Add the specification</button></div>
       </form>
       <datalist id="pr-quals"></datalist>
@@ -40,9 +40,10 @@
         <label>Name <input name="title" maxlength="150" required placeholder="June 2024 Paper 1"></label>
         <label>Exam paper <input type="file" name="exam" accept=".pdf,.docx,.pptx" required></label>
         <label>Mark scheme <input type="file" name="scheme" accept=".pdf,.docx,.pptx"></label>
-        <label>Insert <span class="muted">(optional: a case study, source booklet or data sheet given with the paper)</span> <input type="file" name="insert" accept=".pdf,.docx,.pptx"></label>
+        <label title="A case study, source booklet or data sheet given with the paper"><span>Insert <span class="muted">(optional)</span></span><input type="file" name="insert" accept=".pdf,.docx,.pptx"></label>
         <div><button type="submit" class="primary">Add the paper</button></div>
       </form>
+      <p class="small muted">The insert is a case study, source booklet or data sheet given out with the paper, if there was one.</p>
     </details>
     <ul class="jobs" data-paper-jobs aria-live="polite"></ul>
   </section>

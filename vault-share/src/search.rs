@@ -161,11 +161,20 @@ pub fn search(idx: &VaultIndex, q: &str, limit: usize) -> (Vec<Hit>, bool) {
                     let e = ceil_boundary(src, p + t.value.len() + 110);
                     let s = src[s..p].rfind('\n').map(|n| s + n + 1).unwrap_or(s);
                     let e = src[p + t.value.len()..e].find('\n').map(|n| p + t.value.len() + n).unwrap_or(e);
-                    snippets.push(Snippet {
-                        before: format!("{}{}", if s > 0 { "…" } else { "" }, &src[s..p]),
-                        matched: src[p..p + t.value.len()].to_string(),
-                        after: format!("{}{}", &src[p + t.value.len()..e], if e < src.len() { "…" } else { "" }),
-                    });
+                    // Never start or end part-way through a [[link]]: widen to the whole link (on the same line).
+                    let line_start = src[..s].rfind('\n').map_or(0, |n| n + 1);
+                    let s = match src[line_start..s].rfind("[[") {
+                        Some(o) if !src[line_start + o..s].contains("]]") => line_start + o,
+                        _ => s,
+                    };
+                    let e = match src[s..e].rfind("[[") {
+                        Some(o) if !src[s + o..e].contains("]]") => match src[e..].find("]]") {
+                            Some(c) if !src[e..e + c].contains('\n') => e + c + 2,
+                            _ => e,
+                        },
+                        _ => e,
+                    };
+                    snippets.push(plain_snippet(&src[s..e], p - s, t.value.len(), s > 0, e < src.len()));
                 }
                 from = p + t.value.len().max(1);
                 if from >= lower.len() || matches > 500 {
@@ -175,7 +184,7 @@ pub fn search(idx: &VaultIndex, q: &str, limit: usize) -> (Vec<Hit>, bool) {
         }
         if snippets.is_empty() {
             let e = ceil_boundary(src, 160);
-            snippets.push(Snippet { before: src[..e].trim().to_string(), matched: String::new(), after: String::new() });
+            snippets.push(Snippet { before: plain_text(src[..e].trim()), matched: String::new(), after: String::new() });
         }
         hits.push(Hit { path: rel.clone(), title, folder: folder.replace('/', " / "), snippets, matches });
     }
@@ -200,5 +209,137 @@ mod tests {
         assert!(matches!(t[1].kind, Kind::Text) && t[1].value == "exact phrase");
         assert!(t[2].negated && t[2].value == "draft");
         assert!(matches!(t[3].kind, Kind::Tag) && t[3].value == "#unit-1");
+    }
+}
+
+/// Markdown as it reads: `[[Topics/Encryption|Encryption]]` is "Encryption", `[[A4.2-Encryption]]` is
+/// "A4.2-Encryption", `[text](url)` is "text", and heading, list, quote and emphasis marks are dropped. Pictures
+/// (`![[...]]`, `![](...)`) are left out.
+pub fn plain_text(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    for (n, line) in md.split('\n').enumerate() {
+        if n > 0 {
+            out.push(' ');
+        }
+        let mut l = line.trim_start();
+        while let Some(r) = l.strip_prefix('>') {
+            l = r.trim_start();
+        }
+        let hashes = l.chars().take_while(|c| *c == '#').count();
+        if hashes > 0 && l[hashes..].starts_with(' ') {
+            l = l[hashes..].trim_start();
+        }
+        for m in ["- [ ] ", "- [x] ", "- ", "* ", "+ "] {
+            if let Some(r) = l.strip_prefix(m) {
+                l = r;
+                break;
+            }
+        }
+        let mut rest = l;
+        while !rest.is_empty() {
+            if rest.starts_with("[[") || rest.starts_with("![[") {
+                let pic = rest.starts_with('!');
+                let open = if pic { 3 } else { 2 };
+                if let Some(close) = rest[open..].find("]]") {
+                    let inner = &rest[open..open + close];
+                    if !pic {
+                        let shown = match inner.split_once('|') {
+                            Some((_, alias)) => alias,
+                            None => inner.split('#').next().unwrap_or(inner).rsplit('/').next().unwrap_or(inner),
+                        };
+                        out.push_str(shown);
+                    }
+                    rest = &rest[open + close + 2..];
+                    continue;
+                }
+            }
+            if rest.starts_with('[') || rest.starts_with("![") {
+                let open = if rest.starts_with('!') { 2 } else { 1 };
+                if let Some(mid) = rest[open..].find("](") {
+                    if let Some(end) = rest[open + mid + 2..].find(')') {
+                        if open == 1 {
+                            out.push_str(&rest[open..open + mid]);
+                        }
+                        rest = &rest[open + mid + 2 + end + 1..];
+                        continue;
+                    }
+                }
+            }
+            if rest.starts_with("**") || rest.starts_with("__") || rest.starts_with("==") || rest.starts_with("~~") {
+                rest = &rest[2..];
+                continue;
+            }
+            if rest.starts_with('`') {
+                rest = &rest[1..];
+                continue;
+            }
+            let c = rest.chars().next().unwrap();
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// One search snippet from a line of a note: its markdown made plain, with the match (at `at`, `len` bytes into
+/// `line`) picked out. When the match sits inside a link's target, which plain text leaves out, the match is
+/// looked for again in the plain line; failing that the line is shown without a highlight.
+fn plain_snippet(line: &str, at: usize, len: usize, cut_start: bool, cut_end: bool) -> Snippet {
+    let lead = if cut_start { "…" } else { "" };
+    let tail = if cut_end { "…" } else { "" };
+    let raw_before = &line[..at];
+    let in_link = raw_before.rfind("[[").map_or(false, |o| !raw_before[o..].contains("]]"))
+        || raw_before.rfind("](").map_or(false, |o| !raw_before[o..].contains(')'));
+    if !in_link {
+        let before = plain_text(raw_before);
+        let after = plain_text(&line[at + len..]);
+        let gap_b = if raw_before.ends_with(char::is_whitespace) && !before.is_empty() { " " } else { "" };
+        let gap_a = if line[at + len..].starts_with(char::is_whitespace) && !after.is_empty() { " " } else { "" };
+        return Snippet {
+            before: format!("{lead}{before}{gap_b}"),
+            matched: line[at..at + len].to_string(),
+            after: format!("{gap_a}{after}{tail}"),
+        };
+    }
+    let word = line[at..at + len].to_lowercase();
+    let all = plain_text(line);
+    if let Some(p) = all.to_lowercase().find(&word) {
+        let e = p + word.len();
+        if e <= all.len() && all.is_char_boundary(p) && all.is_char_boundary(e) {
+            return Snippet {
+                before: format!("{lead}{}", &all[..p]),
+                matched: all[p..e].to_string(),
+                after: format!("{}{tail}", &all[e..]),
+            };
+        }
+    }
+    Snippet { before: format!("{lead}{all}{tail}"), matched: String::new(), after: String::new() }
+}
+
+#[cfg(test)]
+mod plain_tests {
+    use super::*;
+
+    #[test]
+    fn markdown_made_plain() {
+        assert_eq!(plain_text("- [[Topics/Encryption|Encryption]]: 16 lessons"), "Encryption: 16 lessons");
+        assert_eq!(plain_text("### Do it now: **Encryption** in [your life](x.md)"), "Do it now: Encryption in your life");
+        assert_eq!(plain_text("See [[Unit 2/A4.2-Encryption]] and ![[pic.png]]"), "See A4.2-Encryption and");
+    }
+
+    #[test]
+    fn snippet_inside_a_link() {
+        let line = "- [[Topics/Encryption|Encryption]]: 16 lessons";
+        let at = line.find("Encryption").unwrap();
+        let s = plain_snippet(line, at, 10, false, false);
+        assert_eq!((s.before.as_str(), s.matched.as_str(), s.after.as_str()), ("", "Encryption", ": 16 lessons"));
+    }
+
+    #[test]
+    fn snippet_in_plain_words() {
+        let line = "# Cheat Sheet: Encryption and Firewalls";
+        let at = line.find("Encryption").unwrap();
+        let s = plain_snippet(line, at, 10, false, true);
+        assert_eq!((s.before.as_str(), s.matched.as_str(), s.after.as_str()), ("Cheat Sheet: ", "Encryption", " and Firewalls…"));
     }
 }

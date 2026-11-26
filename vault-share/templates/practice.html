@@ -12,15 +12,15 @@
   <p class="alert error">Questions, flashcards, mind maps, Ask Claude and the coach need Claude, and no Anthropic API key is set. {% if is_admin %}Add one under <a href="/admin#microsidian">Admin → Claude settings</a>.{% else %}Ask an admin to add one.{% endif %}</p>
   {% endif %}
   <nav class="pr-tabs" role="tablist" aria-label="Practice">
-    <button type="button" role="tab" data-tab="questions" aria-selected="true" title="Claude writes exam-style questions from your notes and marks your answers">Write practice questions</button>
-    <button type="button" role="tab" data-tab="hub" aria-selected="false" title="Every question from the past papers, and the ones Claude wrote, to filter and practise">Past paper question bank</button>
-    <button type="button" role="tab" data-tab="cards" aria-selected="false" title="Flashcards Claude makes from your notes">Flashcard decks</button>
-    <button type="button" role="tab" data-tab="guides" aria-selected="false" title="Study guides, briefings, cheat sheets and glossaries written from your notes">Study guides and summaries</button>
+    <button type="button" role="tab" data-tab="questions" aria-selected="true" title="Claude writes exam-style questions from your notes and marks your answers">Write questions</button>
+    <button type="button" role="tab" data-tab="hub" aria-selected="false" title="Every question from the past papers, and the ones Claude wrote, to filter and practise">Question bank</button>
+    <button type="button" role="tab" data-tab="cards" aria-selected="false" title="Flashcards Claude makes from your notes">Flashcards</button>
+    <button type="button" role="tab" data-tab="guides" aria-selected="false" title="Study guides, briefings, cheat sheets and glossaries written from your notes">Study guides</button>
     <button type="button" role="tab" data-tab="mindmaps" aria-selected="false" title="Mind maps of how the ideas in your notes connect">Mind maps</button>
-    <button type="button" role="tab" data-tab="retrieval" aria-selected="false" title="Open one of your documents and find the answers in it, then see what you remember without it">Retrieval quizzes</button>
+    <button type="button" role="tab" data-tab="retrieval" aria-selected="false" title="Open one of your documents and find the answers in it, then see what you remember without it">Retrieval</button>
     <button type="button" role="tab" data-tab="ask" aria-selected="false" title="Chat with Claude about your notes: explanations, follow-up questions and help">Ask Claude</button>
-    <button type="button" role="tab" data-tab="history" aria-selected="false" title="Everything you have answered, with your marks and feedback">My answers and marks</button>
-    <button type="button" role="tab" data-tab="coach" aria-selected="false" title="How you are doing, and what to revise next">Exam coach: my progress</button>
+    <button type="button" role="tab" data-tab="history" aria-selected="false" title="Everything you have answered, with your marks and feedback">My marks</button>
+    <button type="button" role="tab" data-tab="coach" aria-selected="false" title="How you are doing, and what to revise next">Exam coach</button>
   </nav>
 
   <section class="card pr-panel" data-panel="questions" role="tabpanel">
@@ -51,9 +51,7 @@
         <label>Number of questions
           <input type="number" name="count" min="1" max="30" value="10" required>
         </label>
-      </div>
-      <div class="pr-row" data-gen-claude-only>
-        <label>How hard
+        <label data-gen-claude-only>How hard
           <select name="difficulty">
             <option value="easy">Easy</option>
             <option value="medium" selected>Medium</option>
@@ -61,7 +59,7 @@
             <option value="mixed">A mix</option>
           </select>
         </label>
-        <label class="check pr-papers"><input type="checkbox" name="use_papers" checked> Model them on the past papers in the hub</label>
+        <label class="check pr-papers" data-gen-claude-only><input type="checkbox" name="use_papers" checked> Model them on the past papers in the hub</label>
       </div>
       <label class="pr-focus" data-gen-claude-only><span>What should they focus on? <span class="muted small">(optional)</span></span>
         <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: scenario questions about a small business, or the differences between symmetric and asymmetric encryption"></textarea>
@@ -170,7 +168,7 @@
       <h2 data-report-title></h2>
     </div>
     <div class="pr-actions pr-report-tools" data-report-tools>
-      <button type="button" data-report-listen aria-pressed="false">&#9654; Listen</button>
+      <button type="button" data-report-listen aria-pressed="false"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg><span>Listen</span></button>
       <button type="button" data-report-save>Save to vault</button>
       <button type="button" data-report-copy>Copy</button>
       <button type="button" data-report-download>Download</button>
@@ -238,6 +236,7 @@
     </div>
     <p class="small muted" data-retrieval-status aria-live="polite"></p>
     <ul class="pr-resources" data-retrieval-list></ul>
+    <div class="pr-more-row"><button type="button" data-retrieval-more hidden>Show more</button></div>
   </section>
 
   <section class="card pr-panel pr-ask" data-panel="ask" role="tabpanel" hidden>
@@ -255,14 +254,16 @@
       <button type="button" data-conv-new>New conversation</button>
       <button type="button" class="small danger" data-conv-delete hidden>Delete</button>
     </div>
-    <div class="pr-chat" data-chat aria-live="polite"></div>
-    <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
-    <form class="pr-chat-form" data-chat-form>
-      <textarea name="message" rows="2" maxlength="8000" placeholder="Ask anything about your notes, or try: Explain this topic as if I were new to it"></textarea>
-      <div class="pr-actions">
-        <button type="submit" class="primary">Send</button>
-      </div>
-    </form>
+    <div class="pr-chat-wrap">
+      <div class="pr-chat" data-chat aria-live="polite"></div>
+      <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
+      <form class="pr-chat-form" data-chat-form>
+        <textarea name="message" rows="2" maxlength="8000" placeholder="Ask anything about your notes, or try: Explain this topic as if I were new to it"></textarea>
+        <div class="pr-actions">
+          <button type="submit" class="primary">Send</button>
+        </div>
+      </form>
+    </div>
   </section>
 
   <section class="card pr-panel" data-panel="history" role="tabpanel" hidden>
@@ -285,7 +286,8 @@
         <span class="muted small" data-rag-when></span>
         <button type="button" class="small" data-rag-grade>Grade my topics</button>
       </div>
-      <p class="pr-rag-key small muted"><span class="pr-rag-dot is-red"></span> Red: losing marks <span class="pr-rag-dot is-amber"></span> Amber: some way to go <span class="pr-rag-dot is-green"></span> Green: secure <span class="pr-rag-dot is-none"></span> Not graded yet &middot; choose a topic to do a retrieval quiz on it with your documents open.</p>
+      <p class="pr-rag-key small muted"><span class="pr-rag-key-item"><span class="pr-rag-dot is-red"></span>Red: losing marks</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-amber"></span>Amber: some way to go</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-green"></span>Green: secure</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-none"></span>Not graded yet</span></p>
+      <p class="small muted pr-rag-help">Choose a topic to do a retrieval quiz on it with your documents open.</p>
       <ul class="pr-rag-list" data-rag-list></ul>
     </section>
     <div class="pr-stats" data-stats></div>
@@ -296,14 +298,16 @@
       <button type="button" data-conv-new>New conversation</button>
       <button type="button" class="small danger" data-conv-delete hidden>Delete</button>
     </div>
-    <div class="pr-chat" data-chat aria-live="polite"></div>
-    <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
-    <form class="pr-chat-form" data-chat-form>
-      <textarea name="message" rows="2" maxlength="4000" placeholder="Ask anything, or try: Where am I losing the most marks?"></textarea>
-      <div class="pr-actions">
-        <button type="submit" class="primary">Send</button>
-      </div>
-    </form>
+    <div class="pr-chat-wrap">
+      <div class="pr-chat" data-chat aria-live="polite"></div>
+      <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
+      <form class="pr-chat-form" data-chat-form>
+        <textarea name="message" rows="2" maxlength="4000" placeholder="Ask anything, or try: Where am I losing the most marks?"></textarea>
+        <div class="pr-actions">
+          <button type="submit" class="primary">Send</button>
+        </div>
+      </form>
+    </div>
   </section>
 
   <section class="card pr-panel pr-quiz" data-panel="quiz" role="tabpanel" hidden>
@@ -322,7 +326,7 @@
           <button type="button" data-resource-view="original" aria-pressed="true">Original</button>
           <button type="button" data-resource-view="note" aria-pressed="false">Notes</button>
         </span>
-        <a class="small" data-resource-open target="_blank" rel="noopener">Open in a new tab</a>
+        <a class="button pr-resource-newtab" data-resource-open target="_blank" rel="noopener">Open in a new tab</a>
       </div>
       <div class="pr-resource-body" data-resource-body tabindex="0"></div>
     </aside>
@@ -366,7 +370,7 @@
     <div class="pr-study-bar">
       <span class="small muted" data-card-counts></span>
       <span class="pr-actions">
-        <button type="button" class="small" data-card-timer aria-pressed="false" title="Time how long you take">&#9201; <span data-card-clock>Timer</span></button>
+        <button type="button" class="small" data-card-timer aria-pressed="false" title="Time how long you take"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg><span data-card-clock>Timer</span></button>
         <button type="button" class="small" data-card-explain>Ask Claude to explain this card</button>
         <button type="button" class="small" data-card-edit>Edit</button>
         <button type="button" class="small" data-card-add>Add a card</button>
@@ -389,7 +393,7 @@
       <button type="button" class="primary" data-card-known>Got it</button>
       <button type="button" data-card-next>Next →</button>
     </div>
-    <div class="pr-actions">
+    <div class="pr-actions pr-card-tools">
       <label class="check small"><input type="checkbox" data-card-only-again> Only cards marked Again</label>
       <button type="button" data-card-shuffle>Shuffle</button>
       <button type="button" data-card-restart>Start again</button>

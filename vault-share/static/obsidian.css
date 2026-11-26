@@ -523,3 +523,9 @@ input.switch::after { transition: transform .18s var(--ease), background-color .
 .preset-menu .pm-empty { padding: 6px 8px; font-size: 13px; color: var(--muted); }
 .force-id { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; font-family: var(--font-mono, ui-monospace, monospace); }
 .force-id input.is-bad { border-color: var(--bad); }
+
+/* Graph filters: the preset and group buttons are the panel's size (30px, like its fields), not the site's. */
+.preset-save input { height: 30px; }
+.preset-save > button:not(.icon-btn), .preset-others > button, .gc-body .group-add { height: 30px; padding: 0 10px; font-size: 13px; font-weight: 500; }
+.preset-save .icon-btn { height: 30px; }
+.snippet mark { background: var(--mark); color: var(--ink); padding: 0 1px; border-radius: 2px; }

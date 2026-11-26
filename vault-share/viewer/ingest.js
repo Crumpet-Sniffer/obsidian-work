@@ -514,10 +514,16 @@ const handoff = {
     const title = done
       ? `${STATUS[b.status]}${p.summary ? ` · ${p.summary}` : ""}`
       : `${STATUS[b.status]} · ${b.files.length} file${b.files.length === 1 ? "" : "s"}`;
+    // A batch that finished cleanly is one line: what it filed, who added it and when. Its steps (all full
+    // bars) only matter while it runs, or to see where a failed one stopped.
+    const compact = b.status === "done";
+    if (compact) box.classList.add("is-compact");
     head.append(make("strong", "", title), make("span", "batch-pct", done ? "" : `${Math.floor(overall * 100)}%`));
-    box.append(head, bar("batch-bar", done ? 1 : overall));
+    box.append(head);
+    if (!compact) box.append(bar("batch-bar", done ? 1 : overall));
 
     const ol = make("ol", "batch-steps");
+    if (compact) ol.hidden = true;
     for (const s of list) {
       const li = make("li", `batch-step is-${s.state}`);
       const count = make("span", "batch-count", s.count);
@@ -630,6 +636,29 @@ const handoff = {
   // ---------- the list, and removing ----------
   const listEl = host.querySelector("[data-list]");
   const listStatus = host.querySelector("[data-list-status]");
+  const listFind = host.querySelector("[data-list-find]");
+  const listMore = host.querySelector("[data-list-more]");
+  const PAGE = 50;
+  let listRows = [];
+  let listLimit = PAGE;
+  // Shows the sources that match the search box, 50 at a time, so the page stays a sensible length.
+  function showList() {
+    const q = (listFind?.value || "").trim().toLowerCase();
+    const hits = q ? listRows.filter((r) => r.key.includes(q)) : listRows;
+    const body = listEl.tBodies[0];
+    body.replaceChildren(...hits.slice(0, listLimit).map((r) => r.tr));
+    listEl.hidden = hits.length === 0;
+    listStatus.hidden = hits.length > 0;
+    listStatus.textContent = listRows.length ? "No sources match that search." : "No sources yet.";
+    if (listMore) {
+      const left = hits.length - Math.min(listLimit, hits.length);
+      listMore.hidden = left <= 0;
+      listMore.textContent = `Show ${Math.min(left, PAGE)} more (${left} not shown)`;
+    }
+    if (listFind) listFind.closest("[data-list-tools]").hidden = listRows.length <= PAGE / 5;
+  }
+  listFind?.addEventListener("input", () => { listLimit = PAGE; showList(); });
+  listMore?.addEventListener("click", () => { listLimit += PAGE; showList(); });
 
   async function refreshList() {
     try {
@@ -642,8 +671,7 @@ const handoff = {
         const src = parseFrontmatter(text).source;
         if (typeof src === "string" && src) noteFor.set(src, path);
       }
-      const body = listEl.tBodies[0];
-      body.replaceChildren();
+      const rows = [];
       for (const path of originals) {
         const tr = document.createElement("tr");
         const inner = path.slice(cfg.layout.originals.length + 1);
@@ -683,11 +711,10 @@ const handoff = {
         tdAct.append(btn);
 
         tr.append(tdSrc, tdNote, tdAct);
-        body.append(tr);
+        rows.push({ tr, key: `${inner} ${note || ""}`.toLowerCase() });
       }
-      listEl.hidden = originals.length === 0;
-      listStatus.hidden = originals.length > 0;
-      listStatus.textContent = "No sources yet.";
+      listRows = rows;
+      showList();
     } catch (e) {
       listStatus.hidden = false;
       listStatus.textContent = `Could not load the sources: ${explain(e)}`;
