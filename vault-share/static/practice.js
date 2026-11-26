@@ -216,7 +216,7 @@
         all.lastChild.nodeValue = q ? " Select all shown" : " Select all";
         // A search looks through all of them, so the "Show all" fold is set aside while there is one.
         list.classList.toggle("is-searching", !!q);
-        if (more) more.hidden = !!q;
+        refold();
       });
       // Enter in the search box must not submit the form.
       find.addEventListener("keydown", (e) => { if (e.key === "Enter") e.preventDefault(); });
@@ -225,18 +225,26 @@
     top.append(count);
     sync();
     box.append(top, list);
-    // A long list shows its first few rows, with a button for the rest, instead of a box that scrolls.
-    let more = null;
-    if (values.length > FOLD) {
-      boxes.forEach((b, i) => { if (i >= FOLD) b.parentElement.classList.add("is-extra"); });
-      list.classList.add("is-folded");
-      more = make("button", "linklike small pr-more-chips");
-      more.type = "button";
-      const label = () => { more.textContent = list.classList.contains("is-folded") ? `Show all ${values.length}` : "Show fewer"; };
-      more.addEventListener("click", () => { list.classList.toggle("is-folded"); label(); });
-      label();
-      box.append(more);
+    // A long list shows its first two rows (in a one-column list, its first 12), with a button for the rest,
+    // instead of a box that scrolls. How many fit in two rows depends on the width, so it is worked out again
+    // whenever the list changes size (including when its tab is first shown).
+    list.classList.add("is-folded");
+    const more = make("button", "linklike small pr-more-chips");
+    more.type = "button";
+    more.hidden = true;
+    const label = () => { more.textContent = list.classList.contains("is-folded") ? `Show all ${values.length}` : "Show fewer"; };
+    more.addEventListener("click", () => { list.classList.toggle("is-folded"); label(); });
+    label();
+    box.append(more);
+    function refold() {
+      if (!list.offsetParent) return;
+      const cols = getComputedStyle(list).gridTemplateColumns.split(" ").filter(Boolean).length;
+      const keep = cols > 1 ? cols * 2 : FOLD;
+      boxes.forEach((b, i) => b.parentElement.classList.toggle("is-extra", i >= keep));
+      more.hidden = values.length <= keep || list.classList.contains("is-searching");
     }
+    if (window.ResizeObserver) new ResizeObserver(() => refold()).observe(list);
+    refold();
     if (anyHint) box.appendChild(make("p", "muted small", anyHint));
     return () => boxes.filter((b) => b.checked).map((b) => b.value);
   }
