@@ -328,8 +328,12 @@ textarea[data-autosize] { overflow: hidden; resize: none; }
 @media (max-width: 480px) { .res-meter { display: none; } }
 
 /* ---------- Practice page ---------- */
-.pr-tabs { display: flex; flex-wrap: wrap; gap: 0; margin: 0 0 1rem; border-bottom: 1px solid var(--line); }
-.pr-tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: .55rem .75rem; color: var(--muted); font-weight: 600; cursor: pointer; }
+.pr-tabs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .25rem 1.25rem; margin: 0 0 1rem; border-bottom: 1px solid var(--line); }
+/* Tabs in groups by what they are for: a small name over each group, which wraps onto a new line as a whole. */
+.pr-tab-group { display: flex; flex-direction: column; min-width: 0; }
+.pr-tab-group-name { padding: 0 .6rem .05rem; font-size: .7rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--faint, var(--muted)); white-space: nowrap; }
+.pr-tab-group-tabs { display: flex; flex-wrap: wrap; }
+.pr-tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: .55rem .6rem; color: var(--muted); font-weight: 600; cursor: pointer; }
 .pr-tabs button:hover { color: var(--ink); }
 .pr-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
 .pr-panel[hidden] { display: none; }
@@ -640,7 +644,9 @@ details.how p { margin: .4rem 0; }
 @media (max-width: 760px) {
   .card { padding: 1rem .9rem; }
   /* On a phone the tabs wrap onto a second line rather than hide off the edge in a sideways scroll. */
-  .pr-tabs { gap: 0; }
+  .pr-tabs { gap: .5rem 0; }
+  .pr-tab-group { flex: 1 1 100%; }
+  .pr-tab-group-name { padding-left: .6rem; }
   .pr-tabs button { flex: none; padding: .45rem .6rem; }
   .page-head h1 { font-size: 1.5rem; }
 }

@@ -11,21 +11,37 @@
   {% if !configured %}
   <p class="alert error">Questions, flashcards, mind maps, Ask Claude and the coach need Claude, and no Anthropic API key is set. {% if is_admin %}Add one under <a href="/admin#microsidian">Admin → Claude settings</a>.{% else %}Ask an admin to add one.{% endif %}</p>
   {% endif %}
+  <!-- The tabs in three groups by what they are for. Each tab's group name is read out with it (aria-describedby). -->
   <nav class="pr-tabs" role="tablist" aria-label="Practice">
-    <button type="button" role="tab" data-tab="questions" aria-selected="true" title="Claude writes exam-style questions from your notes and marks your answers">Write questions</button>
-    <button type="button" role="tab" data-tab="hub" aria-selected="false" title="Every question from the past papers, and the ones Claude wrote, to filter and practise">Question bank</button>
-    <button type="button" role="tab" data-tab="cards" aria-selected="false" title="Flashcards Claude makes from your notes">Flashcards</button>
-    <button type="button" role="tab" data-tab="guides" aria-selected="false" title="Study guides, briefings, cheat sheets and glossaries written from your notes">Study guides</button>
-    <button type="button" role="tab" data-tab="mindmaps" aria-selected="false" title="Mind maps of how the ideas in your notes connect">Mind maps</button>
-    <button type="button" role="tab" data-tab="retrieval" aria-selected="false" title="Open one of your documents and find the answers in it, then see what you remember without it">Retrieval</button>
-    <button type="button" role="tab" data-tab="ask" aria-selected="false" title="Chat with Claude about your notes: explanations, follow-up questions and help">Ask Claude</button>
-    <button type="button" role="tab" data-tab="history" aria-selected="false" title="Everything you have answered, with your marks and feedback">My marks</button>
-    <button type="button" role="tab" data-tab="coach" aria-selected="false" title="How you are doing, and what to revise next">Exam coach</button>
+    <div class="pr-tab-group" role="presentation">
+      <span class="pr-tab-group-name" id="pr-group-revise">Revision resources</span>
+      <div class="pr-tab-group-tabs" role="presentation">
+        <button type="button" role="tab" data-tab="cards" aria-selected="false" aria-describedby="pr-group-revise" title="Flashcards Claude makes from your notes">Flashcards</button>
+        <button type="button" role="tab" data-tab="guides" aria-selected="false" aria-describedby="pr-group-revise" title="Study guides, briefings, cheat sheets and glossaries written from your notes">Study guides</button>
+        <button type="button" role="tab" data-tab="mindmaps" aria-selected="false" aria-describedby="pr-group-revise" title="Mind maps of how the ideas in your notes connect">Mind maps</button>
+        <button type="button" role="tab" data-tab="retrieval" aria-selected="false" aria-describedby="pr-group-revise" title="Open one of your documents and find the answers in it, then see what you remember without it">Retrieval</button>
+      </div>
+    </div>
+    <div class="pr-tab-group" role="presentation">
+      <span class="pr-tab-group-name" id="pr-group-test">Testing</span>
+      <div class="pr-tab-group-tabs" role="presentation">
+        <button type="button" role="tab" data-tab="hub" aria-selected="false" aria-describedby="pr-group-test" title="Every question from the past papers, and the ones Claude wrote, to filter and practise">Past paper questions</button>
+        <button type="button" role="tab" data-tab="questions" aria-selected="true" aria-describedby="pr-group-test" title="Claude writes exam-style questions from your notes and marks your answers">Quiz creator</button>
+      </div>
+    </div>
+    <div class="pr-tab-group" role="presentation">
+      <span class="pr-tab-group-name" id="pr-group-improve">Improve</span>
+      <div class="pr-tab-group-tabs" role="presentation">
+        <button type="button" role="tab" data-tab="ask" aria-selected="false" aria-describedby="pr-group-improve" title="Chat with Claude about your notes: explanations, follow-up questions and help">Ask Claude</button>
+        <button type="button" role="tab" data-tab="coach" aria-selected="false" aria-describedby="pr-group-improve" title="How you are doing, and what to revise next">Exam coach</button>
+        <button type="button" role="tab" data-tab="history" aria-selected="false" aria-describedby="pr-group-improve" title="Everything you have answered, with your marks and feedback">My marks</button>
+      </div>
+    </div>
   </nav>
 
   <section class="card pr-panel" data-panel="questions" role="tabpanel">
-    <h2>Write me practice questions</h2>
-    <p class="small muted">Claude writes questions from your notes on the topics you choose, then marks your answers: choice and fill-in questions straight away, written answers against a mark scheme. With past papers in the question hub, it copies how your exams word questions and mark schemes.</p>
+    <h2>Quiz creator</h2>
+    <p class="small muted">Claude writes questions from your notes on the topics you choose, then marks your answers: choice and fill-in questions straight away, written answers against a mark scheme. With past papers added, it copies how your exams word questions and mark schemes.</p>
     <form class="pr-form" data-gen-form>
       <fieldset class="pr-source" data-gen-source-box>
         <legend>Where the questions come from</legend>

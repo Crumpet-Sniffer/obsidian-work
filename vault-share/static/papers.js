@@ -102,7 +102,7 @@
       }
       if (papers.length && key !== "undated") {
         const act = make("div", "pr-actions");
-        act.appendChild(practiceLink(`Show ${key}'s questions in the question bank`, "hub", { years: key }));
+        act.appendChild(practiceLink(`Show ${key}'s questions in Past paper questions`, "hub", { years: key }));
         d.appendChild(act);
       }
       box.appendChild(d);
@@ -342,7 +342,7 @@
       const fields = make("div", "pr-fields");
       for (const f of p.fields) {
         const a = practiceLink(f.label, "hub", { spec: f.label, source: "" }, "pr-field");
-        a.title = "Show the past questions on this area in the question bank";
+        a.title = "Show the past questions on this area in Past paper questions";
         a.appendChild(make("span", "muted", String(f.questions)));
         fields.appendChild(a);
       }

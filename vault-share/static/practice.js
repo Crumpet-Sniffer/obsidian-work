@@ -136,9 +136,6 @@
     $$("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== name; });
     const tab = TABS.includes(name) ? name : PARENT[name] !== undefined ? PARENT[name] || hashTab() : "";
     $$("[data-tab]").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false"));
-    // On a phone the tab row scrolls sideways: keep the chosen tab in view.
-    const sel = $(`[data-tab="${tab}"]`);
-    if (sel && sel.parentElement.scrollWidth > sel.parentElement.clientWidth) sel.parentElement.scrollTo({ left: sel.offsetLeft - 16, behavior: "smooth" });
     if (TABS.includes(name) && location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
     if (name === "history") loadHistory();
     if (name === "cards") loadDecks();
@@ -653,7 +650,8 @@
         fb.missed && fb.missed.length ? `Missed: ${fb.missed.join("; ").slice(0, 800)}` : "",
         scheme.textContent.trim() ? `Mark scheme: ${scheme.textContent.trim().slice(0, 1500)}` : "",
       ].filter(Boolean).join("\n");
-      askClaude(`Explain question ${n + 1} to me: what the right answer is, why, and what I should have done to get full marks.\n\nQuestion: ${text.textContent.trim().slice(0, 1500)}${opts}\n\nMy answer: ${String(yours).slice(0, 2000) || "(none)"}${marking ? `\n\n${marking}` : ""}`);
+      const where = `This is question ${n + 1} of my quiz "${(quiz.data && quiz.data.title) || "Practice questions"}": ${plural(q.marks, "mark")}, ${typeLabel(q.type).toLowerCase()}${q.style ? ` (${q.style})` : ""}${q.topics.length ? `, on ${q.topics.join(", ")}` : ""}.`;
+      askClaude(`${where}\n\nExplain it to me: what the right answer is, why, and what I should have done to get full marks.\n\nQuestion: ${text.textContent.trim().slice(0, 1500)}${opts}\n\nMy answer: ${String(yours).slice(0, 2000) || "(none)"}${marking ? `\n\n${marking}` : ""}`, true, q.topics || []);
     });
     top.append(explain);
     // A written answer Claude marked can be challenged once: it is marked again from scratch, point by point.
@@ -1161,7 +1159,7 @@
       if (filtered && !nothing) {
         empty.append(make("strong", "", "No questions match."), make("p", "muted small", "Take off a filter, or search for something else."));
       } else {
-        empty.append(make("strong", "", nothing ? "The question hub is empty." : "No questions here yet."));
+        empty.append(make("strong", "", nothing ? "There are no past paper questions yet." : "No questions here yet."));
         empty.append(make("p", "muted small", "Add past papers and their mark schemes and every question is filed here, or have Claude write some questions for you."));
         const act = make("div", "pr-actions");
         if (host.dataset.admin === "1") {
@@ -1444,7 +1442,8 @@
   $("[data-card-explain]").addEventListener("click", () => {
     if (!st.order.length) return;
     const c = st.deck.items[st.order[st.at]];
-    askClaude(`Explain this flashcard to me in more depth, with an example, and how it could come up in an exam.\n\nFront: ${c.front}\nBack: ${c.back}`);
+    const where = `This is a flashcard from my deck "${st.deck.title}"${c.topic ? `, on ${c.topic}` : ""}.`;
+    askClaude(`${where}\n\nExplain it to me in more depth, with an example, and how it could come up in an exam.\n\nFront: ${c.front}\nBack: ${c.back}`, true, c.topic ? [c.topic] : []);
   });
 
   // A stopwatch, to time a run through the deck.
@@ -1946,10 +1945,23 @@
     noteName: "Ask Claude",
     extra: () => ({ topics: pick.askTopics ? pick.askTopics() : [] }),
   });
-  /** Ask Claude about something (an answer, a card, an idea on a mind map): opens the chat and sends it. */
-  function askClaude(text, send = true) {
+  /**
+   * Ask Claude about something (an answer, a card, an idea on a mind map): opens the chat and sends it. With
+   * topics, "Which notes Claude reads" is set to them first, so Claude reads the notes the thing was made from.
+   */
+  function askClaude(text, send = true, topics = []) {
     show("ask");
+    if (topics.length) setChoices("ask-topics", topics);
     return askChat.ask(text, send);
+  }
+  /** Tick exactly these values in a choice group (when any of them is in it). */
+  function setChoices(name, values) {
+    const want = new Set(values.map((v) => String(v).toLowerCase()));
+    const boxes = $$(`[data-choices="${name}"] .pr-chip input`);
+    if (!boxes.some((b) => want.has(b.value.toLowerCase()))) return false;
+    boxes.forEach((b) => { b.checked = want.has(b.value.toLowerCase()); b.dispatchEvent(new Event("change")); });
+    $(`[data-choices="${name}"]`).dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
   }
   /** Which notes Ask Claude reads, in its summary line. */
   function askScope() {
@@ -2091,6 +2103,35 @@
     return measureCtx.measureText(t).width;
   }
 
+  /**
+   * What to ask Claude about an idea on the open mind map, and the topics whose notes to read. The message says
+   * it is a mind map, which one and what it was made from, where the idea sits, and the ideas around it, so
+   * Claude can tell what "Overview" or "Risks" means on this map.
+   */
+  function mapQuestion(n) {
+    const map = mm.tree.label;
+    const topics = (mm.data && mm.data.settings && mm.data.settings.topics) || [];
+    const names = (list) => {
+      const shown = list.slice(0, 12).map((x) => `"${x.label}"`).join(", ");
+      return list.length > 12 ? `${shown} and ${list.length - 12} more` : shown;
+    };
+    const lines = [`This is about my mind map "${map}"${topics.length ? `, which Claude made from my notes on ${topics.join(", ")}` : ", which Claude made from my notes"}.`];
+    if (n.depth === 0) {
+      if (n.children.length) lines.push(`Its main branches are ${names(n.children)}.`);
+      lines.push("", `Give me an overview of "${map}" from my notes, going through each branch of the map.`);
+    } else {
+      const path = [];
+      for (let p = n; p; p = p.parent) path.unshift(`"${p.label}"`);
+      lines.push(`I clicked the idea "${n.label}". On the map it sits here: ${path.join(" → ")}.`);
+      if (n.children.length) lines.push(`The ideas branching from it are ${names(n.children)}.`);
+      const beside = n.parent.children.filter((x) => x !== n);
+      if (beside.length) lines.push(`Beside it under "${n.parent.label}" are ${names(beside)}.`);
+      const about = n.depth > 1 ? `"${n.parent.label}" in "${map}"` : `"${map}"`;
+      lines.push("", `Explain "${n.label}" from my notes, as part of ${about}${n.children.length ? ", including the ideas that branch from it" : ""}.`);
+    }
+    return [lines.join("\n"), true, topics];
+  }
+
   /** Lay out the open part of the tree (left to right) and draw it as SVG. */
   function drawMap() {
     const canvas = $("[data-map-canvas]");
@@ -2162,11 +2203,7 @@
       const title = svgEl("title");
       title.textContent = `${n.label}\nClick to ask Claude about this`;
       box.appendChild(title);
-      const askAbout = () => {
-        const path = [];
-        for (let p = n.parent; p; p = p.parent) path.unshift(p.label);
-        askClaude(n.depth === 0 ? `Give me an overview of "${n.label}" from my notes.` : `Explain "${n.label}" from my notes${path.length ? `, in the context of ${path.map((x) => `"${x}"`).join(" → ")}` : ""}.`);
-      };
+      const askAbout = () => askClaude(...mapQuestion(n));
       box.addEventListener("click", (e) => { if (!mm.dragged) askAbout(); e.stopPropagation(); });
       box.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); askAbout(); } });
       g.appendChild(box);
@@ -2295,7 +2332,7 @@
   // ---------- where practice questions come from: the past paper bank, a mix, or Claude ----------
   const SOURCES = ["bank", "mix", "claude"];
   const SOURCE_TEXT = {
-    bank: ["Past paper questions only", "Questions from the past papers in the question bank that match your choices, ready at once. Claude does not write any (difficulty and focus do not apply)."],
+    bank: ["Past paper questions only", "Questions from the past papers under Past paper questions that match your choices, ready at once. Claude does not write any (difficulty and focus do not apply)."],
     mix: ["A mix of both", "About half the questions come from the past papers in the bank, and Claude writes the rest to match."],
     claude: ["Only Claude's questions", "Claude writes every question from your notes, modelled on the past papers if you like."],
   };
@@ -2306,7 +2343,7 @@
     const [label, hint] = SOURCE_TEXT[src];
     sourceRange.setAttribute("aria-valuetext", label);
     const n = meta ? meta.paperQuestions : 0;
-    $("[data-gen-source-hint]").textContent = src !== "claude" && !n ? "No past papers have been added to the question bank yet, so Claude writes them all." : hint;
+    $("[data-gen-source-hint]").textContent = src !== "claude" && !n ? "No past papers have been added yet, so Claude writes them all." : hint;
     $$("[data-source-stop]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.sourceStop === sourceRange.value ? "true" : "false"));
     $$("[data-gen-claude-only]", genForm).forEach((el) => { el.hidden = src === "bank"; });
     $("[data-gen-submit]").textContent = src === "bank" ? "Find the questions" : "Write the questions";

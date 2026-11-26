@@ -5,7 +5,7 @@
 <p class="crumbs"><a href="/admin">Admin</a> / <a href="/admin/vaults/{{ vault_id }}">{{ vault_name }}</a></p>
 <div class="page-head">
   <h1>Past papers and exam documents</h1>
-  <div class="btn-row"><a class="button" href="/v/{{ vault_id }}/practice#hub">Open the question bank</a></div>
+  <div class="btn-row"><a class="button" href="/v/{{ vault_id }}/practice#hub">Open Past paper questions</a></div>
 </div>
 <div class="practice" data-papers data-vault="{{ vault_id }}" data-csrf="{{ csrf }}">
   {% if !configured %}
@@ -13,7 +13,7 @@
   {% endif %}
   <section class="card">
     <h2>Add past papers and exam documents</h2>
-    <p class="small muted">Upload one .zip of everything from the exam board's assessment resources: past papers, mark schemes, the specification, examiner reports and guidance. Claude sorts it, splits each paper into questions with their mark schemes, and builds the paper guides. It takes a few minutes per paper, and you can leave the page. The questions appear in the question bank on the vault's Practice page.</p>
+    <p class="small muted">Upload one .zip of everything from the exam board's assessment resources: past papers, mark schemes, the specification, examiner reports and guidance. Claude sorts it, splits each paper into questions with their mark schemes, and builds the paper guides. It takes a few minutes per paper, and you can leave the page. The questions appear under Past paper questions on the vault's Practice page.</p>
     <details class="pr-more how">
       <summary>How it works</summary>
       <div class="small muted">
@@ -71,9 +71,9 @@
   <section class="card danger-zone">
     <h2>Clear data</h2>
     <details class="pr-more pr-wipe" data-wipe>
-      <summary>Clear the question hub</summary>
+      <summary>Clear the past paper questions</summary>
       <div>
-        <p class="small">Deletes every past paper and its questions, every exam document, the paper guides and the examiners' notes for each year from this vault's question hub. Questions Claude wrote, everyone's answers and history, flashcards and the exam coach are kept. This cannot be undone; upload the papers again to start over.</p>
+        <p class="small">Deletes every past paper and its questions, every exam document, the paper guides and the examiners' notes for each year from this vault's past paper questions. Questions Claude wrote, everyone's answers and history, flashcards and the exam coach are kept. This cannot be undone; upload the papers again to start over.</p>
         <label class="check small"><input type="checkbox" name="files"> Also move the exam files kept in the vault (the <code>Question Hub</code> folder under the originals folder) to the vault's trash</label>
         <div class="pr-actions"><button type="button" class="danger" data-wipe-go>Clear all exam data…</button></div>
       </div>
