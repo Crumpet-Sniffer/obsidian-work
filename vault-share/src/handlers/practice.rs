@@ -488,6 +488,52 @@ fn summary_title(count: usize, noun: &str, topics: &[String]) -> String {
     format!("{count} {noun}{} · {what}", if count == 1 { "" } else { "s" })
 }
 
+/// True for a session whose title names topics from the choices made, not from its questions: questions Claude wrote
+/// (not a follow-up) or past paper questions from the bank, without a paper's guide, not yet renamed.
+fn titled_from_choices(kind: &str, settings: &Value) -> bool {
+    let flag = |k: &str| settings.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let profile = settings.get("profile").is_some_and(|p| !p.is_null());
+    let source = settings.get("source").and_then(Value::as_str).unwrap_or("");
+    !profile && !flag("topicTitle") && ((kind == "generated" && !flag("followUp")) || (kind == "hub" && source == "bank"))
+}
+
+/// The title with its topics taken from the questions themselves, most common first. None when it cannot be worked out.
+fn title_from_questions(old: &str, qs: &[Question]) -> Option<String> {
+    let (count, rest) = old.split_once(" · ")?;
+    let suffix = [" (past papers)", " (mixed)"].into_iter().find(|s| rest.ends_with(s)).unwrap_or("");
+    let mut tally: Vec<(String, usize)> = Vec::new();
+    for t in qs.iter().flat_map(|q| q.topics.iter()) {
+        match tally.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(t)) {
+            Some(e) => e.1 += 1,
+            None => tally.push((t.clone(), 1)),
+        }
+    }
+    if tally.is_empty() {
+        return None;
+    }
+    tally.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    let names: Vec<String> = tally.into_iter().map(|(n, _)| n).collect();
+    let what = summary_title(0, "", &names);
+    let what = what.split_once(" · ").map(|x| x.1).unwrap_or(&what);
+    Some(format!("{count} · {what}{suffix}"))
+}
+
+/// Name a session after the topics its questions cover (not every topic that was ticked), once.
+async fn retitle_from_questions(st: &AppState, sid: &str) -> Result<Option<String>, ApiErr> {
+    let Some(s) = st.db.practice_session(sid.to_string()).await? else { return Ok(None) };
+    if !titled_from_choices(&s.kind, &s.settings) || s.question_ids.is_empty() {
+        return Ok(None);
+    }
+    let mut qs = st.db.questions_by_id(s.vault_id.clone(), s.question_ids.clone()).await?;
+    if qs.is_empty() {
+        // Questions since removed from the bank: the copies kept with the answers.
+        qs = st.db.attempts(s.id.clone()).await?.iter().map(|a| Question::from_snapshot(&a.question)).collect();
+    }
+    let title = title_from_questions(&s.title, &qs).unwrap_or(s.title.clone());
+    st.db.set_session_title(s.id.clone(), title.clone()).await?;
+    Ok(Some(title))
+}
+
 /// Start writing questions. Returns the new session at once; it becomes "ready" when Claude has written them. Past
 /// paper questions from the bank are put in straight away ("bank"), or alongside Claude's ("mix").
 pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>, headers: HeaderMap, Json(b): Json<GenerateBody>) -> ApiResult {
@@ -561,7 +607,7 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
             user_id: user.id,
             title: format!("{} (past papers)", what(n)),
             kind: "hub".into(),
-            settings: json!({ "topics": topics, "types": types, "marks": marks, "source": "bank", "asked": b.count }),
+            settings: json!({ "topics": topics, "types": types, "marks": marks, "source": "bank", "asked": b.count, "profile": profile.as_ref().map(|p| p.id) }),
             status: "ready".into(),
             error: String::new(),
             question_ids: from_bank,
@@ -570,6 +616,7 @@ pub async fn generate(State(st): State<AppState>, user: CurrentUser, Path(id): P
             created_at: 0,
         };
         st.db.create_practice_session(session.clone()).await?;
+        retitle_from_questions(&st, &session.id).await?;
         return ok(json!({ "id": session.id, "fromBank": n, "asked": b.count }));
     }
     let n_bank = from_bank.len();
@@ -684,12 +731,14 @@ async fn start_generation(st: &AppState, user: &CurrentUser, vault: &str, title:
                     use rand::seq::SliceRandom;
                     all.shuffle(&mut rand::thread_rng());
                 }
-                let _ = st2.db.set_session(sid, "ready", String::new(), Some(all), None).await;
+                let _ = st2.db.set_session(sid.clone(), "ready", String::new(), Some(all), None).await;
+                let _ = retitle_from_questions(&st2, &sid).await;
             }
             // With questions from the bank already chosen, practise those and say what went wrong with the rest.
             Err(e) if !g.prefill.is_empty() => {
                 let note = format!("Claude's questions could not be written ({e}), so these are past paper questions only.");
-                let _ = st2.db.set_session(sid, "ready", note, Some(g.prefill.clone()), None).await;
+                let _ = st2.db.set_session(sid.clone(), "ready", note, Some(g.prefill.clone()), None).await;
+                let _ = retitle_from_questions(&st2, &sid).await;
             }
             Err(e) => {
                 let _ = st2.db.set_session(sid, "failed", e, None, None).await;
@@ -852,7 +901,18 @@ fn session_summary(s: &Session) -> Value {
 
 pub async fn sessions(State(st): State<AppState>, user: CurrentUser, Path(id): Path<String>) -> ApiResult {
     let v = authorize(&st, &user, &id).await?;
-    let list = st.db.practice_sessions(user.id, v.id, 200).await?;
+    let mut list = st.db.practice_sessions(user.id, v.id, 200).await?;
+    // Sessions from before they were named after their questions' topics: rename them once.
+    for s in list.iter_mut() {
+        if (s.status == "ready" || s.status == "marked") && titled_from_choices(&s.kind, &s.settings) {
+            if let Ok(Some(t)) = retitle_from_questions(&st, &s.id).await {
+                s.title = t;
+                if let Some(o) = s.settings.as_object_mut() {
+                    o.insert("topicTitle".into(), json!(true));
+                }
+            }
+        }
+    }
     ok(json!({ "sessions": list.iter().map(session_summary).collect::<Vec<_>>() }))
 }
 
@@ -2332,4 +2392,33 @@ pub async fn rebuild_profiles(State(st): State<AppState>, user: CurrentUser, Pat
     }
     let started = practice::rebuild_in_background(&st, who(&user), v.id.clone(), quals);
     ok(json!({ "building": started }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(topics: &[&str]) -> Question {
+        let mut q = Question::from_snapshot(&json!({ "id": 1, "type": "single", "text": "x" }));
+        q.topics = topics.iter().map(|t| t.to_string()).collect();
+        q
+    }
+
+    #[test]
+    fn titles_name_the_questions_topics() {
+        let qs = [q(&["Malware", "Network types"]), q(&["Malware"]), q(&["Backups"]), q(&["malware", "GDPR"])];
+        assert_eq!(
+            title_from_questions("4 questions · Antivirus, Apps and 73 more", &qs).as_deref(),
+            Some("4 questions · Malware, Backups and 2 more")
+        );
+        assert_eq!(title_from_questions("2 questions · A, B and 9 more (mixed)", &qs[..2]).as_deref(), Some("2 questions · Malware, Network types (mixed)"));
+        assert_eq!(title_from_questions("no separator", &qs), None);
+        assert!(titled_from_choices("generated", &json!({ "profile": null })));
+        assert!(!titled_from_choices("generated", &json!({ "profile": 3 })));
+        assert!(!titled_from_choices("generated", &json!({ "followUp": true })));
+        assert!(!titled_from_choices("generated", &json!({ "topicTitle": true })));
+        assert!(titled_from_choices("hub", &json!({ "source": "bank" })));
+        assert!(!titled_from_choices("hub", &json!({})));
+        assert!(!titled_from_choices("retrieval", &json!({})));
+    }
 }
