@@ -6,6 +6,7 @@
 //! with the container's limits where it has them.
 
 use std::{
+    collections::VecDeque,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -21,6 +22,9 @@ use crate::{
 };
 
 const MIN_INTERVAL: Duration = Duration::from_millis(1500);
+/// The resource history on the admin page: a sample every two seconds, kept for two minutes.
+pub const HISTORY_EVERY: Duration = Duration::from_secs(2);
+const HISTORY_SECS: i64 = 120;
 
 pub struct Sampler {
     /// None until first used, or when this platform has no figures to give.
@@ -29,11 +33,13 @@ pub struct Sampler {
     last: Option<Instant>,
     disks_at: Option<Instant>,
     snapshot: Value,
+    /// The last two minutes, oldest first: (unix seconds, NAS CPU %, NAS memory %, site CPU %, site memory %).
+    history: VecDeque<(i64, Option<f64>, Option<f64>, Option<f64>, Option<f64>)>,
 }
 
 impl Default for Sampler {
     fn default() -> Self {
-        Sampler { sys: None, disks: None, last: None, disks_at: None, snapshot: json!(null) }
+        Sampler { sys: None, disks: None, last: None, disks_at: None, snapshot: json!(null), history: VecDeque::new() }
     }
 }
 
@@ -144,8 +150,58 @@ impl Sampler {
             },
         });
         self.last = Some(Instant::now());
+        // The same figures as percentages of what there is, for the history.
+        let pct = |used: f64, of: f64| if of > 0.0 { Some((used / of * 100.0).clamp(0.0, 100.0)) } else { None };
+        let app_mem_used = mem_limit.and(cgroup_memory_used()).unwrap_or(app_mem) as f64;
+        let now = crate::db::now();
+        self.history.push_back((
+            now,
+            nas_cpu.map(|c| c.clamp(0.0, 100.0)),
+            pct(sys.used_memory() as f64, sys.total_memory() as f64),
+            if first { None } else { Some((app_cpu / app_cpu_share).clamp(0.0, 100.0)) },
+            pct(app_mem_used, mem_limit.unwrap_or(sys.total_memory()) as f64),
+        ));
+        while self.history.front().is_some_and(|h| h.0 < now - HISTORY_SECS) {
+            self.history.pop_front();
+        }
         self.snapshot.clone()
     }
+
+    /// The last two minutes as JSON for the admin page's chart.
+    fn history_json(&self) -> Value {
+        let round = |v: Option<f64>| v.map(|x| (x * 10.0).round() / 10.0);
+        json!({
+            "seconds": HISTORY_SECS,
+            "every": HISTORY_EVERY.as_secs(),
+            "points": self.history.iter().map(|(t, nc, nm, ac, am)| json!({ "t": t, "nasCpu": round(*nc), "nasMem": round(*nm), "appCpu": round(*ac), "appMem": round(*am) })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// Take a sample (for the history) every two seconds, whether or not a page is asking.
+pub async fn keep_history(st: AppState) {
+    let mut tick = tokio::time::interval(HISTORY_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        let st2 = st.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let pid = st2.worker_pid.load(std::sync::atomic::Ordering::Relaxed);
+            let mut s = st2.stats.lock().unwrap_or_else(|e| e.into_inner());
+            s.sample(&st2.cfg.data_dir, pid);
+        })
+        .await;
+    }
+}
+
+/// The last two minutes of CPU and memory use, for the chart on the admin page (admins only).
+pub async fn history(State(st): State<AppState>, user: CurrentUser) -> ApiResult {
+    if !user.is_admin {
+        return Err(crate::handlers::edit::ApiErr::Forbidden("Only an admin can see this.".into()));
+    }
+    let st2 = st.clone();
+    let v = tokio::task::spawn_blocking(move || st2.stats.lock().unwrap_or_else(|e| e.into_inner()).history_json()).await?;
+    ok(v)
 }
 
 /// How far back the spend figure in the tracker looks.
@@ -162,15 +218,13 @@ pub async fn stats(State(st): State<AppState>, user: CurrentUser) -> ApiResult {
     // What calls to Claude cost in the last half hour: the whole site's for an admin, otherwise the account's own.
     let since = crate::db::now() - SPEND_WINDOW;
     let (micro, calls) = st.db.usage_since(since, if user.is_admin { None } else { Some(user.id) }).await?;
-    let rate = crate::handlers::ingest::usd_gbp(&st.db).await?.value;
-    let gbp = crate::spend::gbp(micro, rate);
+    let usd = crate::spend::usd(micro);
     if snap.is_null() {
         snap = json!({});
     }
     snap["spend"] = json!({
-        "amount": crate::spend::fmt_gbp(gbp),
-        "gbp": gbp,
-        "usd": micro as f64 / 1_000_000.0,
+        "amount": crate::spend::fmt_usd(usd),
+        "usd": usd,
         "calls": calls,
         "minutes": SPEND_WINDOW / 60,
         "everyone": user.is_admin,

@@ -7,12 +7,14 @@
 </div>
 <nav class="section-nav" aria-label="Admin sections">
   <a href="#vaults">Vaults</a>
-  <a href="#microsidian">Claude settings</a>
-  <a href="#spend">API spend</a>
   <a href="#users">Accounts</a>
+  <a href="#spend">API spend</a>
+  <a href="#resources">Server resources</a>
+  <a href="#microsidian">Claude settings</a>
   <a href="#audit">Activity log</a>
 </nav>
 
+<div class="admin-grid">
 <section class="card" id="vaults">
   <h2>Vaults</h2>
   {% if vaults.is_empty() %}
@@ -36,8 +38,107 @@
   </div>
   {% endif %}
 </section>
-
-<section class="card" id="microsidian">
+<section class="card" id="users">
+  <h2>Accounts</h2>
+  <form method="post" action="/admin/users" class="row-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>New username <input name="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9._\-]+" autocomplete="off" spellcheck="false"></label>
+    <label>Role
+      <select name="role"><option value="member">User</option><option value="admin">Admin</option></select>
+    </label>
+    <button type="submit" class="primary">Create account</button>
+  </form>
+  <p class="small muted">A one-time password is generated for each new account, and its owner must set their own on first sign-in. Users can open and edit every vault, create vaults, and add and remove sources. Admins can also create accounts, delete vaults and change these settings.</p>
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created (UTC)</th><th>Last sign-in (UTC)</th><th></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+    <tr>
+      <td class="nowrap">{{ u.username }}{% if u.is_me %} <span class="muted">(you)</span>{% endif %}</td>
+      <td>{% if u.is_admin %}admin{% else %}user{% endif %}</td>
+      <td>
+        {% if u.disabled %}<span class="pill bad">disabled</span>
+        {% else if u.must_change %}<span class="pill">awaiting first sign-in</span>
+        {% else %}<span class="pill ok">active</span>{% endif %}
+      </td>
+      <td class="muted small nowrap">{{ u.created.trim_end_matches(" UTC") }}</td>
+      <td class="muted small nowrap">{{ u.last_login.trim_end_matches(" UTC") }}</td>
+      <td class="actions">
+        {% if !u.is_me %}
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Reset the password for {{ u.username }}? They will be signed out." data-confirm-title="Reset password" data-confirm-ok="Reset password">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="reset">
+          <button type="submit">Reset password</button>
+        </form>
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          {% if u.disabled %}<input type="hidden" name="action" value="enable"><button type="submit">Enable</button>
+          {% else %}<input type="hidden" name="action" value="disable"><button type="submit">Disable</button>{% endif %}
+        </form>
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Change the role of {{ u.username }}?" data-confirm-title="Change role" data-confirm-ok="Change role">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          {% if u.is_admin %}<input type="hidden" name="action" value="make_user"><button type="submit">Make user</button>
+          {% else %}<input type="hidden" name="action" value="make_admin"><button type="submit">Make admin</button>{% endif %}
+        </form>
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Delete the account {{ u.username }}? This cannot be undone." data-confirm-title="Delete account" data-confirm-ok="Delete account">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="delete">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+<section class="card" id="spend">
+  <h2>API spend</h2>
+  <p class="small muted">Estimated cost of every call to Claude, in US dollars, from the token counts of each call and Anthropic's list prices. The invoice from Anthropic is the true figure. Days are in UTC.</p>
+  <dl class="tiles">
+    <div><dt>Today</dt><dd>{{ spend.today }}</dd><span class="small muted">{{ spend.calls_today }} call{% if spend.calls_today != 1 %}s{% endif %}</span></div>
+    <div><dt>Last 7 days</dt><dd>{{ spend.week }}</dd><span class="small muted">{{ spend.calls_week }} call{% if spend.calls_week != 1 %}s{% endif %}</span></div>
+    <div><dt>Last 30 days</dt><dd>{{ spend.month }}</dd><span class="small muted">{{ spend.calls_month }} call{% if spend.calls_month != 1 %}s{% endif %}</span></div>
+    <div><dt>All time</dt><dd>{{ spend.all_time }}</dd><span class="small muted">{{ spend.calls_all }} call{% if spend.calls_all != 1 %}s{% endif %}</span></div>
+  </dl>
+  <h3 class="chart-title">Spend per day, last 30 days (US$)</h3>
+  <div class="chart-wrap" data-chart>
+    {{ spend.chart_svg|safe }}
+    <div class="chart-tip" data-chart-tip hidden></div>
+  </div>
+  {% if !spend.any %}<p class="small muted">Nothing recorded yet. Calls are counted from now on; earlier ones are not included.</p>{% endif %}
+  {% if !spend.days.is_empty() %}
+  <details class="ms-more">
+    <summary>Show as a table</summary>
+    <div class="grid-2">
+      <div class="table-wrap"><table class="table small">
+        <thead><tr><th>Day (UTC)</th><th>Calls</th><th>Spend</th></tr></thead>
+        <tbody>{% for d in spend.days %}<tr><td>{{ d.label }}</td><td>{{ d.calls }}</td><td>{{ d.amount }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+      <div class="table-wrap"><table class="table small">
+        <thead><tr><th>Model, last 30 days</th><th>Calls</th><th>Spend</th></tr></thead>
+        <tbody>{% for m in spend.models %}<tr><td>{{ m.model }}</td><td>{{ m.calls }}</td><td>{{ m.amount }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+    </div>
+  </details>
+  {% endif %}
+</section>
+<section class="card" id="resources">
+  <h2>Server resources</h2>
+  <p class="small muted">The last two minutes, updated every two seconds, as a share of what there is: the whole NAS, and what this site may use (its container's limits where it has them).</p>
+  <div class="res-charts" data-res-history>
+    <figure class="res-chart">
+      <figcaption><strong>CPU</strong><span class="res-now" data-res-now="cpu"></span></figcaption>
+      <svg class="res-svg" data-res-svg="cpu" viewBox="0 0 640 170" role="img" aria-label="CPU use over the last two minutes"></svg>
+    </figure>
+    <figure class="res-chart">
+      <figcaption><strong>Memory</strong><span class="res-now" data-res-now="mem"></span></figcaption>
+      <svg class="res-svg" data-res-svg="mem" viewBox="0 0 640 170" role="img" aria-label="Memory use over the last two minutes"></svg>
+    </figure>
+  </div>
+  <p class="res-legend small"><span class="is-nas">Whole NAS</span><span class="is-app">This site</span><span class="muted" data-res-status></span></p>
+</section>
+<section class="card is-wide" id="microsidian">
   <h2>Claude settings <span class="muted small">(Microsidian)</span></h2>
   <p class="small muted">The Anthropic key, model and effort used everywhere Claude is: filing sources (Word, PowerPoint, PDF files and pictures) into notes, and the Practice page (questions, marking, flashcards, study guides, past paper questions and the exam coach).</p>
   {% if ms.saved %}<p class="alert ok">Microsidian settings saved.</p>{% endif %}
@@ -115,103 +216,7 @@
     <div><button type="submit" class="primary">Save Microsidian settings</button></div>
   </form>
 </section>
-
-<section class="card" id="spend">
-  <h2>API spend</h2>
-  <p class="small muted">Estimated cost of filing sources, from the token counts of each call and Anthropic's list prices. Anthropic charges in US dollars; the invoice is the true figure.</p>
-  <dl class="tiles">
-    <div><dt>Today</dt><dd>{{ spend.today }}</dd><span class="small muted">{{ spend.calls_today }} call{% if spend.calls_today != 1 %}s{% endif %}</span></div>
-    <div><dt>Last 7 days</dt><dd>{{ spend.week }}</dd><span class="small muted">{{ spend.calls_week }} call{% if spend.calls_week != 1 %}s{% endif %}</span></div>
-    <div><dt>Last 30 days</dt><dd>{{ spend.month }}</dd><span class="small muted">{{ spend.calls_month }} call{% if spend.calls_month != 1 %}s{% endif %}</span></div>
-    <div><dt>All time</dt><dd>{{ spend.all_time }}</dd><span class="small muted">{{ spend.calls_all }} call{% if spend.calls_all != 1 %}s{% endif %}</span></div>
-  </dl>
-  <h3 class="chart-title">Spend per day, last 30 days (£)</h3>
-  <div class="chart-wrap" data-chart>
-    {{ spend.chart_svg|safe }}
-    <div class="chart-tip" data-chart-tip hidden></div>
-  </div>
-  {% if !spend.any %}<p class="small muted">Nothing recorded yet. Calls are counted from now on; earlier ones are not included.</p>{% endif %}
-  {% if !spend.days.is_empty() %}
-  <details class="ms-more">
-    <summary>Show as a table</summary>
-    <div class="grid-2">
-      <div class="table-wrap"><table class="table small">
-        <thead><tr><th>Day (UTC)</th><th>Calls</th><th>Spend</th></tr></thead>
-        <tbody>{% for d in spend.days %}<tr><td>{{ d.label }}</td><td>{{ d.calls }}</td><td>{{ d.amount }}</td></tr>{% endfor %}</tbody>
-      </table></div>
-      <div class="table-wrap"><table class="table small">
-        <thead><tr><th>Model, last 30 days</th><th>Calls</th><th>Spend</th></tr></thead>
-        <tbody>{% for m in spend.models %}<tr><td>{{ m.model }}</td><td>{{ m.calls }}</td><td>{{ m.amount }}</td></tr>{% endfor %}</tbody>
-      </table></div>
-    </div>
-  </details>
-  {% endif %}
-  <p class="rate-line"><strong>$1 = £{{ spend.rate }}</strong> <span class="small muted">{{ spend.rate_note }}</span></p>
-  <form method="post" action="/admin/spend-rate" class="row-form rate-form">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <label class="check"><input type="checkbox" name="manual" value="1"{% if spend.rate_manual %} checked{% endif %}> Set the rate myself</label>
-    <label class="rate-input">Pounds per US dollar <input name="rate" value="{{ spend.rate }}" inputmode="decimal" pattern="[0-9]*[.]?[0-9]+" maxlength="10"></label>
-    <button type="submit">Save</button>
-  </form>
-  <p class="small muted">Left unticked, the rate is looked up from the European Central Bank's daily reference rates (through the free Frankfurter service) about twice a day. Costs are stored in dollars, so a new rate re-prices every day shown here. Days are in UTC.</p>
-</section>
-
-<section class="card" id="users">
-  <h2>Accounts</h2>
-  <form method="post" action="/admin/users" class="row-form">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <label>New username <input name="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9._\-]+" autocomplete="off" spellcheck="false"></label>
-    <label>Role
-      <select name="role"><option value="member">User</option><option value="admin">Admin</option></select>
-    </label>
-    <button type="submit" class="primary">Create account</button>
-  </form>
-  <p class="small muted">A one-time password is generated for each new account, and its owner must set their own on first sign-in. Users can open and edit every vault, create vaults, and add and remove sources. Admins can also create accounts, delete vaults and change these settings.</p>
-  <div class="table-wrap">
-  <table class="table">
-    <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created (UTC)</th><th>Last sign-in (UTC)</th><th></th></tr></thead>
-    <tbody>
-    {% for u in users %}
-    <tr>
-      <td class="nowrap">{{ u.username }}{% if u.is_me %} <span class="muted">(you)</span>{% endif %}</td>
-      <td>{% if u.is_admin %}admin{% else %}user{% endif %}</td>
-      <td>
-        {% if u.disabled %}<span class="pill bad">disabled</span>
-        {% else if u.must_change %}<span class="pill">awaiting first sign-in</span>
-        {% else %}<span class="pill ok">active</span>{% endif %}
-      </td>
-      <td class="muted small nowrap">{{ u.created.trim_end_matches(" UTC") }}</td>
-      <td class="muted small nowrap">{{ u.last_login.trim_end_matches(" UTC") }}</td>
-      <td class="actions">
-        {% if !u.is_me %}
-        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Reset the password for {{ u.username }}? They will be signed out." data-confirm-title="Reset password" data-confirm-ok="Reset password">
-          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="reset">
-          <button type="submit">Reset password</button>
-        </form>
-        <form method="post" action="/admin/users/{{ u.id }}" class="inline">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
-          {% if u.disabled %}<input type="hidden" name="action" value="enable"><button type="submit">Enable</button>
-          {% else %}<input type="hidden" name="action" value="disable"><button type="submit">Disable</button>{% endif %}
-        </form>
-        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Change the role of {{ u.username }}?" data-confirm-title="Change role" data-confirm-ok="Change role">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
-          {% if u.is_admin %}<input type="hidden" name="action" value="make_user"><button type="submit">Make user</button>
-          {% else %}<input type="hidden" name="action" value="make_admin"><button type="submit">Make admin</button>{% endif %}
-        </form>
-        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Delete the account {{ u.username }}? This cannot be undone." data-confirm-title="Delete account" data-confirm-ok="Delete account">
-          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="delete">
-          <button type="submit" class="danger">Delete</button>
-        </form>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-</section>
-
-<section class="card" id="audit">
+<section class="card is-wide" id="audit">
   <h2>Activity log</h2>
   <p class="small muted">Last 100 events. Sign-ins, failed sign-ins, uploads and account changes are kept for 180 days.</p>
   <div class="table-wrap">
@@ -227,4 +232,6 @@
   </table>
   </div>
 </section>
+</div>
+
 {% endblock %}

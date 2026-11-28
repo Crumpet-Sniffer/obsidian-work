@@ -695,6 +695,89 @@ if (current) current.scrollIntoView({ block: "center" });
   });
 })();
 
+// ---------- Admin → Server resources: the last two minutes of CPU and memory, live ----------
+// The server samples every two seconds and keeps two minutes (/api/stats/history); this redraws from it every two
+// seconds while the page is visible. Each chart has two lines: the whole NAS, and this site.
+(() => {
+  const box = document.querySelector("[data-res-history]");
+  if (!box) return;
+  const NS = "http://www.w3.org/2000/svg";
+  const W = 640, H = 170, L = 36, R = 8, T = 8, B = 22;
+  const pw = W - L - R, ph = H - T - B;
+  const svgEl = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v)); return e; };
+  const status = document.querySelector("[data-res-status]");
+  /** A path through the points that have a value; a missing sample breaks the line. */
+  const pathOf = (pts, key, x0, span) => {
+    let d = "", pen = false;
+    for (const p of pts) {
+      const v = p[key];
+      if (v === null || v === undefined) { pen = false; continue; }
+      const x = L + ((p.t - x0) / span) * pw;
+      const y = T + ph - (v / 100) * ph;
+      d += `${pen ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
+      pen = true;
+    }
+    return d;
+  };
+  function draw(name, pts, nasKey, appKey, span, now) {
+    const svg = box.querySelector(`[data-res-svg="${name}"]`);
+    const x0 = now - span;
+    const nodes = [];
+    for (const v of [0, 25, 50, 75, 100]) {
+      const y = T + ph - (v / 100) * ph;
+      nodes.push(svgEl("line", { class: `res-grid${v === 0 ? " is-base" : ""}`, x1: L, x2: W - R, y1: y, y2: y }));
+      const t = svgEl("text", { class: "res-tick", x: L - 6, y: y + 3.5, "text-anchor": "end" });
+      t.textContent = `${v}%`;
+      nodes.push(t);
+    }
+    for (const [s, anchor] of [[span, "start"], [span / 2, "middle"], [0, "end"]]) {
+      const t = svgEl("text", { class: "res-tick", x: L + ((span - s) / span) * pw, y: H - 5, "text-anchor": anchor });
+      t.textContent = s ? `${s >= 60 ? `${s / 60} min` : `${s} s`} ago` : "now";
+      nodes.push(t);
+    }
+    const nas = pathOf(pts, nasKey, x0, span);
+    const app = pathOf(pts, appKey, x0, span);
+    if (nas) nodes.push(svgEl("path", { class: "res-line is-nas", d: nas }));
+    if (app) nodes.push(svgEl("path", { class: "res-line is-app", d: app }));
+    svg.replaceChildren(...nodes);
+    // The latest figures beside the chart's name.
+    const last = [...pts].reverse();
+    const latest = (k) => { const p = last.find((x) => x[k] !== null && x[k] !== undefined); return p ? `${Math.round(p[k])}%` : "…"; };
+    const now2 = box.querySelector(`[data-res-now="${name}"]`);
+    now2.replaceChildren();
+    for (const [cls, label, k] of [["is-nas", "NAS", nasKey], ["is-app", "Site", appKey]]) {
+      const s = document.createElement("span");
+      s.className = cls;
+      s.textContent = `${label} ${latest(k)}`;
+      now2.appendChild(s);
+    }
+    svg.setAttribute("aria-label", `${name === "cpu" ? "CPU" : "Memory"} use over the last two minutes: the NAS is at ${latest(nasKey)}, this site at ${latest(appKey)}`);
+  }
+  let timer = 0, failures = 0;
+  async function tick() {
+    timer = 0;
+    if (!document.hidden) {
+      try {
+        const r = await fetch("/api/stats/history", { credentials: "same-origin", headers: { Accept: "application/json" } });
+        if (!r.ok) throw new Error(String(r.status));
+        const h = await r.json();
+        const pts = h.points || [];
+        const now = pts.length ? pts[pts.length - 1].t : Math.floor(Date.now() / 1000);
+        draw("cpu", pts, "nasCpu", "appCpu", h.seconds || 120, now);
+        draw("mem", pts, "nasMem", "appMem", h.seconds || 120, now);
+        if (status) status.textContent = pts.length < 3 ? "Gathering the first samples…" : "";
+        failures = 0;
+      } catch {
+        failures++;
+        if (status) status.textContent = "The figures could not be fetched; trying again.";
+      }
+    }
+    timer = window.setTimeout(tick, failures ? Math.min(30000, 2000 * 2 ** failures) : 2000);
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { window.clearTimeout(timer); tick(); } });
+  tick();
+})();
+
 // ---------- Admin → Claude settings: show the picture-model settings only when Claude reads pictures ----------
 (() => {
   const mode = document.querySelector("[data-image-mode]");
@@ -835,8 +918,7 @@ if (current) current.scrollIntoView({ block: "center" });
       const h3 = Object.assign(document.createElement("h3"), { textContent: "Claude API spend" });
       const dl3 = document.createElement("dl");
       dl3.className = "res-dl";
-      const usd = Number(sp.usd) || 0;
-      row(dl3, `Last ${sp.minutes} minutes`, `${sp.amount} (US$${usd.toFixed(usd < 0.1 ? 3 : 2)})`);
+      row(dl3, `Last ${sp.minutes} minutes`, `${sp.amount} (US dollars)`);
       row(dl3, "Calls to Claude", String(sp.calls));
       extra.push(h3, dl3);
     }

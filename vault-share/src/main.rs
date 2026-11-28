@@ -134,6 +134,8 @@ async fn run() -> anyhow::Result<()> {
     // Sources added in the background: resume what was running, then start the worker.
     handlers::batches::recover(&state).await;
     tokio::spawn(worker::supervise(state.clone()));
+    // The rolling two minutes of CPU and memory use shown on the admin page.
+    tokio::spawn(stats::keep_history(state.clone()));
 
     // Housekeeping: expire sessions, prune audit log (180 days) and throttle state.
     let bg = state.clone();
@@ -145,8 +147,6 @@ async fn run() -> anyhow::Result<()> {
                 tracing::error!("session cleanup failed: {e:#}");
             }
             let _ = bg.db.prune_audit(180 * 86_400).await;
-            // Keep the dollar-to-pound rate for the spend chart fresh (asks at most twice a day).
-            ingest::refresh_rate(&bg, false).await;
             handlers::batches::prune(&bg).await;
             bg.limiter.prune();
         }
@@ -219,6 +219,7 @@ fn router(state: AppState) -> Router {
         .route("/v/{id}/api/graph/presets", post(graph_h::save_preset))
         .route("/v/{id}/api/graph/presets/{pid}", axum::routing::delete(graph_h::delete_preset))
         .route("/api/stats", get(stats::stats))
+        .route("/api/stats/history", get(stats::history))
         .route("/v/{id}/api/practice/meta", get(practice_h::meta))
         .route("/v/{id}/api/practice/hub", get(practice_h::hub))
         .route("/v/{id}/api/practice/papers", post(practice_h::add_paper))
@@ -261,7 +262,6 @@ fn router(state: AppState) -> Router {
         .route("/admin/vaults/{id}/papers", get(practice_h::papers_page))
         .route("/vaults/new", get(admin::new_vault_form))
         .route("/admin/microsidian", post(ingest::save_settings))
-        .route("/admin/spend-rate", post(ingest::save_rate))
         .route("/v/{id}/graph", get(vaults::graph_page))
         .route("/v/{id}/graph.json", get(vaults::graph_json))
         .route("/v/{id}/n/{*path}", get(vaults::note))

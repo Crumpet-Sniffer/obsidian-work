@@ -230,7 +230,7 @@ pub async fn dashboard(
         .chain(practice_prompts)
         .collect(),
     };
-    let spend = crate::spend::view(&st.db, ingest::usd_gbp(&st.db).await?).await?;
+    let spend = crate::spend::view(&st.db).await?;
     Ok(render(&AdminPage { page: PageCtx::for_user(&user), csrf: user.csrf.clone(), users, vaults, audit, ms, spend }))
 }
 

@@ -1,7 +1,7 @@
 //! What calls to Claude cost: pricing per model, and the daily spend chart on the admin page.
 //!
 //! Costs are worked out from the token counts in each reply and Anthropic's list prices (US dollars), stored
-//! in millionths of a dollar, and shown in pounds at the exchange rate an admin sets. They are estimates:
+//! in millionths of a dollar, and shown in dollars, as Anthropic charges. They are estimates:
 //! the invoice from Anthropic is what is actually charged.
 
 use crate::db::{now, Db};
@@ -53,16 +53,17 @@ pub fn cost_micro_usd(answered_by: &str, asked: &str, t: Tokens) -> i64 {
     usd_per_million.round() as i64 // dollars-per-million times tokens is already millionths of a dollar
 }
 
-pub fn gbp(micro_usd: i64, rate: f64) -> f64 {
-    micro_usd as f64 / 1_000_000.0 * rate
+/// Millionths of a dollar as dollars.
+pub fn usd(micro_usd: i64) -> f64 {
+    micro_usd as f64 / 1_000_000.0
 }
 
-/// "£1.23", or three decimals for amounts under 10p so small sums do not all read "£0.00".
-pub fn fmt_gbp(v: f64) -> String {
+/// "$1.23", or three decimals for amounts under 10 cents so small sums do not all read "$0.00".
+pub fn fmt_usd(v: f64) -> String {
     if v > 0.0 && v < 0.10 {
-        format!("£{v:.3}")
+        format!("${v:.3}")
     } else {
-        format!("£{v:.2}")
+        format!("${v:.2}")
     }
 }
 
@@ -87,9 +88,6 @@ pub struct SpendView {
     pub calls_week: i64,
     pub calls_month: i64,
     pub calls_all: i64,
-    pub rate: String,
-    pub rate_manual: bool,
-    pub rate_note: String,
     pub chart_svg: String,
     pub days: Vec<Day>,
     pub models: Vec<ModelRow>,
@@ -128,12 +126,53 @@ fn nice_ceiling(v: f64) -> f64 {
 
 fn axis_label(v: f64, top: f64) -> String {
     if top < 0.1 {
-        format!("£{v:.3}")
+        format!("${v:.3}")
     } else if top < 10.0 {
-        format!("£{v:.2}")
+        format!("${v:.2}")
     } else {
-        format!("£{v:.0}")
+        format!("${v:.0}")
     }
+}
+
+/// An SVG path through the points as a smooth curve (monotone cubic interpolation, Fritsch–Carlson): it passes
+/// through every point and never overshoots between two of them, so a quiet day stays on the baseline.
+fn smooth_path(pts: &[(f64, f64)]) -> String {
+    let n = pts.len();
+    if n == 0 {
+        return String::new();
+    }
+    let mut d = format!("M{:.1},{:.1}", pts[0].0, pts[0].1);
+    if n == 1 {
+        return d;
+    }
+    // Slopes between neighbours, then a tangent at each point that keeps the curve monotone.
+    let secant: Vec<f64> = (0..n - 1).map(|i| (pts[i + 1].1 - pts[i].1) / (pts[i + 1].0 - pts[i].0)).collect();
+    let mut m = vec![0.0; n];
+    m[0] = secant[0];
+    m[n - 1] = secant[n - 2];
+    for i in 1..n - 1 {
+        m[i] = if secant[i - 1] * secant[i] <= 0.0 { 0.0 } else { (secant[i - 1] + secant[i]) / 2.0 };
+    }
+    for i in 0..n - 1 {
+        if secant[i] == 0.0 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+            continue;
+        }
+        let (a, b) = (m[i] / secant[i], m[i + 1] / secant[i]);
+        let h = a * a + b * b;
+        if h > 9.0 {
+            let t = 3.0 / h.sqrt();
+            m[i] = t * a * secant[i];
+            m[i + 1] = t * b * secant[i];
+        }
+    }
+    for i in 0..n - 1 {
+        let ((x0, y0), (x1, y1)) = (pts[i], pts[i + 1]);
+        let dx = (x1 - x0) / 3.0;
+        d += &format!("C{:.1},{:.1} {:.1},{:.1} {x1:.1},{y1:.1}", x0 + dx, y0 + m[i] * dx, x1 - dx, y1 - m[i + 1] * dx);
+    }
+    d
 }
 
 /// A line of spend per day, drawn on the server so the page needs no chart library. Only numbers and fixed
@@ -149,23 +188,20 @@ fn chart(first_day: i64, amounts: &[f64], calls: &[i64]) -> String {
     let base = top + ph;
     let point = |i: usize| (left + slot * (i as f64 + 0.5), base - ph * amounts[i] / ceil);
     let mut s = format!(
-        r#"<svg class="spend-chart" viewBox="0 0 {w} {h}" role="img" aria-label="Estimated API spend per day in pounds, last {DAYS} days" data-spend-chart>"#
+        r#"<svg class="spend-chart" viewBox="0 0 {w} {h}" role="img" aria-label="Estimated API spend per day in US dollars, last {DAYS} days" data-spend-chart>"#
     );
-    // Recessive grid: four lines, labelled in pounds.
+    // Recessive grid: four lines, labelled in dollars.
     for i in 0..=4 {
         let frac = i as f64 / 4.0;
         let y = base - ph * frac;
         s += &format!(r#"<line class="grid{}" x1="{left}" x2="{:.1}" y1="{y:.1}" y2="{y:.1}"/>"#, if i == 0 { " base" } else { "" }, w - right);
         s += &format!(r#"<text class="tick" x="{:.1}" y="{:.1}" text-anchor="end">{}</text>"#, left - 8.0, y + 4.0, axis_label(ceil * frac, ceil));
     }
-    // The line, with a faint wash beneath it down to the baseline.
-    let line: String = (0..amounts.len())
-        .map(|i| {
-            let (x, y) = point(i);
-            format!("{}{x:.1},{y:.1}", if i == 0 { "M" } else { "L" })
-        })
-        .collect();
-    let (x_first, x_last) = (point(0).0, point(amounts.len() - 1).0);
+    // The line, with a faint wash beneath it down to the baseline. It is a smooth curve through every day's
+    // figure that never overshoots: it does not dip below zero or rise above a peak between two days.
+    let pts: Vec<(f64, f64)> = (0..amounts.len()).map(point).collect();
+    let line = smooth_path(&pts);
+    let (x_first, x_last) = (pts[0].0, pts[pts.len() - 1].0);
     s += &format!(r#"<path class="area" d="{line}L{x_last:.1},{base:.1}L{x_first:.1},{base:.1}Z"/>"#);
     s += &format!(r#"<path class="line" d="{line}"/>"#);
     // One column per day carries the hover: a guide, a marker on the line, and the figures.
@@ -176,7 +212,7 @@ fn chart(first_day: i64, amounts: &[f64], calls: &[i64]) -> String {
         let tip = format!(
             "{} · {} · {} call{}",
             day_label(day),
-            fmt_gbp(amounts[i]),
+            fmt_usd(amounts[i]),
             calls[i],
             if calls[i] == 1 { "" } else { "s" }
         );
@@ -193,8 +229,7 @@ fn chart(first_day: i64, amounts: &[f64], calls: &[i64]) -> String {
     s
 }
 
-pub async fn view(db: &Db, rate_info: crate::handlers::ingest::Rate) -> anyhow::Result<SpendView> {
-    let rate = rate_info.value;
+pub async fn view(db: &Db) -> anyhow::Result<SpendView> {
     let today = now().div_euclid(86_400);
     let first = today - (DAYS - 1);
     let daily = db.usage_by_day(first * 86_400).await?;
@@ -206,32 +241,29 @@ pub async fn view(db: &Db, rate_info: crate::handlers::ingest::Rate) -> anyhow::
             calls[(day - first) as usize] = n;
         }
     }
-    let amounts: Vec<f64> = micro.iter().map(|m| gbp(*m, rate)).collect();
+    let amounts: Vec<f64> = micro.iter().map(|m| usd(*m)).collect();
     let sum = |from: usize| -> f64 { amounts[from..].iter().sum() };
     let (all_micro, all_calls) = db.usage_total().await?;
     let models = db
         .usage_by_model(first * 86_400)
         .await?
         .into_iter()
-        .map(|(model, cost, n)| ModelRow { model, calls: n, amount: fmt_gbp(gbp(cost, rate)) })
+        .map(|(model, cost, n)| ModelRow { model, calls: n, amount: fmt_usd(usd(cost)) })
         .collect();
     Ok(SpendView {
-        today: fmt_gbp(amounts[DAYS as usize - 1]),
-        week: fmt_gbp(sum(DAYS as usize - 7)),
-        month: fmt_gbp(sum(0)),
-        all_time: fmt_gbp(gbp(all_micro, rate)),
+        today: fmt_usd(amounts[DAYS as usize - 1]),
+        week: fmt_usd(sum(DAYS as usize - 7)),
+        month: fmt_usd(sum(0)),
+        all_time: fmt_usd(usd(all_micro)),
         calls_today: calls[DAYS as usize - 1],
         calls_week: calls[DAYS as usize - 7..].iter().sum(),
         calls_month: calls.iter().sum(),
         calls_all: all_calls,
-        rate: format!("{rate}"),
-        rate_manual: rate_info.manual,
-        rate_note: rate_info.note,
         chart_svg: chart(first, &amounts, &calls),
         days: (0..DAYS as usize)
             .rev()
             .filter(|i| calls[*i] > 0)
-            .map(|i| Day { label: day_label(first + i as i64), amount: fmt_gbp(amounts[i]), calls: calls[i] })
+            .map(|i| Day { label: day_label(first + i as i64), amount: fmt_usd(amounts[i]), calls: calls[i] })
             .collect(),
         models,
         any: all_calls > 0,
@@ -264,8 +296,23 @@ mod tests {
         assert_eq!(nice_ceiling(0.0), 1.0);
         assert_eq!(nice_ceiling(0.37), 0.5);
         assert_eq!(nice_ceiling(12.0), 20.0);
-        assert_eq!(fmt_gbp(0.0), "£0.00");
-        assert_eq!(fmt_gbp(0.0221), "£0.022");
-        assert_eq!(fmt_gbp(3.456), "£3.46");
+        assert_eq!(fmt_usd(0.0), "$0.00");
+        assert_eq!(fmt_usd(0.0221), "$0.022");
+        assert_eq!(fmt_usd(3.456), "$3.46");
+    }
+
+    #[test]
+    fn smooth_line_stays_in_range() {
+        // A flat run, a spike and back: the curve's control points never go below the baseline or above the peak.
+        let pts = [(0.0, 100.0), (10.0, 100.0), (20.0, 20.0), (30.0, 100.0), (40.0, 100.0)];
+        let d = smooth_path(&pts);
+        assert!(d.starts_with("M0.0,100.0"));
+        let ys: Vec<f64> = d
+            .split(|c| c == 'C' || c == ' ')
+            .filter_map(|p| p.split(',').nth(1))
+            .filter_map(|y| y.parse().ok())
+            .collect();
+        assert!(ys.iter().all(|y| (20.0..=100.0).contains(y)), "{d}");
+        assert_eq!(smooth_path(&[(1.0, 2.0)]), "M1.0,2.0");
     }
 }
