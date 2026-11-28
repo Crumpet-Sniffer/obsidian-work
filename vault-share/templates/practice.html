@@ -3,43 +3,70 @@
 {% block head %}<script src="/static/practice.js?v={{ page.asset_v }}" defer></script>{% endblock %}
 {% block content %}
 {% let section = "practice" %}{% include "_vaultnav.html" %}
-<div class="page-head">
-  <h1>Practice and revision</h1>
-  {% if is_admin %}<div class="btn-row"><a class="button" href="/admin/vaults/{{ vault_id }}/papers">Manage past papers</a></div>{% endif %}
-</div>
-<div class="practice" data-practice data-vault="{{ vault_id }}" data-csrf="{{ csrf }}" data-configured="{% if configured %}1{% else %}0{% endif %}" data-max-file="{{ max_file_mb }}" data-admin="{% if is_admin %}1{% else %}0{% endif %}">
+<div class="practice pr-shell" data-practice data-vault="{{ vault_id }}" data-csrf="{{ csrf }}" data-configured="{% if configured %}1{% else %}0{% endif %}" data-max-file="{{ max_file_mb }}" data-admin="{% if is_admin %}1{% else %}0{% endif %}">
+  <!-- The sections of Practice: a sidebar on a wide screen, one scrolling strip on a narrow one. Each tab's group
+       name is read out with it (aria-describedby). -->
+  <nav class="pr-nav" aria-label="Practice">
+    <h1 class="pr-nav-title">Practice</h1>
+    <div class="pr-nav-tabs" role="tablist" aria-label="Practice sections" aria-orientation="vertical">
+    <div class="pr-nav-group" role="presentation">
+      <button type="button" role="tab" data-tab="today" aria-selected="true"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg><span>Today</span></button>
+    </div>
+    <div class="pr-nav-group" role="presentation">
+      <span class="pr-nav-label" id="pr-group-test" aria-hidden="true">Test yourself</span>
+      <button type="button" role="tab" data-tab="questions" aria-selected="false" aria-describedby="pr-group-test"><svg class="ic" aria-hidden="true"><use href="#i-quiz"/></svg><span>Quiz creator</span></button>
+      <button type="button" role="tab" data-tab="hub" aria-selected="false" aria-describedby="pr-group-test"><svg class="ic" aria-hidden="true"><use href="#i-archive"/></svg><span>Past paper questions</span></button>
+      <button type="button" role="tab" data-tab="retrieval" aria-selected="false" aria-describedby="pr-group-test"><svg class="ic" aria-hidden="true"><use href="#i-doc-search"/></svg><span>Retrieval</span></button>
+    </div>
+    <div class="pr-nav-group" role="presentation">
+      <span class="pr-nav-label" id="pr-group-revise" aria-hidden="true">Revise</span>
+      <button type="button" role="tab" data-tab="cards" aria-selected="false" aria-describedby="pr-group-revise"><svg class="ic" aria-hidden="true"><use href="#i-cards"/></svg><span>Flashcards</span></button>
+      <button type="button" role="tab" data-tab="guides" aria-selected="false" aria-describedby="pr-group-revise"><svg class="ic" aria-hidden="true"><use href="#i-doc"/></svg><span>Study guides</span></button>
+      <button type="button" role="tab" data-tab="mindmaps" aria-selected="false" aria-describedby="pr-group-revise"><svg class="ic" aria-hidden="true"><use href="#i-mindmap"/></svg><span>Mind maps</span></button>
+    </div>
+    <div class="pr-nav-group" role="presentation">
+      <span class="pr-nav-label" id="pr-group-improve" aria-hidden="true">Improve</span>
+      <button type="button" role="tab" data-tab="ask" aria-selected="false" aria-describedby="pr-group-improve"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg><span>Ask Claude</span></button>
+      <button type="button" role="tab" data-tab="coach" aria-selected="false" aria-describedby="pr-group-improve"><svg class="ic" aria-hidden="true"><use href="#i-target"/></svg><span>Exam coach</span></button>
+      <button type="button" role="tab" data-tab="history" aria-selected="false" aria-describedby="pr-group-improve"><svg class="ic" aria-hidden="true"><use href="#i-chart"/></svg><span>My marks</span></button>
+    </div>
+    </div>
+    {% if is_admin %}<a class="pr-nav-admin" href="/admin/vaults/{{ vault_id }}/papers"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg><span>Manage past papers</span></a>{% endif %}
+  </nav>
+  <div class="pr-main">
   {% if !configured %}
   <p class="alert error">Questions, flashcards, mind maps, Ask Claude and the coach need Claude, and no Anthropic API key is set. {% if is_admin %}Add one under <a href="/admin#microsidian">Admin → Claude settings</a>.{% else %}Ask an admin to add one.{% endif %}</p>
   {% endif %}
-  <!-- The tabs in three groups by what they are for. Each tab's group name is read out with it (aria-describedby). -->
-  <nav class="pr-tabs" role="tablist" aria-label="Practice">
-    <div class="pr-tab-group" role="presentation">
-      <span class="pr-tab-group-name" id="pr-group-revise">Revision resources</span>
-      <div class="pr-tab-group-tabs" role="presentation">
-        <button type="button" role="tab" data-tab="cards" aria-selected="false" aria-describedby="pr-group-revise" title="Flashcards Claude makes from your notes">Flashcards</button>
-        <button type="button" role="tab" data-tab="guides" aria-selected="false" aria-describedby="pr-group-revise" title="Study guides, briefings, cheat sheets and glossaries written from your notes">Study guides</button>
-        <button type="button" role="tab" data-tab="mindmaps" aria-selected="false" aria-describedby="pr-group-revise" title="Mind maps of how the ideas in your notes connect">Mind maps</button>
-        <button type="button" role="tab" data-tab="retrieval" aria-selected="false" aria-describedby="pr-group-revise" title="Open one of your documents and find the answers in it, then see what you remember without it">Retrieval</button>
-      </div>
-    </div>
-    <div class="pr-tab-group" role="presentation">
-      <span class="pr-tab-group-name" id="pr-group-test">Testing</span>
-      <div class="pr-tab-group-tabs" role="presentation">
-        <button type="button" role="tab" data-tab="hub" aria-selected="false" aria-describedby="pr-group-test" title="Every question from the past papers, and the ones Claude wrote, to filter and practise">Past paper questions</button>
-        <button type="button" role="tab" data-tab="questions" aria-selected="true" aria-describedby="pr-group-test" title="Claude writes exam-style questions from your notes and marks your answers">Quiz creator</button>
-      </div>
-    </div>
-    <div class="pr-tab-group" role="presentation">
-      <span class="pr-tab-group-name" id="pr-group-improve">Improve</span>
-      <div class="pr-tab-group-tabs" role="presentation">
-        <button type="button" role="tab" data-tab="ask" aria-selected="false" aria-describedby="pr-group-improve" title="Chat with Claude about your notes: explanations, follow-up questions and help">Ask Claude</button>
-        <button type="button" role="tab" data-tab="coach" aria-selected="false" aria-describedby="pr-group-improve" title="How you are doing, and what to revise next">Exam coach</button>
-        <button type="button" role="tab" data-tab="history" aria-selected="false" aria-describedby="pr-group-improve" title="Everything you have answered, with your marks and feedback">My marks</button>
-      </div>
-    </div>
-  </nav>
 
-  <section class="card pr-panel" data-panel="questions" role="tabpanel">
+  <section class="pr-panel pr-today" data-panel="today" role="tabpanel" aria-labelledby="pr-today-h">
+    <header class="pr-today-head">
+      <p class="pr-eyebrow" data-today-date></p>
+      <h2 id="pr-today-h" data-today-greeting>Today</h2>
+    </header>
+    <div class="pr-next" data-today-next aria-live="polite"></div>
+    <div class="pr-tiles" data-today-tiles></div>
+    <div class="pr-today-grid">
+      <section class="pr-block" aria-labelledby="pr-recent-h">
+        <div class="pr-block-head"><h2 id="pr-recent-h">Recent work</h2><button type="button" class="linklike small" data-goto="history">All my marks</button></div>
+        <div data-today-recent></div>
+      </section>
+      <section class="pr-block" aria-labelledby="pr-focus-h">
+        <div class="pr-block-head"><h2 id="pr-focus-h">Topics to work on</h2><button type="button" class="linklike small" data-goto="coach">Exam coach</button></div>
+        <div data-today-topics></div>
+      </section>
+    </div>
+    <section class="pr-block" aria-labelledby="pr-quick-h">
+      <h2 id="pr-quick-h" class="pr-block-title">Start something new</h2>
+      <div class="pr-quick">
+        <button type="button" class="pr-quick-item" data-goto="questions"><svg class="ic" aria-hidden="true"><use href="#i-quiz"/></svg><strong>Quiz me</strong><span class="small muted">Questions from your notes, marked by Claude</span></button>
+        <button type="button" class="pr-quick-item" data-goto="hub"><svg class="ic" aria-hidden="true"><use href="#i-archive"/></svg><strong>Past paper questions</strong><span class="small muted">Real exam questions to filter and practise</span></button>
+        <button type="button" class="pr-quick-item" data-goto="cards" data-goto-new><svg class="ic" aria-hidden="true"><use href="#i-cards"/></svg><strong>Make flashcards</strong><span class="small muted">A deck on the topics you choose</span></button>
+        <button type="button" class="pr-quick-item" data-goto="ask"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg><strong>Ask Claude</strong><span class="small muted">Explanations from your notes</span></button>
+      </div>
+    </section>
+  </section>
+
+  <section class="card pr-panel" data-panel="questions" role="tabpanel" hidden>
     <h2>Quiz creator</h2>
     <p class="small muted">Claude writes questions from your notes on the topics you choose, then marks your answers: choice and fill-in questions straight away, written answers against a mark scheme. With past papers added, it copies how your exams word questions and mark schemes.</p>
     <form class="pr-form" data-gen-form>
@@ -141,8 +168,14 @@
     </div>
   </section>
 
-  <section class="card pr-panel" data-panel="cards" role="tabpanel" hidden>
-    <h2>Make flashcards</h2>
+  <section class="pr-panel pr-library" data-panel="cards" role="tabpanel" hidden>
+    <div class="pr-lib-head">
+      <div><h2>Flashcards</h2><p class="small muted">Decks Claude writes from your notes. Turn them over, mark what you know, and go back over the rest.</p></div>
+      <button type="button" class="primary" data-sheet-open="cards"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>New deck</button>
+    </div>
+    <div data-decks></div>
+    <dialog class="pr-sheet" data-sheet="cards" aria-labelledby="pr-sheet-cards-h">
+    <div class="pr-sheet-head"><h2 id="pr-sheet-cards-h">New flashcard deck</h2><button type="button" class="icon-btn" data-sheet-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
     <form class="pr-form" data-cards-form>
       <fieldset class="pr-choices" data-choices="card-topics"><legend>Topics</legend></fieldset>
       <div class="pr-row">
@@ -159,23 +192,28 @@
       <label class="pr-focus"><span>What should they focus on? <span class="muted small">(optional)</span></span>
         <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: definitions of key terms, or the laws and their penalties"></textarea>
       </label>
-      <div class="pr-actions"><button type="submit" class="primary">Make the cards</button></div>
+      <div class="pr-actions pr-sheet-actions"><button type="button" data-sheet-close>Cancel</button><button type="submit" class="primary">Make the cards</button></div>
     </form>
-    <div data-decks></div>
+    </dialog>
   </section>
 
-  <section class="card pr-panel" data-panel="guides" role="tabpanel" hidden>
-    <h2>Write me a study guide</h2>
-    <p class="small muted">Claude writes revision material from your notes on the topics you choose. Read it here, listen to it, save it into the vault as a note, or download it.</p>
+  <section class="pr-panel pr-library" data-panel="guides" role="tabpanel" hidden>
+    <div class="pr-lib-head">
+      <div><h2>Study guides</h2><p class="small muted">Revision material Claude writes from your notes. Read it here, listen to it, save it into the vault as a note, or download it.</p></div>
+      <button type="button" class="primary" data-sheet-open="guides"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>New study guide</button>
+    </div>
+    <div data-reports></div>
+    <dialog class="pr-sheet" data-sheet="guides" aria-labelledby="pr-sheet-guides-h">
+    <div class="pr-sheet-head"><h2 id="pr-sheet-guides-h">New study guide</h2><button type="button" class="icon-btn" data-sheet-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
     <form class="pr-form" data-report-form>
       <fieldset class="pr-choices"><legend>What to write</legend><div class="pr-kinds" data-report-kinds role="radiogroup" aria-label="What to write"></div></fieldset>
       <fieldset class="pr-choices" data-choices="report-topics"><legend>Topics</legend></fieldset>
       <label class="pr-focus"><span data-report-focus-label>Anything to add? <span class="muted small">(optional)</span></span>
         <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: keep it to one page, or write it for a 12-mark question"></textarea>
       </label>
-      <div class="pr-actions"><button type="submit" class="primary">Write it</button></div>
+      <div class="pr-actions pr-sheet-actions"><button type="button" data-sheet-close>Cancel</button><button type="submit" class="primary">Write it</button></div>
     </form>
-    <div data-reports></div>
+    </dialog>
   </section>
 
   <section class="card pr-panel pr-report" data-panel="report" role="tabpanel" hidden>
@@ -196,17 +234,23 @@
     <article class="prose pr-report-body" data-report-body></article>
   </section>
 
-  <section class="card pr-panel" data-panel="mindmaps" role="tabpanel" hidden>
-    <h2>Make me a mind map</h2>
-    <p class="small muted">Claude maps the main themes of your notes on the topics you choose and how their ideas branch out. Open and close the branches, click an idea to ask Claude to explain it, and save the map into the vault as a note.</p>
+  <section class="pr-panel pr-library" data-panel="mindmaps" role="tabpanel" hidden>
+    <div class="pr-lib-head">
+      <div><h2>Mind maps</h2><p class="small muted">How the ideas in your notes branch out. Open and close the branches, click an idea to ask Claude to explain it, and save the map into the vault.</p></div>
+      <button type="button" class="primary" data-sheet-open="mindmaps"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>New mind map</button>
+    </div>
+    <div data-maps></div>
+    <dialog class="pr-sheet" data-sheet="mindmaps" aria-labelledby="pr-sheet-maps-h">
+    <div class="pr-sheet-head"><h2 id="pr-sheet-maps-h">New mind map</h2><button type="button" class="icon-btn" data-sheet-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+    <p class="small muted">Choose one or a few topics: a map of the whole course is too big to be useful.</p>
     <form class="pr-form" data-map-form>
       <fieldset class="pr-choices" data-choices="map-topics"><legend>Topics</legend></fieldset>
       <label class="pr-focus"><span>What should it focus on? <span class="muted small">(optional)</span></span>
         <textarea name="focus" rows="2" maxlength="1000" placeholder="For example: the causes and effects only, or how the laws relate to each other"></textarea>
       </label>
-      <div class="pr-actions"><button type="submit" class="primary">Make the mind map</button></div>
+      <div class="pr-actions pr-sheet-actions"><button type="button" data-sheet-close>Cancel</button><button type="submit" class="primary">Make the mind map</button></div>
     </form>
-    <div data-maps></div>
+    </dialog>
   </section>
 
   <section class="card pr-panel pr-mapview" data-panel="mindmap" role="tabpanel" hidden>
@@ -256,29 +300,37 @@
   </section>
 
   <section class="card pr-panel pr-ask" data-panel="ask" role="tabpanel" hidden>
-    <h2>Ask Claude</h2>
-    <p class="small muted">Ask Claude about your notes: to explain an idea, go over a question you got wrong, make sense of a mark scheme, or test you. Claude answers from your notes and links the ones it used. Only you can see this conversation.</p>
+    <div class="pr-panel-head">
+      <h2>Ask Claude</h2>
+      <p class="small muted">Explanations, help with a question you got wrong, or a mark scheme made clear. Claude answers from your notes and shows the ones it used.</p>
+    </div>
     <details class="pr-more pr-ask-scope">
       <summary>Which notes Claude reads <span class="muted small" data-ask-scope></span></summary>
       <fieldset class="pr-choices" data-choices="ask-topics"><legend class="sr-only">Topics</legend></fieldset>
       <p class="muted small">Choose none to let Claude read notes from across the whole vault.</p>
     </details>
     <div class="pr-convbar" data-conv>
-      <label class="pr-conv-pick">Conversation
-        <select data-conv-select></select>
-      </label>
-      <button type="button" data-conv-new>New conversation</button>
-      <button type="button" class="small danger" data-conv-delete hidden>Delete</button>
+      <button type="button" class="pr-conv-open" data-conv-open aria-haspopup="dialog"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg><span class="pr-conv-current" data-conv-current>New conversation</span><span class="pr-conv-count" data-conv-count></span></button>
+      <span class="pr-convbar-tools">
+        <button type="button" class="icon-btn is-danger" data-conv-delete hidden aria-label="Delete this conversation" title="Delete this conversation"><svg class="ic"><use href="#i-trash"/></svg></button>
+        <button type="button" class="pr-conv-new" data-conv-new><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>New</button>
+      </span>
     </div>
+    <dialog class="pr-sheet pr-conv-sheet" data-conv-sheet aria-label="Conversations">
+      <div class="pr-sheet-head"><h2>Conversations</h2><button type="button" class="icon-btn" data-conv-sheet-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+      <ul class="pr-conv-list" data-conv-list></ul>
+    </dialog>
     <div class="pr-chat-wrap">
       <div class="pr-chat" data-chat aria-live="polite"></div>
-      <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
-      <form class="pr-chat-form" data-chat-form>
-        <textarea name="message" rows="2" maxlength="8000" placeholder="Ask anything about your notes, or try: Explain this topic as if I were new to it"></textarea>
-        <div class="pr-actions">
-          <button type="submit" class="primary">Send</button>
-        </div>
-      </form>
+      <div class="pr-composer-dock">
+        <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
+        <form class="pr-chat-form pr-composer" data-chat-form>
+          <label class="sr-only" for="pr-msg-8000">Your message</label>
+          <textarea id="pr-msg-8000" name="message" rows="1" maxlength="8000" placeholder="Ask anything about your notes…"></textarea>
+          <button type="submit" class="primary pr-send" aria-label="Send" title="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-arrow-up"/></svg></button>
+        </form>
+        <p class="pr-composer-hint">Enter to send &middot; Shift+Enter for a new line &middot; Only you can see this conversation</p>
+      </div>
     </div>
   </section>
 
@@ -292,8 +344,11 @@
   </section>
 
   <section class="card pr-panel pr-coach" data-panel="coach" role="tabpanel" hidden>
-    <h2>Exam coach</h2>
-    <p class="small muted">Claude looks at everything you have answered here and your flashcards, tells you where you are losing marks, and what would help. Only you can see this conversation.</p>
+    <div class="pr-panel-head">
+      <h2>Exam coach</h2>
+      <p class="small muted">Claude looks at everything you have answered and your flashcards, tells you where you are losing marks, and what would help.</p>
+    </div>
+    <div class="pr-coach-summary" data-coach-summary></div>
     <div class="pr-tasks" data-coach-tasks hidden></div>
     <section class="pr-rag" data-rag aria-labelledby="pr-rag-h">
       <div class="pr-rag-bar">
@@ -302,37 +357,56 @@
         <span class="muted small" data-rag-when></span>
         <button type="button" class="small" data-rag-grade>Grade my topics</button>
       </div>
-      <p class="pr-rag-key small muted"><span class="pr-rag-key-item"><span class="pr-rag-dot is-red"></span>Red: losing marks</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-amber"></span>Amber: some way to go</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-green"></span>Green: secure</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-none"></span>Not graded yet</span></p>
-      <p class="small muted pr-rag-help">Choose a topic to do a retrieval quiz on it with your documents open.</p>
-      <ul class="pr-rag-list" data-rag-list></ul>
+      <ul class="pr-heat" data-rag-heat aria-label="Your topics by grade: choose one for a retrieval quiz on it"></ul>
+      <p class="pr-rag-key small muted"><span class="pr-rag-key-item"><span class="pr-rag-dot is-red"></span>Losing marks</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-amber"></span>Some way to go</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-green"></span>Secure</span><span class="pr-rag-key-item"><span class="pr-rag-dot is-none"></span>Not graded yet</span></p>
+      <details class="pr-more pr-rag-more">
+        <summary>Every topic in detail, and your marks broken down</summary>
+        <p class="small muted pr-rag-help">Choose a topic to do a retrieval quiz on it with your documents open.</p>
+        <ul class="pr-rag-list" data-rag-list></ul>
+        <div class="pr-stats" data-stats></div>
+      </details>
     </section>
-    <div class="pr-stats" data-stats></div>
     <div class="pr-convbar" data-conv>
-      <label class="pr-conv-pick">Conversation
-        <select data-conv-select></select>
-      </label>
-      <button type="button" data-conv-new>New conversation</button>
-      <button type="button" class="small danger" data-conv-delete hidden>Delete</button>
+      <button type="button" class="pr-conv-open" data-conv-open aria-haspopup="dialog"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg><span class="pr-conv-current" data-conv-current>New conversation</span><span class="pr-conv-count" data-conv-count></span></button>
+      <span class="pr-convbar-tools">
+        <button type="button" class="icon-btn is-danger" data-conv-delete hidden aria-label="Delete this conversation" title="Delete this conversation"><svg class="ic"><use href="#i-trash"/></svg></button>
+        <button type="button" class="pr-conv-new" data-conv-new><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>New</button>
+      </span>
     </div>
+    <dialog class="pr-sheet pr-conv-sheet" data-conv-sheet aria-label="Conversations">
+      <div class="pr-sheet-head"><h2>Conversations</h2><button type="button" class="icon-btn" data-conv-sheet-close aria-label="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+      <ul class="pr-conv-list" data-conv-list></ul>
+    </dialog>
     <div class="pr-chat-wrap">
       <div class="pr-chat" data-chat aria-live="polite"></div>
-      <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
-      <form class="pr-chat-form" data-chat-form>
-        <textarea name="message" rows="2" maxlength="4000" placeholder="Ask anything, or try: Where am I losing the most marks?"></textarea>
-        <div class="pr-actions">
-          <button type="submit" class="primary">Send</button>
-        </div>
-      </form>
+      <div class="pr-composer-dock">
+        <div class="pr-suggest" data-chat-suggest aria-label="Suggested questions"></div>
+        <form class="pr-chat-form pr-composer" data-chat-form>
+          <label class="sr-only" for="pr-msg-4000">Your message</label>
+          <textarea id="pr-msg-4000" name="message" rows="1" maxlength="4000" placeholder="Ask the coach anything, or try: Where am I losing the most marks?"></textarea>
+          <button type="submit" class="primary pr-send" aria-label="Send" title="Send (Enter)"><svg class="ic" aria-hidden="true"><use href="#i-arrow-up"/></svg></button>
+        </form>
+        <p class="pr-composer-hint">Enter to send &middot; Shift+Enter for a new line &middot; Only you can see this conversation</p>
+      </div>
     </div>
   </section>
 
   <section class="card pr-panel pr-quiz" data-panel="quiz" role="tabpanel" hidden>
-    <div class="pr-quiz-head">
-      <button type="button" class="linklike" data-quiz-back>← Back</button>
-      <h2 data-quiz-title></h2>
-      <span class="pr-score" data-quiz-score></span>
+    <div class="pr-quiz-bar" data-quiz-bar>
+      <div class="pr-quiz-head">
+        <button type="button" class="icon-btn pr-back" data-quiz-back aria-label="Back" title="Back"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+        <h2 data-quiz-title></h2>
+        <span class="pr-quiz-meta">
+          <span class="small muted" data-quiz-bar-progress></span>
+          <span class="pr-timer small" data-quiz-timer hidden title="Time on this quiz"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg><span data-quiz-clock>0:00</span></span>
+          <span class="pr-score" data-quiz-score></span>
+          <button type="button" class="primary small" data-quiz-handin hidden>Hand in</button>
+        </span>
+      </div>
+      <div class="pr-quiz-track" aria-hidden="true"><span data-quiz-track></span></div>
     </div>
     <p class="muted" data-quiz-status aria-live="polite"></p>
+    <div class="pr-steps" data-quiz-steps hidden></div>
     <div class="pr-compare" data-quiz-compare hidden></div>
     <div class="pr-quiz-split" data-quiz-split>
     <aside class="pr-resource" data-quiz-resource hidden aria-label="The document for this quiz">
@@ -348,32 +422,39 @@
     </aside>
     <div class="pr-quiz-main">
     <div class="pr-summary" data-quiz-summary hidden></div>
+    <div class="pr-actions pr-after" data-quiz-after hidden>
+      <button type="button" class="primary" data-quiz-recall hidden>Now try a mini quiz without the document</button>
+      <button type="button" class="primary" data-quiz-followup>Make me a follow-up quiz</button>
+      <button type="button" data-quiz-missed>Retake the ones I lost marks on</button>
+      <button type="button" data-quiz-again>Try them all again</button>
+      <button type="button" data-quiz-coach>Ask the coach about this</button>
+    </div>
     <div class="pr-quiz-tools" data-quiz-tools hidden>
       <div class="pr-seg" role="group" aria-label="How to show the questions">
         <button type="button" data-quiz-mode="all" aria-pressed="true">All on one page</button>
         <button type="button" data-quiz-mode="one" aria-pressed="false">One at a time</button>
       </div>
       <span class="muted small" data-quiz-progress></span>
+      <span class="pr-quiz-tools-end">
+        <button type="button" class="linklike small" data-quiz-fold="open" hidden>Open every question</button>
+        <button type="button" class="linklike small" data-quiz-fold="close" hidden>Close them all</button>
+      </span>
     </div>
     <ol class="pr-dots" data-quiz-dots hidden></ol>
     <form data-quiz-form>
       <ol class="pr-questions" data-quiz-items></ol>
+      <div class="pr-dock" data-quiz-dock>
       <div class="pr-actions pr-step" data-quiz-step hidden>
         <button type="button" data-quiz-prev>&larr; Previous</button>
+        <span class="small muted pr-step-keys">&larr; &rarr; move &middot; A&ndash;F choose an option</span>
         <button type="button" data-quiz-next>Next &rarr;</button>
       </div>
       <div class="pr-actions" data-quiz-actions>
         <button type="submit" class="primary" data-quiz-submit>Hand in for marking</button>
       </div>
+      </div>
     </form>
     </div>
-    </div>
-    <div class="pr-actions" data-quiz-after hidden>
-      <button type="button" class="primary" data-quiz-recall hidden>Now try a mini quiz without the document</button>
-      <button type="button" class="primary" data-quiz-followup>Make me a follow-up quiz</button>
-      <button type="button" data-quiz-missed>Retake the ones I lost marks on</button>
-      <button type="button" data-quiz-again>Try them all again</button>
-      <button type="button" data-quiz-coach>Ask the coach about this</button>
     </div>
   </section>
 
@@ -399,8 +480,15 @@
       <label>Topic <input name="topic" maxlength="120"></label>
       <div class="pr-actions"><button type="submit" class="primary">Save the card</button><button type="button" data-card-editor-cancel>Cancel</button></div>
     </form>
-    <div class="pr-card" data-card tabindex="0" role="button" aria-label="Flashcard: press to turn over">
-      <div class="pr-card-face" data-card-face></div>
+    <div class="pr-card-stage">
+      <div class="pr-card" data-card tabindex="0" role="button" aria-label="Flashcard: press to turn over">
+        <div class="pr-card-inner" data-card-inner>
+          <div class="pr-card-side is-front" data-card-front></div>
+          <div class="pr-card-side is-back" data-card-back></div>
+        </div>
+        <span class="pr-swipe-tag is-again" aria-hidden="true">Again</span>
+        <span class="pr-swipe-tag is-known" aria-hidden="true">Got it</span>
+      </div>
       <div class="pr-card-hint muted small" data-card-hint>Click or press Space to turn over</div>
     </div>
     <div class="pr-actions pr-card-actions">
@@ -410,12 +498,13 @@
       <button type="button" data-card-next>Next →</button>
     </div>
     <div class="pr-actions pr-card-tools">
-      <label class="check small"><input type="checkbox" data-card-only-again> Only cards marked Again</label>
+      <label class="pr-card-set small">Study <select data-card-set><option value="due">Cards due now</option><option value="all">Every card</option><option value="again">Cards marked Again</option></select></label>
       <button type="button" data-card-shuffle>Shuffle</button>
       <button type="button" data-card-restart>Start again</button>
       <button type="button" data-card-download>Download</button>
     </div>
-    <p class="small muted pr-keys">Keys: Space or Enter turns over &middot; &larr; &rarr; move &middot; 1 Again &middot; 2 Got it</p>
+    <p class="small muted pr-keys">Space turns over &middot; &larr; &rarr; move &middot; 1 Again &middot; 2 Got it &middot; on a phone, swipe right for Got it and left for Again</p>
   </section>
+  </div>
 </div>
 {% endblock %}

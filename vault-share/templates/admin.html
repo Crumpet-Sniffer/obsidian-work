@@ -102,6 +102,10 @@
         <label>Images folder <input name="attachments" value="{{ ms.attachments }}" maxlength="200" required></label>
         <label>Topics folder <input name="topics" value="{{ ms.topics }}" maxlength="200" required></label>
         <label>Topics index note <input name="topics_index" value="{{ ms.topics_index }}" maxlength="100"></label>
+        <label class="span-2">Topic notes to leave out of Practice
+          <textarea name="practice_skip" rows="4" maxlength="12000" spellcheck="false">{{ ms.practice_skip }}</textarea>
+          <span class="small muted">One name per line; <code>*</code> matches any text (<code>*Resources</code> leaves out every topic note ending in “Resources”). These are notes such as command words or exam technique, which are not topics to revise or be graded on.</span>
+        </label>
         <label>Ingest folder <input name="ingest" value="{{ ms.ingest }}" maxlength="200" required></label>
         <label>Smallest image to keep (KB) <input name="image_min_kb" value="{{ ms.image_min_kb }}" inputmode="numeric" pattern="[0-9]+" maxlength="6" required></label>
       </div>
@@ -180,7 +184,7 @@
       <td class="muted small nowrap">{{ u.last_login.trim_end_matches(" UTC") }}</td>
       <td class="actions">
         {% if !u.is_me %}
-        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Reset the password for {{ u.username }}? They will be signed out.">
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Reset the password for {{ u.username }}? They will be signed out." data-confirm-title="Reset password" data-confirm-ok="Reset password">
           <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="reset">
           <button type="submit">Reset password</button>
         </form>
@@ -189,12 +193,12 @@
           {% if u.disabled %}<input type="hidden" name="action" value="enable"><button type="submit">Enable</button>
           {% else %}<input type="hidden" name="action" value="disable"><button type="submit">Disable</button>{% endif %}
         </form>
-        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Change the role of {{ u.username }}?">
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Change the role of {{ u.username }}?" data-confirm-title="Change role" data-confirm-ok="Change role">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           {% if u.is_admin %}<input type="hidden" name="action" value="make_user"><button type="submit">Make user</button>
           {% else %}<input type="hidden" name="action" value="make_admin"><button type="submit">Make admin</button>{% endif %}
         </form>
-        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Delete the account {{ u.username }}? This cannot be undone.">
+        <form method="post" action="/admin/users/{{ u.id }}" class="inline" data-confirm="Delete the account {{ u.username }}? This cannot be undone." data-confirm-title="Delete account" data-confirm-ok="Delete account">
           <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="delete">
           <button type="submit" class="danger">Delete</button>
         </form>

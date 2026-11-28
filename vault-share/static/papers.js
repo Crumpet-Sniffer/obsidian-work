@@ -163,7 +163,7 @@
         const b = make("button", "danger", "Remove");
         b.type = "button";
         b.addEventListener("click", async () => {
-          if (!window.confirm(`Remove "${p.title}" and its ${plural(p.questions, "question")} from the hub? Answers already given stay in everyone's history.`)) return;
+          if (!(await window.UI.confirm({ title: "Remove this paper?", body: `“${p.title}” and its ${plural(p.questions, "question")} are taken out of the hub. Answers already given stay in everyone's history.`, confirm: "Remove paper", danger: true }))) return;
           try { await api("DELETE", `practice/papers/${p.id}`); await loadMeta(); } catch (e) { alertBox(box, e.message); }
         });
         act.appendChild(b);
@@ -302,7 +302,7 @@
         const b = make("button", "danger", "Remove");
         b.type = "button";
         b.addEventListener("click", async () => {
-          if (!window.confirm(`Remove "${d.title}"? Build the guides again afterwards to leave it out of them.`)) return;
+          if (!(await window.UI.confirm({ title: "Remove this document?", body: `“${d.title}” is removed. Build the guides again afterwards to leave it out of them.`, confirm: "Remove document", danger: true }))) return;
           try { await api("DELETE", `practice/docs/${d.id}`); await loadMeta(); } catch (e) { alertBox(box, e.message); }
         });
         act.appendChild(b);
@@ -386,7 +386,7 @@
   });
   const wipeAnswers = $("[data-wipe-answers]");
   $("[data-wipe-answers-go]", wipeAnswers).addEventListener("click", async (e) => {
-    if (!window.confirm("Delete every answer anyone has given in this vault, with the marks and feedback? Everyone's history and exam coach results start again from nothing. This cannot be undone.")) return;
+    if (!(await window.UI.confirm({ title: "Delete every answer in this vault?", body: "Every answer anyone has given here is deleted, with the marks and feedback. Everyone's history and exam coach results start again from nothing.\n\nThis cannot be undone.", confirm: "Delete every answer", danger: true }))) return;
     const btn = e.currentTarget;
     btn.disabled = true;
     try {

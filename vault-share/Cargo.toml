@@ -12,6 +12,7 @@ argon2 = { version = "0.5", features = ["std"] }
 askama = "0.14"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.22"
+futures-util = { version = "0.3", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 percent-encoding = "2"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

@@ -54,6 +54,19 @@ const PROMPT_MAX: usize = 20_000;
 const IMAGE_CALLS_PER_HOUR: usize = 6000;
 
 const GUIDANCE_MAX: usize = 4000;
+/// Topic notes left out of Practice unless an admin changes the list: exam-skills and resource notes, which are
+/// not topics a student revises (one per line; * matches any text, case does not matter).
+pub const DEFAULT_PRACTICE_SKIP: &str = "Command Words\nExam Technique\nExam Skills\nLong Answer Questions\nRevision Techniques\n*Resources";
+
+/// The list as saved: one name per line, no blank lines, no control characters, at most 100 names.
+fn clean_skip_list(v: &str) -> String {
+    v.lines()
+        .map(|l| l.trim().chars().filter(|c| !c.is_control()).take(120).collect::<String>())
+        .filter(|l| !l.is_empty())
+        .take(100)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 /// Calls to Claude one account may make per hour. High enough for a zip of a whole course's files.
 const CALLS_PER_HOUR: usize = 500;
 /// Room for the reply (thinking included). The browser's own figure is replaced with this. Planning a large
@@ -76,6 +89,8 @@ pub struct Settings {
     pub attachments: String,
     pub topics: String,
     pub topics_index: String,
+    /// Topic notes left out of Practice (one name per line; * matches any text), such as exam-skills notes.
+    pub practice_skip: String,
     pub image_min_kb: u32,
     pub folder_indexes: bool,
     /// "ocr" or "claude".
@@ -165,6 +180,7 @@ impl Settings {
             attachments: get("ms.attachments", "_Attachments/images"),
             topics: get("ms.topics", "Topics"),
             topics_index: get("ms.topics_index", "Topics - Index"),
+            practice_skip: get("ms.practice_skip", DEFAULT_PRACTICE_SKIP),
             image_min_kb: s.get("ms.image_min_kb").and_then(|v| v.parse().ok()).unwrap_or(30),
             folder_indexes: s.get("ms.folder_indexes").map(|v| v == "1").unwrap_or(true),
             image_mode: s.get("ms.image_mode").filter(|m| IMAGE_MODES.iter().any(|(id, _)| id == m)).cloned().unwrap_or_else(|| "ocr".into()),
@@ -222,6 +238,8 @@ pub struct SettingsForm {
     topics: String,
     #[serde(default)]
     topics_index: String,
+    #[serde(default)]
+    practice_skip: Option<String>,
     image_min_kb: String,
     folder_indexes: Option<String>,
     #[serde(default)]
@@ -365,6 +383,12 @@ pub async fn save_settings(
         .filter(|(_, p)| !p.is_empty())
         .map(|(n, _)| *n)
         .collect();
+    // Missing from the form (an older page): keep what is saved.
+    let practice_skip: String = match &f.practice_skip {
+        Some(v) => clean_skip_list(v),
+        None => Settings::load(&st.db).await.map(|s| s.practice_skip).unwrap_or_else(|_| DEFAULT_PRACTICE_SKIP.to_string()),
+    };
+
     let topics_index: String = f.topics_index.trim().chars().filter(|c| !c.is_control()).take(100).collect();
     let guidance: String = f.guidance.replace("\r\n", "\n").chars().filter(|c| !c.is_control() || *c == '\n').take(GUIDANCE_MAX).collect();
 
@@ -377,6 +401,7 @@ pub async fn save_settings(
         ("ms.attachments", folder(&f.attachments, "Images folder")?),
         ("ms.topics", folder(&f.topics, "Topics folder")?),
         ("ms.topics_index", topics_index),
+        ("ms.practice_skip", practice_skip),
         ("ms.image_min_kb", image_min_kb.to_string()),
         ("ms.folder_indexes", if f.folder_indexes.is_some() { "1" } else { "0" }.to_string()),
         ("ms.image_mode", image_mode.clone()),

@@ -50,22 +50,44 @@
     });
   }
 
+  /**
+   * An error shown at the top of a form or panel. It stays until it is dismissed or the same place shows another,
+   * so a student who looked away still sees why something did not work.
+   */
   function alertBox(where, text, kind = "error") {
-    const p = make("p", `alert ${kind}`, text);
+    where.querySelectorAll(":scope > .alert.is-dismissable").forEach((x) => x.remove());
+    const p = make("div", `alert ${kind} is-dismissable`);
+    p.setAttribute("role", kind === "error" ? "alert" : "status");
+    const x = make("button", "alert-close");
+    x.type = "button";
+    x.setAttribute("aria-label", "Dismiss");
+    x.textContent = "×";
+    x.addEventListener("click", () => p.remove());
+    p.append(make("span", "", text), x);
     where.prepend(p);
-    setTimeout(() => p.remove(), 8000);
+    p.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
-  /** A short message at the bottom of the screen that goes away by itself. */
-  let toastTimer = 0;
-  function toast(text, kind = "ok") {
-    let t = document.querySelector(".pr-toast");
-    if (!t) { t = make("div", "pr-toast"); t.setAttribute("role", "status"); document.body.appendChild(t); }
-    t.textContent = text;
-    t.className = `pr-toast is-${kind} is-on`;
-    window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => t.classList.remove("is-on"), 3500);
+  /** A short message at the bottom of the screen that goes away by itself (the site's toasts, app.js). */
+  const toast = (text, kind = "ok", opts) => window.UI.toast(text, kind, opts);
+  /** The site's confirm dialog (app.js): resolves true or false. */
+  const ask = (opts) => window.UI.confirm(opts);
+
+  /** Grey placeholder rows while a list loads. */
+  function skeleton(where, rows = 3, { tall = false, grid = false } = {}) {
+    const ul = make("ul", `skel-list${grid ? " is-grid" : ""}`);
+    ul.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < rows; i++) {
+      const li = make("li", `skel-row${tall ? " is-tall" : ""}`);
+      li.append(make("span", "skel is-title"), make("span", "skel is-line"));
+      if (tall) li.append(make("span", "skel is-line"), make("span", "skel is-short"));
+      ul.appendChild(li);
+    }
+    where.appendChild(ul);
+    where.setAttribute("aria-busy", "true");
+    return ul;
   }
+  const doneLoading = (where) => where.removeAttribute("aria-busy");
 
   async function copyText(text) {
     try { await navigator.clipboard.writeText(text); toast("Copied."); } catch { toast("Could not copy: your browser blocked it.", "error"); }
@@ -124,7 +146,7 @@
   }
 
   // ---------- tabs ----------
-  const TABS = ["questions", "hub", "cards", "guides", "mindmaps", "retrieval", "ask", "history", "coach"];
+  const TABS = ["today", "questions", "hub", "cards", "guides", "mindmaps", "retrieval", "ask", "history", "coach"];
   // Views opened from a tab keep that tab highlighted.
   const PARENT = { quiz: null, study: "cards", report: "guides", mindmap: "mindmaps" };
   /** The tab named in the address (#hub, or #hub?years=2024 from a link with filters set). */
@@ -132,10 +154,13 @@
   function show(name) {
     if (name !== "report") stopListening();
     if (name !== "study") stopTimer();
-    if (name !== "quiz") clearResource();
+    if (name !== "quiz") { clearResource(); leaveQuiz(); }
+    // A quiz and a deck being studied fill the page: the sections step aside (Back returns to them).
+    host.classList.toggle("is-focus", name === "quiz" || name === "study");
     $$("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== name; });
-    const tab = TABS.includes(name) ? name : PARENT[name] !== undefined ? PARENT[name] || hashTab() : "";
+    const tab = TABS.includes(name) ? name : name === "quiz" ? quiz.from : PARENT[name] !== undefined ? PARENT[name] || hashTab() : "";
     $$("[data-tab]").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false"));
+    syncTabStops();
     if (TABS.includes(name) && location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
     if (name === "history") loadHistory();
     if (name === "cards") loadDecks();
@@ -145,26 +170,107 @@
     if (name === "mindmaps") loadMaps();
     if (name === "hub") loadHub();
     if (name === "retrieval") loadRetrieval();
+    if (name === "today") loadToday();
+    // On a narrow screen the sections are one scrolling strip: keep the chosen one in view.
+    const sel = $(`[data-tab="${tab}"]`);
+    if (sel && sel.scrollIntoView && getComputedStyle($(".pr-nav")).overflowX === "auto") sel.scrollIntoView({ block: "nearest", inline: "center" });
     window.scrollTo({ top: 0 });
   }
-  // Arrow keys move between the tabs (the tab pattern).
+  $$("[data-tab]").forEach((b) => {
+    const panel = $(`[data-panel="${b.dataset.tab}"]`);
+    b.id = `pr-tab-${b.dataset.tab}`;
+    if (!panel) return;
+    panel.id = panel.id || `pr-panel-${b.dataset.tab}`;
+    b.setAttribute("aria-controls", panel.id);
+    if (!panel.hasAttribute("aria-labelledby")) panel.setAttribute("aria-labelledby", b.id);
+  });
+  // Only the chosen tab is in the Tab order; arrow keys move between them.
+  const syncTabStops = () => $$("[data-tab]").forEach((b) => { b.tabIndex = b.getAttribute("aria-selected") === "true" ? 0 : -1; });
+  /** Something a screen reader should hear once (a stage of a long job), without moving focus. */
+  const liveNote = make("p", "sr-only");
+  liveNote.setAttribute("aria-live", "polite");
+  host.appendChild(liveNote);
+  const announce = (text) => { liveNote.textContent = ""; window.setTimeout(() => { liveNote.textContent = text; }, 50); };
+  // Arrow keys move between the tabs (the tab pattern): up and down in the sidebar, left and right in the strip.
   $("[role=tablist]").addEventListener("keydown", (e) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
     const tabs = $$("[data-tab]");
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;
     e.preventDefault();
-    const next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    const fwd = e.key === "ArrowRight" || e.key === "ArrowDown";
+    const next = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : (i + (fwd ? 1 : -1) + tabs.length) % tabs.length;
     tabs[next].focus();
     show(tabs[next].dataset.tab);
   });
-  window.addEventListener("hashchange", () => { if (TABS.includes(hashTab())) openFromHash(); });
+  // Back and forward move between sections and in and out of a quiz (#quiz/<id>).
+  window.addEventListener("hashchange", () => { if (TABS.includes(hashTab()) || hashTab().startsWith("quiz/")) openFromHash(); });
   $$("[data-tab]").forEach((b) => b.addEventListener("click", () => show(b.dataset.tab)));
+  // Shortcuts to a section (on Today): data-goto names it; data-goto-new also opens its "New …" sheet.
+  host.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-goto]");
+    if (!b) return;
+    show(b.dataset.goto);
+    if (b.hasAttribute("data-goto-new")) openSheet(b.dataset.goto);
+  });
+
+  /** A form that needs at least one topic ticked says so before asking the server. */
+  function hasTopics(form, picked) {
+    if (!meta || !meta.topics.length || picked.length) return true;
+    alertBox(form, "Choose at least one topic. The suggestions above pick the ones you most need to work on.");
+    return false;
+  }
+
+  // ---------- side sheets: the "New deck / guide / mind map" forms ----------
+  function openSheet(name) {
+    const d = $(`[data-sheet="${name}"]`);
+    if (!d || d.open) return;
+    d.classList.remove("is-closing");
+    d.showModal();
+    // The choice lists fold to the width they have, which they only have once shown.
+    $$(".pr-choice-list", d).forEach((l) => l.refold && l.refold());
+    ensureGrades();
+    const first = d.querySelector(".pr-chip input, textarea, select, input");
+    if (first) first.focus({ preventScroll: true });
+  }
+  function closeSheet(d) {
+    if (!d || !d.open) return;
+    d.classList.add("is-closing");
+    const done = () => { d.close(); d.classList.remove("is-closing"); };
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) done(); else setTimeout(done, 180);
+  }
+  $$("[data-sheet-open]").forEach((b) => b.addEventListener("click", () => openSheet(b.dataset.sheetOpen)));
+  $$("[data-sheet]").forEach((d) => {
+    $$("[data-sheet-close]", d).forEach((b) => b.addEventListener("click", () => closeSheet(d)));
+    d.addEventListener("cancel", (e) => { e.preventDefault(); closeSheet(d); });
+    // A click on the dimmed page beside the sheet closes it (a click on the sheet's own padding does not).
+    d.addEventListener("click", (e) => {
+      if (e.target !== d) return;
+      const r = d.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) closeSheet(d);
+    });
+  });
+  const sheetOf = (el) => el.closest("[data-sheet]");
 
   // ---------- choice groups with "Select all" ----------
   // values: [{value, label}]. Returns a function giving the ticked values.
   const FOLD = 12;
-  function choices(name, values, { checked = true, anyHint = "" } = {}) {
+  // The coach's grade for each topic (lower-case name → "red", "amber" or "green"), once known: the topic pickers
+  // offer the ones to work on. Fetched once, when a picker that offers them is first opened.
+  let topicGrades = null;
+  let gradesLoading = null;
+  const suggestDrawers = {};
+  function setGrades(topics) {
+    topicGrades = {};
+    for (const t of topics || []) if (t.grade) topicGrades[String(t.topic).toLowerCase()] = t.grade;
+    Object.values(suggestDrawers).forEach((f) => f());
+  }
+  function ensureGrades() {
+    if (topicGrades || gradesLoading) return;
+    gradesLoading = api("GET", "practice/coach").then((r) => setGrades(r.topics), () => {}).finally(() => { gradesLoading = null; });
+  }
+
+  function choices(name, values, { checked = true, anyHint = "", suggest = false } = {}) {
     const box = $(`[data-choices="${name}"]`);
     if (!box) return () => [];
     const legend = box.querySelector("legend");
@@ -224,7 +330,40 @@
     }
     top.append(count);
     sync();
-    box.append(top, list);
+    box.append(top);
+    // Quick picks from the coach's grades: the topics losing marks, or those and the ones with some way to go.
+    if (suggest) {
+      const row = make("div", "pr-topic-suggest");
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", "Suggested topics");
+      const tick = (want) => {
+        boxes.forEach((b) => { b.checked = want.has(b.value.toLowerCase()); });
+        sync();
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      suggestDrawers[name] = () => {
+        row.replaceChildren();
+        const g = topicGrades || {};
+        const red = values.filter((v) => g[String(v.value).toLowerCase()] === "red").map((v) => String(v.value).toLowerCase());
+        const amber = values.filter((v) => g[String(v.value).toLowerCase()] === "amber").map((v) => String(v.value).toLowerCase());
+        row.hidden = !red.length && !amber.length;
+        if (row.hidden) return;
+        row.appendChild(make("span", "small muted", "Suggested:"));
+        const pickBtn = (label, list, dot) => {
+          const b = make("button", "pr-suggest-pick small");
+          b.type = "button";
+          b.append(make("span", `pr-rag-dot is-${dot}`), document.createTextNode(` ${label} (${list.length})`));
+          b.addEventListener("click", () => tick(new Set(list)));
+          row.appendChild(b);
+        };
+        if (red.length) pickBtn("Topics losing marks", red, "red");
+        if (amber.length) pickBtn(red.length ? "Those and the amber ones" : "Amber topics", [...red, ...amber], "amber");
+      };
+      row.hidden = true;
+      box.append(row);
+      suggestDrawers[name]();
+    }
+    box.append(list);
     // A long list shows its first two rows (in a one-column list, its first 12), with a button for the rest,
     // instead of a box that scrolls. How many fit in two rows depends on the width, so it is worked out again
     // whenever the list changes size (including when its tab is first shown).
@@ -269,8 +408,8 @@
     pick.hubMarks = () => [];
     const years = [...new Set(meta.papers.map((p) => p.year).filter((y) => y > 0))].sort((a, b) => b - a);
     pick.hubYears = choices("hub-years", years.map((y) => ({ value: y, label: String(y) })), { checked: false });
-    pick.cardTopics = choices("card-topics", topics);
-    pick.reportTopics = choices("report-topics", topics);
+    pick.cardTopics = choices("card-topics", topics, { checked: false, suggest: true });
+    pick.reportTopics = choices("report-topics", topics, { checked: false, suggest: true });
     const specLabels = [...new Set(meta.profiles.flatMap((p) => p.fields.map((f) => f.label)))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     pick.hubSpec = choices("hub-spec", specLabels.map((l) => ({ value: l, label: l })), { checked: false });
     $("[data-facet-spec]").hidden = !specLabels.length;
@@ -282,7 +421,7 @@
     paperSel.value = [...paperSel.options].some((o) => o.value === keepPaper) ? keepPaper : "";
     $("[data-gen-paper-row]").hidden = !meta.profiles.length;
     genPaperChanged();
-    pick.mapTopics = choices("map-topics", topics);
+    pick.mapTopics = choices("map-topics", topics, { checked: false, suggest: true });
     pick.askTopics = choices("ask-topics", topics, { checked: false });
     askScope();
     drawBuilding();
@@ -343,17 +482,31 @@
   // Questions can be checked one by one before handing in (choice and fill-in at once, written ones by Claude),
   // shown all on one page or one at a time, and once marked there is a summary with follow-ups.
   const quiz = { id: null, data: null, poll: 0, t0: 0, at: 0, filter: "all", mode: "all" };
-  try { quiz.mode = localStorage.getItem("pr.quizMode") === "one" ? "one" : "all"; } catch { /* storage blocked */ }
+  // One question at a time suits a phone; a wider screen shows them all, unless the student chose otherwise.
+  quiz.mode = window.matchMedia("(max-width: 640px)").matches ? "one" : "all";
+  try { const saved = localStorage.getItem("pr.quizMode"); if (saved === "one" || saved === "all") quiz.mode = saved; } catch { /* storage blocked */ }
+  quiz.from = "";
+  quiz.clock = 0;
+  quiz.started = 0;
   const quizItems = $("[data-quiz-items]");
   const quizStatus = $("[data-quiz-status]");
 
-  async function openSession(id) {
+  /** Open a set of questions. It gets its own address (#quiz/<id>), so Back, reload and bookmarks find it. */
+  async function openSession(id, { fromAddress = false } = {}) {
+    if (!fromAddress && TABS.includes(hashTab())) quiz.from = hashTab();
+    if (!fromAddress && location.hash !== `#quiz/${id}`) history.pushState({ quiz: id }, "", `#quiz/${id}`);
+    show("quiz");
     quiz.id = id;
     quiz.data = null;
     quiz.at = 0;
     quiz.filter = "all";
     quiz.t0 = 0;
-    show("quiz");
+    quiz.started = 0;
+    stopQuizClock();
+    $("[data-quiz-steps]").hidden = true;
+    $("[data-quiz-handin]").hidden = true;
+    $("[data-quiz-bar-progress]").textContent = "";
+    $("[data-quiz-track]").style.width = "0";
     $("[data-quiz-title]").textContent = "Loading…";
     $("[data-quiz-score]").textContent = "";
     $("[data-quiz-summary]").hidden = true;
@@ -384,16 +537,28 @@
     else clearResource();
     drawCompare(s);
     const busy = s.status === "generating" || s.status === "marking";
+    const steps = $("[data-quiz-steps]");
     if (busy) {
       const t0 = quiz.t0 || (quiz.t0 = Date.now());
-      const secs = Math.round((Date.now() - t0) / 1000);
-      quizStatus.textContent = s.status === "generating"
-        ? `Claude is writing ${plural((s.settings && s.settings.count) || s.questions, "question")} from ${s.kind === "retrieval" || s.kind === "recall" ? "the document" : "your notes"}${s.settings && s.settings.fromBank ? ` to go with ${plural(s.settings.fromBank, "past paper question")}` : ""}… (${secs} s; this can take a minute or two, and you can leave this page)`
-        : `Marking your answers… (${secs} s)`;
+      const fromDoc = s.kind === "retrieval" || s.kind === "recall";
+      const n = (s.settings && s.settings.count) || s.questions;
+      quizStatus.textContent = "";
+      steps.hidden = false;
+      drawSteps(steps, s.status === "generating"
+        ? {
+          title: `Claude is writing ${plural(n, "question")}${s.settings && s.settings.fromBank ? ` to go with ${plural(s.settings.fromBank, "past paper question")}` : ""}`,
+          steps: [fromDoc ? "Reading the document" : "Reading your notes", "Writing the questions", "Writing the mark schemes", "Checking them over"],
+          at: [0, 6, 25, 50],
+          note: "This usually takes a minute or two. You can leave this page: the questions are saved here when they are ready.",
+        }
+        : { title: "Marking your answers", steps: ["Reading your answers", "Marking against the mark scheme", "Writing your feedback"], at: [0, 4, 15], note: "Written answers take longest: Claude checks each point of the mark scheme." }, t0);
       quiz.poll = window.setTimeout(refreshSession, 2000);
     } else {
       quiz.t0 = 0;
+      steps.hidden = true;
     }
+    $("[data-quiz-handin]").hidden = s.status !== "ready";
+    if (s.status === "ready") startQuizClock(); else stopQuizClock();
     if (s.status === "failed") {
       quizStatus.textContent = s.error || "This did not work. Try again.";
       ["[data-quiz-actions]", "[data-quiz-after]", "[data-quiz-tools]", "[data-quiz-dots]", "[data-quiz-step]"].forEach((x) => { $(x).hidden = true; });
@@ -406,8 +571,9 @@
       quizStatus.textContent = `${intro}${plural(s.items.length, "question")}, ${plural(marks, "mark")}. Check each answer as you go if you like, then hand ${s.items.length === 1 ? "it" : "them"} in for marking.${s.error ? ` ${s.error}` : ""}`;
     }
     if (s.status === "marked") {
-      quizStatus.textContent = s.error || "Marked. Your answers, the marks and the feedback are saved in History.";
-      $("[data-quiz-score]").textContent = `${s.score} / ${s.total} (${pct(s.score, s.total)}%)`;
+      // The summary shows the score; this line only says what is not obvious.
+      quizStatus.textContent = s.error || "";
+      $("[data-quiz-score]").textContent = `${s.score} / ${s.total}`;
     }
     if (s.status !== "marking" || !quizItems.children.length) renderItems(s);
     $("[data-quiz-actions]").hidden = s.status !== "ready";
@@ -476,9 +642,166 @@
     return true;
   }
 
+  // ----- the quiz bar: progress, a clock while answering
+  function drawBarProgress(answered, total) {
+    const s = quiz.data;
+    const ready = s && s.status === "ready";
+    $("[data-quiz-bar-progress]").textContent = ready ? `${answered} of ${total} answered` : "";
+    $("[data-quiz-track]").style.width = ready ? `${pct(answered, total)}%` : s && s.status === "marked" ? "100%" : "0";
+  }
+  function startQuizClock() {
+    if (quiz.clock) return;
+    quiz.started = quiz.started || Date.now();
+    $("[data-quiz-timer]").hidden = false;
+    const tick = () => {
+      const secs = Math.floor((Date.now() - quiz.started) / 1000);
+      $("[data-quiz-clock]").textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+    };
+    tick();
+    quiz.clock = window.setInterval(tick, 1000);
+  }
+  function stopQuizClock() {
+    window.clearInterval(quiz.clock);
+    quiz.clock = 0;
+    const t = $("[data-quiz-timer]");
+    if (t) t.hidden = true;
+  }
+  /** Leaving a quiz: no more checking on it, and the clock stops. */
+  function leaveQuiz() {
+    window.clearTimeout(quiz.poll);
+    stopQuizClock();
+    quiz.id = null;
+  }
+
+  /**
+   * What Claude is doing while the student waits: the stages of the job, the one it has probably reached (from how
+   * long it has taken so far), and how long that is. The job itself does not report its stage, so the last one is
+   * only reached when it is done.
+   */
+  function drawSteps(el, { title, steps, at, note }, t0) {
+    const secs = Math.round((Date.now() - t0) / 1000);
+    let cur = 0;
+    at.forEach((t, i) => { if (secs >= t) cur = i; });
+    el.replaceChildren();
+    const head = make("div", "pr-steps-head");
+    const spin = make("span", "pr-spinner");
+    spin.setAttribute("aria-hidden", "true");
+    head.append(spin, make("strong", "", title), make("span", "small muted pr-steps-time", secs < 60 ? `${secs} s` : `${Math.floor(secs / 60)} min ${secs % 60} s`));
+    const ol = make("ol", "pr-steps-list");
+    steps.forEach((t, i) => {
+      const li = make("li", i < cur ? "is-done" : i === cur ? "is-now" : "");
+      const mark = make("span", "pr-step-mark");
+      if (i < cur) mark.appendChild(svgIcon("i-check"));
+      li.append(mark, make("span", "", t));
+      if (i === cur) li.setAttribute("aria-current", "step");
+      ol.appendChild(li);
+    });
+    el.append(head, ol);
+    if (note) el.appendChild(make("p", "small muted", note));
+    const key = `${title}|${cur}`;
+    if (el.dataset.stage !== key) { el.dataset.stage = key; announce(`${title}. Step ${cur + 1} of ${steps.length}: ${steps[cur]}.`); }
+  }
+
+  /** A score as a ring that fills to its percentage. */
+  function scoreRing(p, cls) {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 44 44");
+    svg.setAttribute("class", `pr-ring ${cls}`);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `${p} per cent`);
+    const C = 2 * Math.PI * 19;
+    const circle = (c) => { const e = document.createElementNS(NS, "circle"); e.setAttribute("cx", "22"); e.setAttribute("cy", "22"); e.setAttribute("r", "19"); e.setAttribute("class", c); return e; };
+    const track = circle("pr-ring-track");
+    const fill = circle("pr-ring-fill");
+    fill.setAttribute("stroke-dasharray", `0 ${C}`);
+    requestAnimationFrame(() => requestAnimationFrame(() => fill.setAttribute("stroke-dasharray", `${(C * p) / 100} ${C}`)));
+    const label = document.createElementNS(NS, "text");
+    label.setAttribute("x", "22");
+    label.setAttribute("y", "22");
+    label.setAttribute("class", "pr-ring-text");
+    label.textContent = `${p}%`;
+    svg.append(track, fill, label);
+    return svg;
+  }
+
+  /**
+   * A written answer after marking, as the student wrote it, with the words that met a point of the mark scheme
+   * marked green and the words the marking said went wrong marked amber.
+   */
+  function quotedAnswer(text, evidence) {
+    const box = make("blockquote", "pr-answer");
+    const lower = text.toLowerCase();
+    const ranges = [];
+    const clean = (x) => String(x || "").replace(/^[\s"“”'‘’.…]+|[\s"“”'‘’.…]+$/g, "");
+    const place = (phrase, cls) => {
+      const q = clean(phrase);
+      if (q.length < 3) return;
+      let i = lower.indexOf(q.toLowerCase());
+      let len = q.length;
+      // A quote that was trimmed or joined with "…": find its opening words instead.
+      if (i < 0) {
+        const part = q.split(/…|\.\.\./)[0].trim().slice(0, 60);
+        if (part.length >= 12) { i = lower.indexOf(part.toLowerCase()); len = part.length; }
+      }
+      if (i < 0) return;
+      if (ranges.some((r) => i < r.end && i + len > r.start)) return;
+      ranges.push({ start: i, end: i + len, cls });
+    };
+    for (const e of evidence || []) {
+      if (e.met && e.evidence) place(e.evidence, "is-met");
+      if (!e.met && e.said) place(e.said, "is-said");
+    }
+    ranges.sort((a, b) => a.start - b.start);
+    let at = 0;
+    for (const r of ranges) {
+      if (r.start > at) box.appendChild(document.createTextNode(text.slice(at, r.start)));
+      const m = make("mark", r.cls, text.slice(r.start, r.end));
+      m.title = r.cls === "is-met" ? "This earned a mark" : "The marking picked this out as not right";
+      m.appendChild(make("span", "sr-only", r.cls === "is-met" ? " (earned a mark)" : " (marked as not right)"));
+      box.appendChild(m);
+      at = r.end;
+    }
+    if (at < text.length) box.appendChild(document.createTextNode(text.slice(at)));
+    if (!text.trim()) box.appendChild(make("span", "muted", "No answer was given."));
+    return box;
+  }
+
+  /** In a marked set, each question opens and closes; full-mark ones start closed. */
+  function makeFoldable(li, q, n) {
+    const st = stateOf(q);
+    li.classList.add("is-foldable");
+    const head = li.querySelector(".pr-q-head");
+    const btn = make("button", "icon-btn pr-fold");
+    btn.type = "button";
+    btn.appendChild(svgIcon("i-chev-down"));
+    const preview = make("p", "pr-q-preview small muted");
+    const tmp = make("div");
+    tmp.innerHTML = q.html;
+    const words = tmp.textContent.trim().replace(/\{\{\d+\}\}/g, "___").replace(/\s+/g, " ");
+    preview.textContent = words.length > 150 ? `${words.slice(0, 150).replace(/\s+\S*$/, "")}…` : words;
+    head.appendChild(btn);
+    head.after(preview);
+    const set = (open) => {
+      li.classList.toggle("is-collapsed", !open);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.setAttribute("aria-label", `${open ? "Close" : "Open"} question ${n + 1}`);
+    };
+    set(st !== "full");
+    btn.addEventListener("click", (e) => { e.stopPropagation(); set(li.classList.contains("is-collapsed")); });
+    head.addEventListener("click", (e) => { if (e.target.closest("a, button, input")) return; set(li.classList.contains("is-collapsed")); });
+    li._fold = set;
+  }
+  $$("[data-quiz-fold]").forEach((b) => b.addEventListener("click", () => {
+    const open = b.dataset.quizFold === "open";
+    $$(".pr-q.is-foldable", quizItems).forEach((li) => li._fold && li._fold(open));
+  }));
+
   function renderItems(s) {
     quizItems.replaceChildren();
     s.items.forEach((q, n) => quizItems.appendChild(renderItem(q, n, s)));
+    const marked = s.status === "marked" && s.items.length > 1;
+    $$("[data-quiz-fold]").forEach((b) => { b.hidden = !marked; });
   }
 
   function renderItem(q, n, s) {
@@ -543,6 +866,11 @@
       li.appendChild(list);
     } else if (q.type === "calc") {
       li.appendChild(calcBuilder(li, q, locked, ans));
+    } else if (locked && a && a.marks !== null && a.marks !== undefined) {
+      // Marked: the answer as written, with what earned marks picked out (no box to type in any more).
+      li.appendChild(quotedAnswer(ans.text || "", fb.evidence));
+      const w = String(ans.text || "").trim().split(/\s+/).filter(Boolean).length;
+      li.appendChild(make("span", "muted small pr-wc", plural(w, "word")));
     } else {
       const ta = make("textarea", "pr-written");
       ta.rows = Math.min(14, 3 + q.marks);
@@ -584,6 +912,7 @@
       li.appendChild(act);
     }
     if (a) li.appendChild(result(q, a, n));
+    if (s.status === "marked" && s.items.length > 1) makeFoldable(li, q, n);
     li.addEventListener("input", () => { if (quiz.mode === "one" || !$("[data-quiz-dots]").hidden) drawDots(); });
     li.addEventListener("change", () => drawDots());
     return li;
@@ -604,6 +933,7 @@
       li.replaceWith(fresh);
       layout();
       const r = fresh.querySelector(".pr-result");
+      if (r) r.classList.add("is-fresh");
       if (r) r.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (e) {
       toast(e.message, "error");
@@ -614,7 +944,7 @@
 
   /** Challenge the marking of one written answer: it is marked again and the new marking replaces the old. */
   async function challenge(q, btn) {
-    if (!window.confirm("Have Claude mark this answer again from scratch?\n\nIt checks your words against each point of the mark scheme. The new mark replaces this one, even if it is lower. You can challenge each answer once.")) return;
+    if (!(await ask({ title: "Challenge this mark?", body: "Claude marks this answer again from scratch, checking your words against each point of the mark scheme.\n\nThe new mark replaces this one, even if it is lower. You can challenge each answer once.", confirm: "Mark it again" }))) return;
     btn.disabled = true;
     btn.textContent = "Claude is marking it again…";
     try {
@@ -632,6 +962,8 @@
       if (li) li.replaceWith(fresh);
       renderSummary(quiz.data);
       layout();
+      const res2 = fresh.querySelector(".pr-result");
+      if (res2) res2.classList.add("is-fresh");
       const box = fresh.querySelector(".pr-remark");
       if (box) box.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (e) {
@@ -677,13 +1009,6 @@
       top.append(ch);
     }
     box.appendChild(top);
-    if (fb.remarked) {
-      const was = Number(fb.previous) || 0;
-      const d = make("div", `pr-remark small ${a.marks > was ? "is-up" : a.marks < was ? "is-down" : ""}`);
-      d.append(make("strong", "", a.marks === was ? `Marked again after your challenge: still ${a.marks} / ${a.total}.` : `Marked again after your challenge: ${was} → ${a.marks} / ${a.total}.`));
-      if (fb.note) d.append(" ", document.createTextNode(fb.note));
-      box.appendChild(d);
-    }
     if (fb.error) box.appendChild(make("p", "small", fb.error));
     if (q.type === "calc" && q.calc) {
       const c = q.calc;
@@ -702,8 +1027,15 @@
       }
       if (fb.method && !fb.right) box.appendChild(make("p", "small", "You used the right values but put them together the wrong way, so you get method marks only."));
     }
-    if (fb.feedbackHtml) { const d = make("div", "prose small"); d.innerHTML = fb.feedbackHtml; box.appendChild(d); }
-    else if (fb.feedback) box.appendChild(make("p", "small", fb.feedback));
+    if (fb.feedbackHtml) { const d = make("div", "prose small pr-feedback"); d.innerHTML = fb.feedbackHtml; box.appendChild(d); }
+    else if (fb.feedback) box.appendChild(make("p", "small pr-feedback", fb.feedback));
+    if (fb.remarked) {
+      const was = Number(fb.previous) || 0;
+      const d = make("div", `pr-remark small ${a.marks > was ? "is-up" : a.marks < was ? "is-down" : ""}`);
+      d.append(make("strong", "", a.marks === was ? `Marked again after your challenge: still ${a.marks} / ${a.total}.` : `Marked again after your challenge: ${was} → ${a.marks} / ${a.total}.`));
+      if (fb.note) d.append(" ", document.createTextNode(fb.note));
+      box.appendChild(d);
+    }
     // The question's own explanation of the right answer, labelled so it is not taken for the student's answer.
     if (q.explanation) {
       const why = make("p", "small pr-why");
@@ -795,6 +1127,7 @@
     if (!quiz.data || !quiz.data.items) return;
     const s = quiz.data;
     const one = quiz.mode === "one" && s.items.length > 1 && (s.status === "ready" || s.status === "marked");
+    quizItems.classList.toggle("is-one", one);
     $$("[data-quiz-mode]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.quizMode === quiz.mode ? "true" : "false"));
     quiz.at = Math.max(0, Math.min(quiz.at, s.items.length - 1));
     const lis = $$(".pr-q", quizItems);
@@ -836,6 +1169,7 @@
       dots.appendChild(li);
     });
     $("[data-quiz-progress]").textContent = s.status === "ready" ? `${answered} of ${s.items.length} answered${checked ? ` · ${checked} checked` : ""}` : "";
+    drawBarProgress(answered, s.items.length);
   }
 
   function goTo(i) {
@@ -862,6 +1196,11 @@
     if (e.target.closest && e.target.closest("textarea, input[type=text], input[type=search], select")) return;
     if (e.key === "ArrowRight" && quiz.data && quiz.at < quiz.data.items.length - 1) { e.preventDefault(); goTo(quiz.at + 1); }
     if (e.key === "ArrowLeft" && quiz.at > 0) { e.preventDefault(); goTo(quiz.at - 1); }
+    if (/^[a-f]$/i.test(e.key) && quiz.data && quiz.data.status === "ready") {
+      const li = $$(".pr-q", quizItems)[quiz.at];
+      const opt = li && li.querySelectorAll(".pr-option input:not(:disabled)")[e.key.toLowerCase().charCodeAt(0) - 97];
+      if (opt) { e.preventDefault(); opt.click(); opt.focus(); }
+    }
   });
 
   function renderSummary(s) {
@@ -873,7 +1212,15 @@
     s.items.forEach((q, i) => { const st = stateOf(q); if (groups[st]) groups[st].push(i); });
     const n = s.items.length;
     const head = make("div", "pr-summary-head");
-    head.append(make("span", "pr-summary-label", "Your score"), make("strong", "pr-summary-score", `${s.score} / ${s.total}`), make("span", "muted", `(${pct(s.score, s.total)}%)`));
+    const p = pct(s.score, s.total);
+    head.append(scoreRing(p, markClass(p)));
+    const words = make("div", "pr-summary-words");
+    words.append(
+      make("span", "pr-eyebrow", "Your score"),
+      make("strong", "pr-summary-score", `${s.score} / ${s.total} marks`),
+      make("span", "small muted", p >= 85 ? "Excellent work." : p >= 70 ? "A strong result." : p >= 40 ? "Some marks to win back below." : "Plenty to learn from: start with the questions below."),
+    );
+    head.appendChild(words);
     box.appendChild(head);
     const bar = make("div", "pr-sumbar");
     bar.setAttribute("role", "img");
@@ -938,7 +1285,7 @@
     if (!quiz.data || quiz.data.status !== "ready") return;
     const answers = collectAnswers();
     const empty = Object.values(answers).filter(isEmpty).length;
-    if (empty && !window.confirm(`${plural(empty, "question")} ${empty === 1 ? "has" : "have"} no answer. Hand in anyway?`)) return;
+    if (empty && !(await ask({ title: "Hand in with gaps?", body: `${plural(empty, "question")} ${empty === 1 ? "has" : "have"} no answer yet. Unanswered questions score nothing.`, confirm: "Hand in anyway", cancel: "Keep answering" }))) return;
     const btn = $("[data-quiz-submit]");
     btn.disabled = true;
     try {
@@ -955,7 +1302,11 @@
       btn.disabled = false;
     }
   });
-  $("[data-quiz-back]").addEventListener("click", () => { window.clearTimeout(quiz.poll); quiz.id = null; show(location.hash.slice(1) && TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "questions"); });
+  $("[data-quiz-back]").addEventListener("click", () => {
+    if (history.state && history.state.quiz) { history.back(); return; }
+    show(quiz.from || "today");
+  });
+  $("[data-quiz-handin]").addEventListener("click", () => $("[data-quiz-form]").requestSubmit());
   async function retake(ids, title) {
     try {
       const r = await api("POST", "practice/sessions", { question_ids: ids, title });
@@ -1156,8 +1507,9 @@
     const seq = ++hubState.seq;
     drawActive();
     hubMore.disabled = true;
+    if (!more && !hubList.children.length) { const li = make("li", "pr-skel-li"); skeleton(li, 4, { tall: true, grid: true }); hubList.appendChild(li); }
     let r;
-    try { r = await api("GET", `practice/hub?${q}`); } catch (e) { $("[data-hub-count]").textContent = e.message; hubMore.disabled = false; return; }
+    try { r = await api("GET", `practice/hub?${q}`); } catch (e) { $("[data-hub-count]").textContent = e.message; hubMore.disabled = false; hubList.querySelectorAll(".pr-skel-li").forEach((x) => x.remove()); return; }
     if (seq !== hubState.seq) return; // a newer search has started
     if (!more) {
       selected.clear();
@@ -1265,7 +1617,7 @@
     if (building.length) buildTimer = window.setTimeout(() => loadMeta().then(() => { if (!$("[data-panel=hub]").hidden) loadHub(); }, () => {}), 5000);
   }
   refreshBtn.addEventListener("click", async () => {
-    if (!window.confirm("Refresh the filters? Claude reads every past question in the hub again and sorts each by question type, specification area and topic. It takes a minute or two and uses your Claude credit.")) return;
+    if (!(await ask({ title: "Refresh the filters?", body: "Claude reads every past question in the hub again and sorts each by question type, specification area and topic.\n\nIt takes a minute or two and uses your Claude credit.", confirm: "Refresh filters" }))) return;
     refreshBtn.disabled = true;
     try {
       await api("POST", "practice/profiles/rebuild", {});
@@ -1298,11 +1650,14 @@
     e.preventDefault();
     const f = new FormData(cardsForm);
     const btn = cardsForm.querySelector("button[type=submit]");
+    if (!hasTopics(cardsForm, pick.cardTopics())) return;
     btn.disabled = true;
     try {
       await api("POST", "practice/decks", { topics: pick.cardTopics(), difficulty: f.get("difficulty"), count: Math.max(1, Math.min(60, parseInt(f.get("count"), 10) || 20)), focus: String(f.get("focus") || "") });
+      closeSheet(sheetOf(cardsForm));
+      cardsForm.querySelector("[name=focus]").value = "";
       loadDecks();
-      toast("Claude is writing the cards. They appear below when ready.");
+      toast("Claude is writing the cards. The deck appears here when it is ready.");
     } catch (err) { alertBox(cardsForm, err.message); } finally { btn.disabled = false; }
   });
 
@@ -1318,58 +1673,143 @@
     } catch (e) { toast(e.message, "error"); }
   }
 
+  // ---------- the libraries: decks, study guides and mind maps as cards ----------
+  /** A saved title without the count Claude's titles start with ("8 cards · Backups" → "Backups"). */
+  const shortTitle = (t) => String(t || "").replace(/^\d+\s+(cards?|questions?)\s+·\s+/i, "") || t;
+  function svgIcon(id) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "ic");
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", `#${id}`);
+    svg.appendChild(use);
+    return svg;
+  }
+  /**
+   * One item of a library: an icon, its title and details, a progress bar if it has one, the way in (open), and
+   * smaller tools (icon buttons). While Claude is still writing it, or if that failed, it says so instead.
+   */
+  function libCard({ icon, kicker = "", title, status, busy, error, meta, progress = null, open, tools = [] }) {
+    const li = make("li", `pr-lib-card is-${status}`);
+    const top = make("div", "pr-lib-top");
+    const badge = make("span", "pr-lib-icon");
+    badge.appendChild(svgIcon(icon));
+    top.appendChild(badge);
+    if (kicker) top.appendChild(make("span", "pr-lib-kicker", kicker));
+    li.appendChild(top);
+    const h = make("h3", "pr-lib-title", title);
+    h.title = title;
+    li.appendChild(h);
+    if (status === "generating") {
+      li.append(make("p", "small muted pr-lib-meta", busy), make("span", "skel pr-lib-busy"));
+    } else if (status === "failed") {
+      li.appendChild(make("p", "small pr-bad pr-lib-meta", error));
+    } else {
+      li.appendChild(make("p", "small muted pr-lib-meta", meta));
+      if (progress) {
+        const p = make("div", "pr-lib-progress");
+        const bar = make("span", "pr-bar");
+        const fill = make("span");
+        fill.style.width = `${pct(progress.done, progress.of)}%`;
+        bar.appendChild(fill);
+        p.append(bar, make("span", "small muted", progress.label));
+        li.appendChild(p);
+      }
+    }
+    const foot = make("div", "pr-lib-foot");
+    if (status === "ready" && open) {
+      const b = make("button", "pr-row-cta", open.label);
+      b.type = "button";
+      b.addEventListener("click", open.run);
+      foot.appendChild(b);
+    }
+    const tl = make("span", "pr-lib-tools");
+    for (const t of tools) {
+      if (status === "generating" || (t.ready && status !== "ready")) continue;
+      const b = make("button", `icon-btn${t.danger ? " is-danger" : ""}`);
+      b.type = "button";
+      b.title = t.label;
+      b.setAttribute("aria-label", `${t.label}: ${title}`);
+      b.appendChild(svgIcon(t.icon));
+      b.addEventListener("click", t.run);
+      tl.appendChild(b);
+    }
+    foot.appendChild(tl);
+    li.appendChild(foot);
+    return li;
+  }
+  /** What an empty library shows: what it is for, and the way to make the first one. */
+  function libEmpty({ icon, title, text, label, run }) {
+    const d = make("div", "pr-empty");
+    const badge = make("span", "pr-empty-icon");
+    badge.appendChild(svgIcon(icon));
+    const b = make("button", "primary", label);
+    b.type = "button";
+    b.addEventListener("click", run);
+    d.append(badge, make("h3", "", title), make("p", "small muted", text), b);
+    return d;
+  }
+
   async function loadDecks() {
     window.clearTimeout(decksTimer);
-    let r;
-    try { r = await api("GET", "practice/decks"); } catch { return; }
     const box = $("[data-decks]");
+    if (!box.children.length) skeleton(box, 3, { tall: true, grid: true });
+    let r;
+    try { r = await api("GET", "practice/decks"); } catch (e) { box.replaceChildren(make("p", "pr-bad small", e.message)); doneLoading(box); return; }
+    doneLoading(box);
     box.replaceChildren();
-    box.appendChild(make("h2", "pr-h2", "Your flashcard decks"));
-    if (!r.decks.length) { box.appendChild(make("p", "muted small", "No flashcards yet.")); return; }
-    const ul = make("ul", "pr-decks");
-    for (const d of r.decks) {
-      const li = make("li", "pr-deck");
-      const info = make("div");
-      info.append(make("strong", "", d.title));
-      const sub = d.status === "generating" ? "Claude is writing the cards…" : d.status === "failed" ? d.error || "These cards could not be made." : `${plural(d.cards, "card")} · ${d.known} known · ${when(d.createdAt)}`;
-      info.append(make("div", `small ${d.status === "failed" ? "pr-bad" : "muted"}`, sub));
-      if (d.status === "ready" && d.cards) {
-        const bar = make("span", "pr-bar pr-deck-bar");
-        const fill = make("span");
-        fill.style.width = `${pct(d.known, d.cards)}%`;
-        bar.appendChild(fill);
-        bar.title = `${d.known} of ${d.cards} known`;
-        info.append(bar);
-      }
-      li.appendChild(info);
-      const act = make("div", "pr-actions");
-      if (d.status === "ready") {
-        const b = make("button", "primary", "Study");
-        b.type = "button";
-        b.addEventListener("click", () => study(d.id));
-        const dl = make("button", "", "Download");
-        dl.type = "button";
-        dl.title = "Download as a CSV file (opens in Excel; imports into Anki or Quizlet)";
-        dl.addEventListener("click", () => downloadDeck(d.id));
-        act.append(b, dl);
-      }
-      if (d.status !== "generating") {
-        const x = make("button", "danger", "Delete");
-        x.type = "button";
-        x.addEventListener("click", async () => {
-          if (!window.confirm(`Delete "${d.title}"?`)) return;
-          try { await api("DELETE", `practice/decks/${d.id}`); loadDecks(); } catch (e) { toast(e.message, "error"); }
-        });
-        act.appendChild(x);
-      }
-      li.appendChild(act);
-      ul.appendChild(li);
+    $("[data-sheet-open=cards]").hidden = !r.decks.length;
+    if (!r.decks.length) {
+      box.appendChild(libEmpty({ icon: "i-cards", title: "No flashcard decks yet", text: "Choose a few topics and Claude writes a deck of cards from your notes: key terms, explanations or applying the ideas.", label: "Make your first deck", run: () => openSheet("cards") }));
+      return;
     }
-    box.appendChild(ul);
+    const grid = make("ul", "pr-lib-grid");
+    for (const d of r.decks) {
+      grid.appendChild(libCard({
+        icon: "i-cards",
+        title: shortTitle(d.title),
+        status: d.status,
+        busy: "Claude is writing the cards…",
+        error: d.error || "These cards could not be made.",
+        meta: `${plural(d.cards, "card")} · ${d.due ? `${d.due} due now` : "nothing due now"}`,
+        progress: d.status === "ready" && d.cards ? { done: d.known, of: d.cards, label: `${d.known} of ${d.cards} known` } : null,
+        open: { label: d.due ? `Review ${d.due}` : "Study", run: () => study(d.id) },
+        tools: [
+          { icon: "i-download", label: "Download as a CSV file (opens in Excel; imports into Anki or Quizlet)", run: () => downloadDeck(d.id), ready: true },
+          { icon: "i-trash", label: "Delete this deck", danger: true, run: async () => {
+            if (!(await ask({ title: "Delete this deck?", body: `“${d.title}” and your progress on it will be deleted.`, confirm: "Delete deck", danger: true }))) return;
+            try { await api("DELETE", `practice/decks/${d.id}`); loadDecks(); toast("Deck deleted."); } catch (e) { toast(e.message, "error"); }
+          } },
+        ],
+      }));
+    }
+    box.appendChild(grid);
     if (r.decks.some((d) => d.status === "generating")) decksTimer = window.setTimeout(loadDecks, 2500);
   }
 
-  const st = { deck: null, order: [], at: 0, back: false, saveTimer: 0, clock: 0, started: 0 };
+  const st = { deck: null, order: [], at: 0, back: false, saveTimer: 0, clock: 0, started: 0, done: false };
+
+  // ----- spaced repetition: each card sits in a box from 1 to 5, and the higher its box the longer until it is due
+  // again. "Got it" moves a card up a box; "Again" sends it back to box 1, due again in a few minutes.
+  const BOX_WAIT = [0, 10 * 60, 86400, 3 * 86400, 7 * 86400, 21 * 86400];
+  const nowSecs = () => Math.floor(Date.now() / 1000);
+  const srOf = (i) => (st.deck.progress.sr && st.deck.progress.sr[i]) || null;
+  const isDue = (i) => { const e = srOf(i); return !e || e.due <= nowSecs(); };
+  function schedule(i, known) {
+    const sr = st.deck.progress.sr || (st.deck.progress.sr = {});
+    const was = srOf(i);
+    const box = known ? Math.min(5, ((was && was.box) || 1) + 1) : 1;
+    sr[i] = { box, due: nowSecs() + BOX_WAIT[box] };
+  }
+  /** "in 3 days", "in 10 minutes", "now". */
+  function untilWords(t) {
+    const d = t - nowSecs();
+    if (d <= 60) return "now";
+    if (d < 3600) return `in ${plural(Math.round(d / 60), "minute")}`;
+    if (d < 86400) return `in ${plural(Math.round(d / 3600), "hour")}`;
+    return `in ${plural(Math.round(d / 86400), "day")}`;
+  }
+
   async function study(id) {
     let d;
     try { d = await api("GET", `practice/decks/${id}`); } catch (e) { toast(e.message, "error"); return; }
@@ -1377,63 +1817,108 @@
     st.deck.progress = d.progress || {};
     st.at = 0;
     st.back = false;
-    $("[data-card-only-again]").checked = false;
+    $("[data-study-title]").textContent = shortTitle(d.title);
+    // Cards due now come first; a deck with none due opens on every card.
+    const due = d.items.filter((_, i) => isDue(i)).length;
+    $("[data-card-set]").value = due ? "due" : "all";
     reorder(false);
-    $("[data-study-title]").textContent = d.title;
     closeEditor();
     show("study");
     drawCard();
     $("[data-card]").focus();
   }
   function reorder(shuffle) {
-    const onlyAgain = $("[data-card-only-again]").checked;
-    st.order = st.deck.items.map((_, i) => i).filter((i) => !onlyAgain || st.deck.progress[i] === "again");
+    const set = $("[data-card-set]").value;
+    st.order = st.deck.items.map((_, i) => i).filter((i) => set === "all" || (set === "again" ? st.deck.progress[i] === "again" : isDue(i)));
     if (shuffle) for (let i = st.order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [st.order[i], st.order[j]] = [st.order[j], st.order[i]]; }
     st.at = 0;
     st.back = false;
+    st.done = false;
+    drawSetCounts();
+  }
+  /** How many cards each choice of "Study" has. */
+  function drawSetCounts() {
+    const n = st.deck.items.length;
+    const due = st.deck.items.filter((_, i) => isDue(i)).length;
+    const again = st.deck.items.filter((_, i) => st.deck.progress[i] === "again").length;
+    const opts = $("[data-card-set]").options;
+    opts[0].textContent = `Cards due now (${due})`;
+    opts[1].textContent = `Every card (${n})`;
+    opts[2].textContent = `Cards marked Again (${again})`;
   }
   function drawCard() {
-    const face = $("[data-card-face]");
     const cardEl = $("[data-card]");
-    const vals = Object.values(st.deck.progress);
-    const known = vals.filter((v) => v === "known").length;
-    const again = vals.filter((v) => v === "again").length;
-    $("[data-study-score]").textContent = `${known} / ${st.deck.items.length} known`;
-    $("[data-card-counts]").textContent = `Got it: ${known} · Again: ${again} · Not seen: ${st.deck.items.length - known - again}`;
-    const has = st.order.length > 0;
+    const front = $("[data-card-front]");
+    const back = $("[data-card-back]");
+    const n = st.deck.items.length;
+    const known = st.deck.items.filter((_, i) => st.deck.progress[i] === "known").length;
+    const again = st.deck.items.filter((_, i) => st.deck.progress[i] === "again").length;
+    $("[data-study-score]").textContent = `${known} / ${n} known`;
+    $("[data-card-counts]").textContent = `Got it: ${known} · Again: ${again} · Not seen: ${n - known - again}`;
+    const has = st.order.length > 0 && !st.done;
     ["[data-card-edit]", "[data-card-delete]", "[data-card-explain]"].forEach((x) => { $(x).disabled = !has; });
+    $$(".pr-card-actions button").forEach((b) => { b.disabled = !has; });
+    cardEl.classList.remove("is-back", "is-gone-left", "is-gone-right");
     if (!has) {
-      face.textContent = "No cards here. Untick “Only cards marked Again” to see them all.";
-      cardEl.className = "pr-card";
+      // The end of a session, or nothing in this set: say when the next cards are due.
+      const next = st.deck.items.map((_, i) => srOf(i)).filter((e) => e && e.due > nowSecs()).sort((a, b) => a.due - b.due)[0];
+      const set = $("[data-card-set]").value;
+      const title = st.done ? (set === "due" ? "That is every card due now" : "End of the deck") : set === "due" ? "Nothing is due now" : "No cards here";
+      const text = st.done
+        ? `${known} of ${n} cards are marked Got it.${next ? ` The next card is due ${untilWords(next.due)}.` : ""}`
+        : set === "due" ? `${next ? `The next card is due ${untilWords(next.due)}. ` : ""}You can still go through every card.` : "Choose another set of cards to study.";
+      const end = make("div", "pr-card-end");
+      end.append(make("strong", "", title), make("span", "small muted", text));
+      if (set !== "all") {
+        const b = make("button", "pr-row-cta small", "Study every card");
+        b.type = "button";
+        b.addEventListener("click", (e) => { e.stopPropagation(); $("[data-card-set]").value = "all"; reorder(false); drawCard(); });
+        end.appendChild(b);
+      }
+      front.replaceChildren(end);
+      back.replaceChildren();
+      cardEl.classList.add("is-empty");
+      $("[data-card-hint]").textContent = "";
       return;
     }
+    cardEl.classList.remove("is-empty");
     const i = st.order[st.at];
     const c = st.deck.items[i];
-    face.replaceChildren(
-      make("div", "pr-card-meta muted small", `${st.at + 1} of ${st.order.length}${c.topic ? ` · ${c.topic}` : ""}${st.deck.progress[i] ? ` · ${st.deck.progress[i] === "known" ? "Got it" : "Again"}` : ""}`),
-      make("div", "pr-card-text", st.back ? c.back : c.front),
-    );
-    cardEl.className = `pr-card${st.back ? " is-back" : ""}`;
-    cardEl.setAttribute("aria-label", st.back ? "Flashcard answer: press to see the question" : "Flashcard question: press to turn over");
-    $("[data-card-hint]").textContent = st.back ? "Answer · click to see the question again" : "Click or press Space to turn over";
+    const e = srOf(i);
+    const meta = `${st.at + 1} of ${st.order.length}${c.topic ? ` · ${c.topic}` : ""}${e ? ` · box ${e.box} of 5` : " · new"}`;
+    front.replaceChildren(make("div", "pr-card-meta muted small", meta), make("div", "pr-card-text", c.front), make("span", "pr-card-label", "Question"));
+    back.replaceChildren(make("div", "pr-card-meta muted small", meta), make("div", "pr-card-text", c.back), make("span", "pr-card-label", "Answer"));
+    cardEl.classList.toggle("is-back", st.back);
+    cardEl.setAttribute("aria-label", st.back ? `Answer: ${c.back}. Press to see the question` : `Question: ${c.front}. Press to turn over`);
+    $("[data-card-hint]").textContent = st.back ? "Did you know it? Choose Again or Got it" : "Click or press Space to turn over";
   }
   function saveProgress() {
     window.clearTimeout(st.saveTimer);
     st.saveTimer = window.setTimeout(() => { api("PUT", `practice/decks/${st.deck.id}/progress`, { progress: st.deck.progress }).catch(() => toast("Your progress could not be saved.", "error")); }, 400);
   }
-  const flip = () => { if (st.order.length) { st.back = !st.back; drawCard(); } };
-  const move = (d) => { if (st.order.length) { st.at = (st.at + d + st.order.length) % st.order.length; st.back = false; drawCard(); } };
+  const flip = () => { if (st.order.length && !st.done) { st.back = !st.back; drawCard(); } };
+  const move = (d) => { if (st.order.length) { st.done = false; st.at = (st.at + d + st.order.length) % st.order.length; st.back = false; drawCard(); } };
   const markCard = (v) => {
-    if (!st.order.length) return;
-    st.deck.progress[st.order[st.at]] = v;
+    if (!st.order.length || st.done) return;
+    const i = st.order[st.at];
+    st.deck.progress[i] = v;
+    schedule(i, v === "known");
     saveProgress();
-    if (st.at === st.order.length - 1) {
-      const known = Object.values(st.deck.progress).filter((x) => x === "known").length;
-      toast(known === st.deck.items.length ? "Every card is marked Got it. Well done!" : `End of the deck: ${known} of ${st.deck.items.length} known. Tick “Only cards marked Again” to go over the rest.`);
-    }
-    move(1);
+    drawSetCounts();
+    // The card leaves to the side it was marked on, then the next comes in.
+    const cardEl = $("[data-card]");
+    const last = st.at === st.order.length - 1;
+    const next = () => {
+      if (last) { st.done = true; drawCard(); return; }
+      st.at++;
+      st.back = false;
+      drawCard();
+    };
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { next(); return; }
+    cardEl.classList.add(v === "known" ? "is-gone-right" : "is-gone-left");
+    setTimeout(next, 220);
   };
-  $("[data-card]").addEventListener("click", flip);
+  $("[data-card]").addEventListener("click", () => { if (st.swiped) { st.swiped = false; return; } flip(); });
   $("[data-card]").addEventListener("keydown", (e) => {
     if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); }
     else if (e.key === "ArrowRight") move(1);
@@ -1441,18 +1926,53 @@
     else if (e.key === "1") markCard("again");
     else if (e.key === "2") markCard("known");
   });
+  // On a touch screen: swipe the card right for Got it, left for Again.
+  (() => {
+    const cardEl = $("[data-card]");
+    let start = null;
+    cardEl.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" || !st.order.length || st.done) return;
+      start = { x: e.clientX, y: e.clientY, id: e.pointerId, dx: 0 };
+    });
+    cardEl.addEventListener("pointermove", (e) => {
+      if (!start || e.pointerId !== start.id) return;
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      // A mostly upright move is the page scrolling, not a swipe.
+      if (!start.moving && Math.abs(dy) > Math.abs(dx)) { start = null; return; }
+      if (!start.moving && Math.abs(dx) > 8) { start.moving = true; try { cardEl.setPointerCapture(e.pointerId); } catch { /* the pointer has already gone */ } cardEl.classList.add("is-dragging"); }
+      if (!start.moving) return;
+      start.dx = dx;
+      cardEl.style.setProperty("--drag", `${dx}px`);
+      cardEl.classList.toggle("is-leaning-right", dx > 40);
+      cardEl.classList.toggle("is-leaning-left", dx < -40);
+    });
+    const end = () => {
+      if (!start) return;
+      const { dx, moving } = start;
+      start = null;
+      cardEl.classList.remove("is-dragging", "is-leaning-right", "is-leaning-left");
+      cardEl.style.removeProperty("--drag");
+      if (!moving) return;
+      st.swiped = true;
+      if (dx > 90) markCard("known");
+      else if (dx < -90) markCard("again");
+    };
+    cardEl.addEventListener("pointerup", end);
+    cardEl.addEventListener("pointercancel", end);
+  })();
   $("[data-card-next]").addEventListener("click", () => move(1));
   $("[data-card-prev]").addEventListener("click", () => move(-1));
   $("[data-card-again]").addEventListener("click", () => markCard("again"));
   $("[data-card-known]").addEventListener("click", () => markCard("known"));
   $("[data-card-shuffle]").addEventListener("click", () => { reorder(true); drawCard(); });
-  $("[data-card-only-again]").addEventListener("change", () => { reorder(false); drawCard(); });
+  $("[data-card-set]").addEventListener("change", () => { reorder(false); drawCard(); $("[data-card]").focus(); });
   $("[data-study-back]").addEventListener("click", () => show("cards"));
-  $("[data-card-restart]").addEventListener("click", () => {
-    if (!window.confirm("Start again? This clears Got it and Again from every card in this deck.")) return;
+  $("[data-card-restart]").addEventListener("click", async () => {
+    if (!(await ask({ title: "Start the deck again?", body: "This clears Got it and Again from every card in this deck, and makes every card due now.", confirm: "Start again", danger: true }))) return;
     st.deck.progress = {};
     saveProgress();
-    $("[data-card-only-again]").checked = false;
+    $("[data-card-set]").value = "all";
     reorder(false);
     drawCard();
   });
@@ -1524,11 +2044,15 @@
     if (!st.order.length) return;
     const i = st.order[st.at];
     if (st.deck.items.length === 1) { toast("This is the last card. Delete the whole deck instead.", "error"); return; }
-    if (!window.confirm("Delete this card?")) return;
+    if (!(await ask({ title: "Delete this card?", body: "It is taken out of this deck for good.", confirm: "Delete card", danger: true }))) return;
     const items = st.deck.items.filter((_, j) => j !== i);
     // Progress is kept by card number, so the cards after the deleted one move up one.
     const progress = {};
-    for (const [k, v] of Object.entries(st.deck.progress)) { const n = Number(k); if (n < i) progress[n] = v; else if (n > i) progress[n - 1] = v; }
+    const sr = {};
+    const shift = (from, to) => { for (const [k, v] of Object.entries(from)) { const n = Number(k); if (!Number.isInteger(n)) continue; if (n < i) to[n] = v; else if (n > i) to[n - 1] = v; } };
+    shift(Object.fromEntries(Object.entries(st.deck.progress).filter(([k]) => k !== "sr")), progress);
+    shift(st.deck.progress.sr || {}, sr);
+    progress.sr = sr;
     try {
       await saveCards(items, progress);
       const at = st.at;
@@ -1551,7 +2075,7 @@
     const box = $("[data-report-kinds]");
     box.replaceChildren();
     for (const k of reportKinds) {
-      const b = make("button", "pr-kind");
+      const b = make("button", `pr-kind${k.id === "custom" ? " is-custom" : ""}`);
       b.type = "button";
       b.setAttribute("role", "radio");
       b.setAttribute("aria-checked", k.id === reportKind ? "true" : "false");
@@ -1568,52 +2092,51 @@
 
   async function loadReports() {
     window.clearTimeout(reportsTimer);
+    const box = $("[data-reports]");
+    if (!box.children.length) skeleton(box, 3, { tall: true, grid: true });
     let r;
-    try { r = await api("GET", "practice/reports"); } catch (e) { $("[data-reports]").textContent = e.message; return; }
+    try { r = await api("GET", "practice/reports"); } catch (e) { box.textContent = e.message; doneLoading(box); return; }
+    doneLoading(box);
     if (!reportKinds.length) { reportKinds = r.kinds; drawKinds(); }
     const reports = r.reports.filter((d) => d.kind !== "mind_map");
-    const box = $("[data-reports]");
     box.replaceChildren();
-    box.appendChild(make("h2", "pr-h2", "Your study guides"));
-    if (!reports.length) { box.appendChild(make("p", "muted small", "None yet.")); return; }
-    const ul = make("ul", "pr-decks");
-    for (const d of reports) {
-      const li = make("li", "pr-deck");
-      const info = make("div");
-      info.append(make("strong", "", d.title));
-      const sub = d.status === "generating" ? "Claude is writing it…" : d.status === "failed" ? d.error || "This could not be written." : `${d.kindLabel} · ${when(d.createdAt)}`;
-      info.append(make("div", `small ${d.status === "failed" ? "pr-bad" : "muted"}`, sub));
-      li.appendChild(info);
-      const act = make("div", "pr-actions");
-      if (d.status === "ready") {
-        const b = make("button", "primary", "Open");
-        b.type = "button";
-        b.addEventListener("click", () => openReport(d.id));
-        act.appendChild(b);
-      }
-      if (d.status !== "generating") {
-        const x = make("button", "danger", "Delete");
-        x.type = "button";
-        x.addEventListener("click", async () => {
-          if (!window.confirm(`Delete "${d.title}"? Copies saved in the vault are kept.`)) return;
-          try { await api("DELETE", `practice/reports/${d.id}`); loadReports(); } catch (e) { toast(e.message, "error"); }
-        });
-        act.appendChild(x);
-      }
-      li.appendChild(act);
-      ul.appendChild(li);
+    $("[data-sheet-open=guides]").hidden = !reports.length;
+    if (!reports.length) {
+      box.appendChild(libEmpty({ icon: "i-doc", title: "No study guides yet", text: "Claude writes a study guide, briefing, cheat sheet, glossary or revision plan from your notes on the topics you choose.", label: "Write your first guide", run: () => openSheet("guides") }));
+      return;
     }
-    box.appendChild(ul);
+    const grid = make("ul", "pr-lib-grid");
+    for (const d of reports) {
+      grid.appendChild(libCard({
+        icon: "i-doc",
+        kicker: d.kindLabel,
+        title: d.title,
+        status: d.status,
+        busy: "Claude is writing it…",
+        error: d.error || "This could not be written.",
+        meta: when(d.createdAt),
+        open: { label: "Open", run: () => openReport(d.id) },
+        tools: [
+          { icon: "i-trash", label: "Delete this study guide", danger: true, run: async () => {
+            if (!(await ask({ title: "Delete this study guide?", body: `“${d.title}” will be deleted. Copies you saved in the vault are kept.`, confirm: "Delete", danger: true }))) return;
+            try { await api("DELETE", `practice/reports/${d.id}`); loadReports(); toast("Study guide deleted."); } catch (e) { toast(e.message, "error"); }
+          } },
+        ],
+      }));
+    }
+    box.appendChild(grid);
     if (reports.some((d) => d.status === "generating")) reportsTimer = window.setTimeout(loadReports, 3000);
   }
 
   reportForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = reportForm.querySelector("button[type=submit]");
+    if (!hasTopics(reportForm, pick.reportTopics())) return;
     btn.disabled = true;
     try {
       const r = await api("POST", "practice/reports", { kind: reportKind, topics: pick.reportTopics(), focus: reportFocus.value });
       reportFocus.value = "";
+      closeSheet(sheetOf(reportForm));
       openReport(r.id);
     } catch (err) { alertBox(reportForm, err.message); } finally { btn.disabled = false; }
   });
@@ -1632,8 +2155,10 @@
     const body = $("[data-report-body]");
     $$("[data-report-tools] button").forEach((b) => { b.disabled = r.status !== "ready" && !b.matches("[data-report-delete]"); });
     if (r.status === "generating") {
-      status.textContent = `Claude is writing it from your notes… (${Math.round((Date.now() - rp.t0) / 1000)} s; this can take a minute or two, and you can leave this page)`;
-      body.replaceChildren();
+      status.textContent = "";
+      const steps = make("div", "pr-steps");
+      drawSteps(steps, { title: "Claude is writing it", steps: ["Reading your notes", "Planning what to include", "Writing it", "Checking it over"], at: [0, 8, 20, 70], note: "This usually takes a minute or two. You can leave this page: it is saved under Study guides when it is ready." }, rp.t0);
+      body.replaceChildren(steps);
       rp.poll = window.setTimeout(() => openReport(id), 2500);
       return;
     }
@@ -1660,7 +2185,7 @@
     } catch (err) { toast(err.message, "error"); } finally { btn.disabled = false; }
   });
   $("[data-report-delete]").addEventListener("click", async () => {
-    if (!rp.data || !window.confirm(`Delete "${rp.data.title}"? Copies saved in the vault are kept.`)) return;
+    if (!rp.data || !(await ask({ title: "Delete this study guide?", body: `“${rp.data.title}” will be deleted. Copies you saved in the vault are kept.`, confirm: "Delete", danger: true }))) return;
     try { await api("DELETE", `practice/reports/${rp.data.id}`); rp.id = null; show("guides"); } catch (e) { toast(e.message, "error"); }
   });
   $("[data-report-quiz]").addEventListener("click", () => {
@@ -1714,8 +2239,10 @@
   // ---------- history ----------
   async function loadHistory() {
     const box = $("[data-history]");
+    if (!box.children.length) skeleton(box, 4);
     let r;
-    try { r = await api("GET", "practice/sessions"); } catch (e) { box.textContent = e.message; return; }
+    try { r = await api("GET", "practice/sessions"); } catch (e) { box.textContent = e.message; doneLoading(box); return; }
+    doneLoading(box);
     box.replaceChildren();
     $("[data-history-clear]").hidden = !r.sessions.length;
     if (!r.sessions.length) { box.appendChild(make("p", "muted small", "Nothing answered yet.")); return; }
@@ -1742,7 +2269,7 @@
     box.appendChild(wrap);
   }
   $("[data-history-clear]").addEventListener("click", async (e) => {
-    if (!window.confirm("Delete every set of questions you have answered in this vault, with your answers, marks and feedback?\n\nYour history and the exam coach's results start again from nothing. The questions, flashcards, study guides and mind maps are kept. This cannot be undone.")) return;
+    if (!(await ask({ title: "Clear your answer history?", body: "Every set of questions you have answered in this vault is deleted, with your answers, marks and feedback. Your history and the exam coach's results start again from nothing.\n\nThe questions, flashcards, study guides and mind maps are kept. This cannot be undone.", confirm: "Clear history", danger: true }))) return;
     const btn = e.currentTarget;
     btn.disabled = true;
     try {
@@ -1755,28 +2282,112 @@
   });
 
   // ---------- conversations: the exam coach and Ask Claude ----------
+  /** The coach's lines that set work ("SET-RETRIEVAL-QUIZ: topic"): the server takes them out of the saved reply. */
+  const SET_LINE = /^\s*[*`]*SET-RETRIEVAL-QUIZ:.*$/gm;
+
   /**
-   * A chat in one panel ([data-chat], [data-chat-form], [data-chat-suggest] and the conversation bar [data-conv]
-   * inside it), talking to practice/<path>. Every conversation is saved: "New conversation" starts another, and the
-   * list goes back to an older one. extra() adds to each message sent; onView(reply) draws anything else the reply
-   * carries.
+   * Send a message and read the reply as it is written: the server streams it as lines of JSON ({"delta": text},
+   * then {"done": view} or {"error": message}). onDelta gets each piece. Resolves with the conversation as saved.
+   * A server that answers with plain JSON (an error, or no streaming) is handled the same way as api().
+   */
+  async function sendStreaming(path, body, onDelta) {
+    const res = await fetch(`${base}/${path}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-CSRF-Token": csrf, Accept: "application/x-ndjson", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const type = res.headers.get("content-type") || "";
+    if (!res.ok || !type.includes("event-stream") || !res.body) {
+      let data = null;
+      try { data = await res.json(); } catch { /* not JSON */ }
+      if (!res.ok) throw new ApiError((data && data.error) || (res.status === 401 ? "Your session expired. Reload the page and sign in again." : `The server answered ${res.status}.`));
+      return data;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    let view = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+        if (typeof ev.delta === "string") onDelta(ev.delta);
+        else if (ev.done) view = ev.done;
+        else if (ev.error) throw new ApiError(ev.error);
+      }
+    }
+    if (!view) throw new ApiError("The reply was cut off. Open the conversation again to see it: it is saved once Claude finishes.");
+    return view;
+  }
+
+  /** The notes a reply links to, as chips under it: links into this vault, each once. */
+  function sourceChips(body) {
+    const seen = new Set();
+    const links = [...body.querySelectorAll("a[href]")].filter((a) => {
+      const h = a.getAttribute("href") || "";
+      if (!h.startsWith(`/v/${vault}/`) || h.includes("/practice") || h.includes("/api/")) return false;
+      const key = h.split("#")[0];
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (!links.length) return null;
+    const row = make("div", "pr-sources");
+    row.appendChild(make("span", "pr-sources-label", "From your notes"));
+    for (const a of links.slice(0, 8)) {
+      const c = make("a", "pr-source-chip");
+      c.href = a.getAttribute("href");
+      c.target = "_blank";
+      c.rel = "noopener";
+      c.appendChild(svgIcon("i-file"));
+      c.appendChild(make("span", "", a.textContent.trim() || "Note"));
+      row.appendChild(c);
+    }
+    if (links.length > 8) row.appendChild(make("span", "small muted", `and ${links.length - 8} more`));
+    return row;
+  }
+
+  /**
+   * A chat in one panel ([data-chat], [data-chat-form], [data-chat-suggest], the conversation bar [data-conv] and the
+   * list of conversations [data-conv-sheet] inside it), talking to practice/<path>. Every conversation is saved:
+   * "New" starts another, and the list goes back to an older one. Replies stream in as Claude writes them.
+   * extra() adds to each message sent; onView(reply) draws anything else the reply carries.
    */
   function chatBox(panel, { path, suggest, empty, thinking, noteName, extra = () => ({}), onView = () => {} }) {
     const log = $("[data-chat]", panel);
     const form = $("[data-chat-form]", panel);
     const ta = form.querySelector("textarea");
-    const pickThread = $("[data-conv-select]", panel);
+    const sendBtn = form.querySelector("button[type=submit]");
+    const sheet = $("[data-conv-sheet]", panel);
+    const list = $("[data-conv-list]", panel);
+    const openList = $("[data-conv-open]", panel);
     const delThread = $("[data-conv-delete]", panel);
+    const suggestBox = $("[data-chat-suggest]", panel);
     let loading = Promise.resolve();
     let busy = false;
     let thread = null; // the conversation shown, or null for a new one
     let last = null;
+
+    // The box grows with what is typed, up to a limit.
+    const grow = () => { ta.style.height = "auto"; ta.style.height = `${Math.min(ta.scrollHeight, 240)}px`; };
+    ta.addEventListener("input", grow);
+
     function message(m) {
       const d = make("div", `pr-msg ${m.role === "user" ? "is-user" : "is-coach"}`);
       if (m.role === "user") { d.textContent = m.text; return d; }
       const body = make("div", "prose");
       body.innerHTML = m.html;
       d.appendChild(body);
+      const chips = sourceChips(body);
+      if (chips) d.appendChild(chips);
       const act = make("div", "pr-msg-actions");
       const copy = make("button", "linklike small", "Copy");
       copy.type = "button";
@@ -1795,35 +2406,49 @@
       d.appendChild(act);
       return d;
     }
-    /** The list of saved conversations, with the one shown chosen. */
+
+    /** The bar (this conversation, how many there are) and the list of saved conversations. */
     function drawThreads(r) {
-      pickThread.replaceChildren();
-      if (!r.thread) pickThread.appendChild(new Option("New conversation", ""));
-      for (const t of r.threads || []) {
-        const label = `${t.title || "Conversation"} · ${when(t.updatedAt)}`;
-        pickThread.appendChild(new Option(label.length > 90 ? `${label.slice(0, 88)}…` : label, t.id));
-      }
-      pickThread.value = r.thread || "";
-      pickThread.disabled = !(r.threads || []).length;
-      pickThread.title = (r.threads || []).length ? `${plural(r.threads.length, "saved conversation")}` : "No saved conversations yet";
+      const threads = r.threads || [];
+      const cur = threads.find((t) => t.id === r.thread);
+      $("[data-conv-current]", panel).textContent = cur ? (cur.title || "Conversation") : "New conversation";
+      $("[data-conv-count]", panel).textContent = threads.length ? String(threads.length) : "";
+      openList.disabled = !threads.length;
+      openList.title = threads.length ? `Your ${plural(threads.length, "saved conversation")}` : "No saved conversations yet";
       delThread.hidden = !r.thread;
+      list.replaceChildren();
+      for (const t of threads) {
+        const li = make("li");
+        const b = make("button", `pr-conv-item${t.id === r.thread ? " is-current" : ""}`);
+        b.type = "button";
+        b.append(make("span", "pr-conv-title", t.title || "Conversation"), make("span", "small muted", when(t.updatedAt)));
+        if (t.id === r.thread) b.setAttribute("aria-current", "true");
+        b.addEventListener("click", () => { closeSheet(sheet); if (!busy && t.id !== thread) load(t.id); });
+        li.appendChild(b);
+        list.appendChild(li);
+      }
     }
     function draw(r) {
       last = r;
       thread = r.thread || null;
       onView(r);
       drawThreads(r);
+      doneLoading(log);
       log.replaceChildren();
-      if (!r.messages.length) log.appendChild(make("p", "muted small", empty));
+      if (!r.messages.length) {
+        const intro = make("div", "pr-chat-empty");
+        intro.append(make("p", "", empty));
+        log.appendChild(intro);
+      }
       for (const m of r.messages) log.appendChild(message(m));
-      log.scrollTop = log.scrollHeight;
-      const box = $("[data-chat-suggest]", panel);
-      box.replaceChildren();
+      // Suggestions are for starting a conversation; once it is going they step aside.
+      suggestBox.replaceChildren();
+      suggestBox.hidden = r.messages.length > 0;
       for (const t of suggest) {
         const b = make("button", "pr-suggestion small", t);
         b.type = "button";
         b.addEventListener("click", () => { ta.value = t; form.requestSubmit(); });
-        box.appendChild(b);
+        suggestBox.appendChild(b);
       }
     }
     /** Show a saved conversation ("" for the most recent, "new" for a new one). */
@@ -1831,51 +2456,92 @@
     function load(which) {
       const q = which === undefined ? (thread || "") : which;
       const n = ++seq;
+      if (!log.children.length) skeleton(log, 2);
       // Only the last one asked for is drawn, when several are on their way.
       loading = api("GET", `practice/${path}${q ? `?thread=${encodeURIComponent(q)}` : ""}`).then((r) => { if (n === seq) draw(r); }, (e) => { if (n === seq) log.textContent = e.message; });
       return loading;
     }
-    pickThread.addEventListener("change", () => { if (!busy) load(pickThread.value || "new"); });
+    openList.addEventListener("click", () => { if (!sheet.open) { sheet.showModal(); const cur = list.querySelector(".is-current") || list.querySelector("button"); if (cur) cur.focus(); } });
+    $("[data-conv-sheet-close]", panel).addEventListener("click", () => closeSheet(sheet));
+    sheet.addEventListener("cancel", (e) => { e.preventDefault(); closeSheet(sheet); });
+    sheet.addEventListener("click", (e) => {
+      if (e.target !== sheet) return;
+      const r = sheet.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) closeSheet(sheet);
+    });
     $("[data-conv-new]", panel).addEventListener("click", () => {
       if (busy) return;
       load("new").then(() => ta.focus());
     });
     delThread.addEventListener("click", async () => {
       if (!thread || busy) return;
-      if (!window.confirm("Delete this conversation? Notes you saved from it are kept. This cannot be undone.")) return;
+      if (!(await window.UI.confirm({ title: "Delete this conversation?", body: "Notes you saved from it are kept. This cannot be undone.", confirm: "Delete conversation", danger: true }))) return;
       try { draw(await api("DELETE", `practice/${path}/threads/${encodeURIComponent(thread)}`)); toast("Conversation deleted."); } catch (e) { toast(e.message, "error"); }
     });
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = ta.value.trim();
       if (!text || busy) return;
       busy = true;
-      const btn = form.querySelector("button[type=submit]");
-      btn.disabled = true;
-      pickThread.disabled = true;
-      $$("[data-chat-suggest] button", panel).forEach((b) => { b.disabled = true; });
-      const none = log.querySelector(":scope > p.muted");
-      if (none) none.remove();
+      sendBtn.disabled = true;
+      openList.disabled = true;
+      suggestBox.hidden = true;
+      const intro = log.querySelector(":scope > .pr-chat-empty, :scope > p.muted");
+      if (intro) intro.remove();
       log.appendChild(Object.assign(make("div", "pr-msg is-user"), { textContent: text }));
-      const wait = make("div", "pr-msg is-coach muted pr-typing", thinking);
+      const wait = make("div", "pr-msg is-coach is-streaming");
+      const live = make("div", "pr-stream-text");
+      const dots = make("span", "pr-typing-dots", "");
+      dots.setAttribute("aria-label", thinking);
+      dots.append(make("span"), make("span"), make("span"));
+      live.appendChild(dots);
+      wait.appendChild(live);
       log.appendChild(wait);
+      log.setAttribute("aria-busy", "true");
       wait.scrollIntoView({ behavior: "smooth", block: "nearest" });
       ta.value = "";
+      grow();
+      // Pieces are drawn once per frame; the page follows the reply while it is in view at the bottom.
+      let written = "";
+      let frame = 0;
+      // Following the reply stops as soon as the student scrolls themselves.
+      let follow = true;
+      const stopFollowing = () => { follow = false; };
+      window.addEventListener("wheel", stopFollowing, { once: true, passive: true });
+      window.addEventListener("touchmove", stopFollowing, { once: true, passive: true });
+      const paint = () => {
+        frame = 0;
+        const shown = written.replace(SET_LINE, "").replace(/\n{3,}/g, "\n\n");
+        live.textContent = shown;
+        const r = wait.getBoundingClientRect();
+        if (follow && r.bottom > window.innerHeight - 140) window.scrollBy({ top: r.bottom - window.innerHeight + 160 });
+      };
       try {
-        draw(await api("POST", `practice/${path}`, { message: text, thread: thread || "", ...extra() }));
-        // The conversation is part of the page (no box of its own to scroll), so bring the reply's start into view.
+        const view = await sendStreaming(`practice/${path}`, { message: text, thread: thread || "", ...extra() }, (piece) => {
+          written += piece;
+          if (!frame) frame = requestAnimationFrame(paint);
+        });
+        if (frame) cancelAnimationFrame(frame);
+        const top = wait.getBoundingClientRect().top;
+        draw(view);
+        // Keep the reply where it was while the plain text becomes formatted.
         const reply = log.lastElementChild;
-        if (reply) reply.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (reply && top < 0) reply.scrollIntoView({ block: "start" });
       } catch (err) {
-        wait.textContent = err.message;
-        wait.classList.remove("pr-typing");
-        wait.classList.add("pr-bad");
-        ta.value = text;
+        if (frame) cancelAnimationFrame(frame);
+        wait.classList.remove("is-streaming");
+        live.replaceChildren(make("p", "pr-bad", err.message));
+        if (written) live.prepend(make("p", "", written.replace(SET_LINE, "")));
+        if (!written) ta.value = text;
         if (last) drawThreads(last);
       } finally {
+        window.removeEventListener("wheel", stopFollowing);
+        window.removeEventListener("touchmove", stopFollowing);
+        log.removeAttribute("aria-busy");
         busy = false;
-        btn.disabled = false;
-        $$("[data-chat-suggest] button", panel).forEach((b) => { b.disabled = false; });
+        sendBtn.disabled = false;
+        openList.disabled = !(last && (last.threads || []).length);
       }
     });
     ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } });
@@ -1884,14 +2550,15 @@
      * elsewhere on the page (explaining a question, a card, an idea) starts a new conversation, so the one open is
      * kept as it was.
      */
-    async function ask(text, send, fresh = true) {
+    async function put(text, send, fresh = true) {
       await (fresh ? load("new") : loading);
       ta.value = text;
+      grow();
       if (send) form.requestSubmit();
       else { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
       form.scrollIntoView({ behavior: "smooth", block: "end" });
     }
-    return { load, ask, redraw: draw };
+    return { load, ask: put, redraw: draw };
   }
 
   function drawStats(s) {
@@ -1941,7 +2608,7 @@
     empty: "Ask the coach how you are doing, or what to revise next.",
     thinking: "The coach is thinking",
     noteName: "Exam coach",
-    onView: (r) => { drawStats(r.stats); drawTasks($("[data-coach-tasks]"), r.tasks || [], "coach"); drawRag(r); },
+    onView: (r) => { drawStats(r.stats); drawTasks($("[data-coach-tasks]"), r.tasks || [], "coach"); drawRag(r); setGrades(r.topics); },
   });
   /** Open the coach with a message: sent straight away, or (send false) left in the box to edit first. */
   function askCoach(text, send = true) {
@@ -1998,40 +2665,36 @@
   async function loadMaps() {
     window.clearTimeout(mapsTimer);
     const box = $("[data-maps]");
+    if (!box.children.length) skeleton(box, 3, { tall: true, grid: true });
     let r;
-    try { r = await api("GET", "practice/reports"); } catch (e) { box.textContent = e.message; return; }
+    try { r = await api("GET", "practice/reports"); } catch (e) { box.textContent = e.message; doneLoading(box); return; }
+    doneLoading(box);
     const maps = r.reports.filter((d) => d.kind === "mind_map");
     box.replaceChildren();
-    box.appendChild(make("h2", "pr-h2", "Your mind maps"));
-    if (!maps.length) { box.appendChild(make("p", "muted small", "None yet.")); return; }
-    const ul = make("ul", "pr-decks");
-    for (const d of maps) {
-      const li = make("li", "pr-deck");
-      const info = make("div");
-      info.append(make("strong", "", d.title));
-      const sub = d.status === "generating" ? "Claude is mapping your notes…" : d.status === "failed" ? d.error || "This could not be made." : when(d.createdAt);
-      info.append(make("div", `small ${d.status === "failed" ? "pr-bad" : "muted"}`, sub));
-      li.appendChild(info);
-      const act = make("div", "pr-actions");
-      if (d.status === "ready") {
-        const b = make("button", "primary", "Open");
-        b.type = "button";
-        b.addEventListener("click", () => openMap(d.id));
-        act.appendChild(b);
-      }
-      if (d.status !== "generating") {
-        const x = make("button", "danger", "Delete");
-        x.type = "button";
-        x.addEventListener("click", async () => {
-          if (!window.confirm(`Delete the mind map "${d.title}"? Copies saved in the vault are kept.`)) return;
-          try { await api("DELETE", `practice/reports/${d.id}`); loadMaps(); } catch (e) { toast(e.message, "error"); }
-        });
-        act.appendChild(x);
-      }
-      li.appendChild(act);
-      ul.appendChild(li);
+    $("[data-sheet-open=mindmaps]").hidden = !maps.length;
+    if (!maps.length) {
+      box.appendChild(libEmpty({ icon: "i-mindmap", title: "No mind maps yet", text: "Choose a topic or two and Claude maps its main themes and how the ideas branch out from them.", label: "Make your first mind map", run: () => openSheet("mindmaps") }));
+      return;
     }
-    box.appendChild(ul);
+    const grid = make("ul", "pr-lib-grid");
+    for (const d of maps) {
+      grid.appendChild(libCard({
+        icon: "i-mindmap",
+        title: d.title,
+        status: d.status,
+        busy: "Claude is mapping your notes…",
+        error: d.error || "This could not be made.",
+        meta: when(d.createdAt),
+        open: { label: "Open", run: () => openMap(d.id) },
+        tools: [
+          { icon: "i-trash", label: "Delete this mind map", danger: true, run: async () => {
+            if (!(await ask({ title: "Delete this mind map?", body: `“${d.title}” will be deleted. Copies you saved in the vault are kept.`, confirm: "Delete", danger: true }))) return;
+            try { await api("DELETE", `practice/reports/${d.id}`); loadMaps(); toast("Mind map deleted."); } catch (e) { toast(e.message, "error"); }
+          } },
+        ],
+      }));
+    }
+    box.appendChild(grid);
     if (maps.some((d) => d.status === "generating")) mapsTimer = window.setTimeout(loadMaps, 3000);
   }
 
@@ -2039,10 +2702,12 @@
     e.preventDefault();
     const btn = mapForm.querySelector("button[type=submit]");
     const focus = mapForm.querySelector("[name=focus]");
+    if (!hasTopics(mapForm, pick.mapTopics())) return;
     btn.disabled = true;
     try {
       const r = await api("POST", "practice/reports", { kind: "mind_map", topics: pick.mapTopics(), focus: focus.value });
       focus.value = "";
+      closeSheet(sheetOf(mapForm));
       openMap(r.id);
     } catch (err) { alertBox(mapForm, err.message); } finally { btn.disabled = false; }
   });
@@ -2087,8 +2752,10 @@
     const canvas = $("[data-map-canvas]");
     if (r.status === "generating") {
       status.className = "small muted";
-      status.textContent = `Claude is mapping your notes… (${Math.round((Date.now() - mm.t0) / 1000)} s; this can take a minute, and you can leave this page)`;
-      canvas.replaceChildren();
+      status.textContent = "";
+      const steps = make("div", "pr-steps");
+      drawSteps(steps, { title: "Claude is making the mind map", steps: ["Reading your notes", "Finding the main themes", "Branching out the ideas"], at: [0, 8, 25], note: "This usually takes about a minute. You can leave this page: it is saved under Mind maps when it is ready." }, mm.t0);
+      canvas.replaceChildren(steps);
       mm.poll = window.setTimeout(() => openMap(id), 2500);
       return;
     }
@@ -2157,6 +2824,12 @@
     const ink = css.color || "#222";
     const dark = (() => { const m = (css.backgroundColor || "").match(/\d+/g); return m ? (Number(m[0]) + Number(m[1]) + Number(m[2])) / 3 < 128 : false; })();
     const LINE = 18, PAD_X = 12, PAD_Y = 8, GAP_Y = 10, GAP_X = 56, TOGGLE = 22;
+    const accent = (css.getPropertyValue("--accent") || "").trim() || "#8a6cef";
+    // The accent at a fifth of its strength, as an SVG fill (which takes plain colours).
+    const accentSoft = (() => {
+      const m = accent.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+      return m ? `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, .22)` : (dark ? "#3b3f58" : "#e6e8f7");
+    })();
     // Size every visible node.
     const visible = [];
     const size = (n) => {
@@ -2196,7 +2869,8 @@
     svg.style.fontFamily = css.fontFamily;
     mm.size = { width: width + 4, height: height + 4 };
     const colour = (n, kind) => {
-      if (n.depth === 0) return kind === "fill" ? (dark ? "#3b3f58" : "#e6e8f7") : kind === "stroke" ? (dark ? "#8f96d6" : "#5b63b7") : ink;
+      // The centre idea takes the theme's accent colour.
+      if (n.depth === 0) return kind === "fill" ? accentSoft : kind === "stroke" ? accent : ink;
       const h = BRANCH_HUES[n.hue % BRANCH_HUES.length];
       if (kind === "fill") return dark ? `hsl(${h} 30% ${n.depth === 1 ? 30 : 22}%)` : `hsl(${h} 70% ${n.depth === 1 ? 88 : 95}%)`;
       if (kind === "stroke") return dark ? `hsl(${h} 55% 62%)` : `hsl(${h} 50% 45%)`;
@@ -2342,7 +3016,7 @@
     img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
   });
   $("[data-map-delete]").addEventListener("click", async () => {
-    if (!mm.data || !window.confirm(`Delete the mind map "${mm.data.title}"? Copies saved in the vault are kept.`)) return;
+    if (!mm.data || !(await ask({ title: "Delete this mind map?", body: `“${mm.data.title}” will be deleted. Copies you saved in the vault are kept.`, confirm: "Delete", danger: true }))) return;
     try { await api("DELETE", `practice/reports/${mm.data.id}`); mm.id = null; show("mindmaps"); } catch (e) { toast(e.message, "error"); }
   });
   window.addEventListener("resize", () => { if (!$("[data-panel=mindmap]").hidden && mm.tree) applyScale(); });
@@ -2656,9 +3330,13 @@
     const status = $("[data-retrieval-status]");
     const n = ++rv.seq;
     status.textContent = "Finding your documents…";
+    const list = $("[data-retrieval-list]");
+    if (!list.children.length) skeleton(list, 5);
     let r;
-    try { r = await api("GET", `practice/resources${rv.topic ? `?topic=${encodeURIComponent(rv.topic)}` : ""}`); } catch (e) { status.textContent = e.message; return; }
+    try { r = await api("GET", `practice/resources${rv.topic ? `?topic=${encodeURIComponent(rv.topic)}` : ""}`); } catch (e) { status.textContent = e.message; doneLoading(list); list.replaceChildren(); return; }
     if (n !== rv.seq) return;
+    doneLoading(list);
+    list.replaceChildren();
     const sel = $("[data-retrieval-topic]");
     if (!rv.loaded) {
       rv.loaded = true;
@@ -2699,7 +3377,7 @@
       view.href = r.fileUrl ? (r.kind === "pdf" ? r.fileUrl : r.fileUrl.replace("/f/", "/o/")) : r.noteUrl;
       view.target = "_blank";
       view.rel = "noopener";
-      const go = make("button", "primary small", "Start a retrieval quiz");
+      const go = make("button", "pr-row-cta small", "Start a retrieval quiz");
       go.type = "button";
       go.addEventListener("click", () => startRetrieval(r, go));
       const act = make("span", "pr-actions");
@@ -2752,12 +3430,12 @@
       li.appendChild(main);
       const act = make("span", "pr-actions");
       if (t.status === "started" && t.sessionId) {
-        const b = make("button", "small primary", "Continue");
+        const b = make("button", "small pr-row-cta", "Continue");
         b.type = "button";
         b.addEventListener("click", () => openSession(t.sessionId));
         act.appendChild(b);
       } else {
-        const b = make("button", "small primary", "Start");
+        const b = make("button", "small pr-row-cta", "Start");
         b.type = "button";
         b.title = "Choose one of your documents on this topic";
         b.addEventListener("click", () => retrievalOn(t.topic, t.id));
@@ -2781,34 +3459,68 @@
   }
 
   // ---------- the coach's RAG grade for each topic ----------
-  const GRADE_WORD = { red: "Red", amber: "Amber", green: "Green", none: "Not graded", "": "Not graded" };
-  let autoGraded = false;
+  const GRADE_WORD = { red: "Losing marks", amber: "Some way to go", green: "Secure", none: "Not graded", "": "Not graded" };
+  /** Fewer answers than this on a topic and its percentage is shown as a guide only. */
+  const FEW_ANSWERS = 3;
   function drawRag(r) {
     const list = $("[data-rag-list]");
+    const heat = $("[data-rag-heat]");
     const box = $("[data-rag]");
     const topics = r.topics || [];
+    drawCoachSummary(r);
     box.hidden = !topics.length;
     if (!topics.length) return;
     list.replaceChildren();
+    heat.replaceChildren();
+    heat.classList.remove("show-all");
     const order = { red: 0, amber: 1, green: 2, none: 3, "": 3 };
     const sorted = topics.slice().sort((a, b) => (order[a.grade] - order[b.grade]) || a.topic.localeCompare(b.topic));
     const counts = { red: 0, amber: 0, green: 0, none: 0 };
     for (const t of sorted) {
-      counts[t.grade && t.grade !== "" ? t.grade : "none"]++;
+      const g = t.grade && t.grade !== "" ? t.grade : "none";
+      counts[g]++;
+      const few = t.result && t.result.answers < FEW_ANSWERS;
+      const label = `${t.topic}: ${GRADE_WORD[t.grade || ""]}${t.result ? `, ${t.result.got} / ${t.result.of} marks over ${plural(t.result.answers, "answer")}` : ""}${t.resources ? "" : " (no documents for a retrieval quiz yet)"}`;
+      // The heat map: one small tile per topic, in grade order.
+      const cell = make("li");
+      const tile = make("button", `pr-heat-cell is-${g}`);
+      tile.type = "button";
+      tile.disabled = !t.resources;
+      tile.setAttribute("aria-label", label);
+      tile.dataset.tip = label;
+      tile.append(make("span", "pr-heat-name", t.topic));
+      if (t.result) tile.append(make("span", `pr-heat-pct${few ? " is-few" : ""}`, `${Math.round(t.result.percent)}%`));
+      tile.addEventListener("click", () => retrievalOn(t.topic));
+      cell.appendChild(tile);
+      heat.appendChild(cell);
+      // The detailed list, folded away under the heat map.
       const li = make("li");
       const b = make("button", `pr-rag-item is-${t.grade || "none"}`);
       b.type = "button";
       b.disabled = !t.resources;
       const top = make("span", "pr-rag-top");
       top.append(make("span", `pr-rag-dot is-${t.grade || "none"}`), make("strong", "pr-rag-name", t.topic));
-      if (t.result) top.append(make("span", "pr-rag-pct small", `${Math.round(t.result.percent)}%`));
+      // A percentage from one or two answers says little: it is shown with how few there were.
+      if (t.result) top.append(make("span", "pr-rag-pct small", few ? `${Math.round(t.result.percent)}% · ${plural(t.result.answers, "answer")}` : `${Math.round(t.result.percent)}%`));
       b.append(top);
       if (t.reason) b.append(make("span", "pr-rag-reason small muted", t.reason));
       b.append(make("span", "pr-rag-docs small", t.resources ? `${plural(t.resources, "document")} · retrieval quiz` : "No documents on this topic yet"));
-      b.title = `${t.topic}: ${GRADE_WORD[t.grade || ""]}${t.result ? `, ${t.result.got} / ${t.result.of} marks over ${plural(t.result.answers, "answer")}` : ""}`;
+      b.title = label;
       b.addEventListener("click", () => retrievalOn(t.topic));
       li.appendChild(b);
       list.appendChild(li);
+    }
+    // The heat map shows every graded topic and a few others; the rest of the ungraded ones wait behind one tile.
+    const SHOW_NONE = 6;
+    const extra = [...heat.children].filter((li, i) => sorted[i] && !(sorted[i].grade && sorted[i].grade !== "none")).slice(SHOW_NONE);
+    extra.forEach((li) => li.classList.add("is-extra"));
+    if (extra.length) {
+      const li = make("li");
+      const more = make("button", "pr-heat-more", `${extra.length} more not graded yet`);
+      more.type = "button";
+      more.addEventListener("click", () => { heat.classList.add("show-all"); li.remove(); });
+      li.appendChild(more);
+      heat.appendChild(li);
     }
     $("[data-rag-summary]").textContent = `${counts.red} red · ${counts.amber} amber · ${counts.green} green${counts.none ? ` · ${counts.none} not graded` : ""}`;
     const g = r.graded;
@@ -2817,8 +3529,41 @@
     const btn = $("[data-rag-grade]");
     btn.textContent = g ? "Grade my topics again" : "Grade my topics";
     btn.disabled = host.dataset.configured !== "1";
-    // The first time, grade straight away once there are answers to go on.
-    if (!g && r.answers > 0 && !autoGraded && host.dataset.configured === "1") { autoGraded = true; gradeTopics(); }
+    // Grading asks Claude, so it waits for the student to ask for it (it used to start by itself).
+    btn.classList.toggle("primary", !g && r.answers > 0);
+  }
+
+  /** The coach's summary: how it is going overall, and what the topics look like. */
+  function drawCoachSummary(r) {
+    const box = $("[data-coach-summary]");
+    box.replaceChildren();
+    const st = r.stats || {};
+    const topics = r.topics || [];
+    const n = (gr) => topics.filter((t) => t.grade === gr).length;
+    const cell = (value, label, cls = "") => {
+      const d = make("div", `pr-coach-stat ${cls}`.trim());
+      d.append(make("strong", "", value), make("span", "small muted", label));
+      return d;
+    };
+    if (st.answers) {
+      box.append(
+        cell(`${Math.round(st.percent)}%`, `of your marks, over ${plural(st.answers, "answer")}`, markClass(st.percent)),
+        cell(String(n("red")), "topics losing marks", n("red") ? "is-zero" : ""),
+        cell(String(n("amber")), "with some way to go", n("amber") ? "is-part" : ""),
+        cell(String(n("green")), "secure", n("green") ? "is-full" : ""),
+      );
+    } else {
+      box.appendChild(make("p", "small muted", "Answer some questions and the coach has something to go on: your marks, and a grade for each topic."));
+    }
+    if (!r.graded && r.answers > 0) {
+      const p = make("p", "small pr-coach-nudge");
+      p.append(document.createTextNode("Your topics have not been graded yet. "));
+      const b = make("button", "linklike small", "Grade them now");
+      b.type = "button";
+      b.addEventListener("click", gradeTopics);
+      p.appendChild(b);
+      box.appendChild(p);
+    }
   }
   async function gradeTopics() {
     const btn = $("[data-rag-grade]");
@@ -2860,11 +3605,199 @@
           : "There is a gap between finding it and remembering it. Do another retrieval quiz on this soon, then try again from memory."));
   }
 
+  // ---------- Today: what to do next, and how it is going ----------
+  // Built from what the page already has: the coach's view (grades, work it set, overall marks), the sets of
+  // questions answered and the flashcard decks. Nothing here asks Claude anything.
+  const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  /** Days in a row with a set of questions handed in, up to today (or yesterday, if nothing is handed in yet today). */
+  function streakOf(sessions) {
+    const days = new Set(sessions.filter((x) => x.status === "marked").map((x) => dayKey(new Date(x.createdAt * 1000))));
+    const d = new Date();
+    if (!days.has(dayKey(d))) d.setDate(d.getDate() - 1);
+    let n = 0;
+    while (days.has(dayKey(d))) { n++; d.setDate(d.getDate() - 1); }
+    return n;
+  }
+  const markClass = (p) => (p >= 70 ? "is-full" : p >= 40 ? "is-part" : "is-zero");
+
+  /** A number (or "12%", "3 / 10") counting up to its value over a moment; left as it is with reduced motion. */
+  function countUp(el, text) {
+    const m = String(text).match(/^(\d+)(.*)$/);
+    if (!m || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const to = Number(m[1]);
+    const rest = m[2];
+    if (to < 2) return;
+    const t0 = performance.now();
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / 600);
+      const eased = 1 - (1 - k) ** 3;
+      el.textContent = `${Math.round(to * eased)}${rest}`;
+      if (k < 1) requestAnimationFrame(step);
+    };
+    el.textContent = `0${rest}`;
+    requestAnimationFrame(step);
+  }
+
+  /** Open the quiz creator with these topics ticked. */
+  function quizOn(topics) {
+    show("questions");
+    if (setChoices("topics", topics)) toast(`${topics.join(", ")} chosen. Pick the question types, then write the questions.`, "info");
+    $("[data-gen-submit]").focus({ preventScroll: true });
+  }
+
+  let todaySeq = 0;
+  async function loadToday() {
+    const n = ++todaySeq;
+    const now = new Date();
+    $("[data-today-date]").textContent = now.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+    const h = now.getHours();
+    $("[data-today-greeting]").textContent = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+    const next = $("[data-today-next]");
+    const recent = $("[data-today-recent]");
+    const focus = $("[data-today-topics]");
+    if (!next.children.length) {
+      skeleton(next, 1, { tall: true });
+      skeleton($("[data-today-tiles]"), 4, { grid: true });
+      skeleton(recent, 3);
+      skeleton(focus, 3);
+    }
+    const [c, se, de] = await Promise.allSettled([api("GET", "practice/coach"), api("GET", "practice/sessions"), api("GET", "practice/decks")]);
+    if (n !== todaySeq) return;
+    const coach = c.status === "fulfilled" ? c.value : null;
+    const sessions = se.status === "fulfilled" ? se.value.sessions : [];
+    const decks = de.status === "fulfilled" ? de.value.decks.filter((d) => d.status === "ready") : [];
+    if (coach) setGrades(coach.topics);
+    [next, $("[data-today-tiles]"), recent, focus].forEach((x) => { doneLoading(x); x.replaceChildren(); });
+    if (se.status === "rejected" && c.status === "rejected") {
+      alertBox(next, se.reason.message);
+      return;
+    }
+    drawNext(coach, sessions, decks);
+    drawTiles(coach, sessions, decks);
+    drawRecent(sessions);
+    drawFocus(coach);
+  }
+
+  /** The one thing to do next: finish a quiz, the coach's work, a red topic, cards to learn, or a first quiz. */
+  function drawNext(coach, sessions, decks) {
+    const box = $("[data-today-next]");
+    const ready = sessions.find((x) => x.status === "ready");
+    const tasks = ((coach && coach.tasks) || []).filter((t) => t.status !== "done");
+    const red = ((coach && coach.topics) || []).filter((t) => t.grade === "red");
+    const deck = decks.filter((d) => d.due > 0).sort((a, b) => b.due - a.due)[0];
+    let it;
+    if (ready) {
+      it = { icon: "i-quiz", kicker: "Finish what you started", title: shortTitle(ready.title), text: `${plural(ready.questions, "question")} waiting for your answers.`, label: "Carry on", run: () => openSession(ready.id) };
+    } else if (tasks.length) {
+      const t = tasks[0];
+      const going = t.status === "started" && t.sessionId;
+      it = { icon: "i-target", kicker: "Set by your coach", title: `Retrieval quiz on ${t.topic}`, text: t.reason || "Find the answers in your documents, then see what you remember without them.", label: going ? "Continue" : "Start", run: () => (going ? openSession(t.sessionId) : retrievalOn(t.topic, t.id)) };
+    } else if (red.length) {
+      const t = red[0];
+      it = { icon: "i-target", kicker: "Where you are losing marks", title: t.topic, text: t.reason || "Your coach graded this topic red.", label: "Quiz me on it", run: () => quizOn([t.topic]) };
+    } else if (deck) {
+      it = { icon: "i-cards", kicker: "Flashcards due for review", title: shortTitle(deck.title), text: `${plural(deck.due, "card")} due now. A few minutes keeps them in your memory.`, label: "Review them", run: () => study(deck.id) };
+    } else {
+      it = { icon: "i-quiz", kicker: sessions.length ? "Keep it going" : "Get started", title: sessions.length ? "Test yourself on something new" : "Take your first quiz", text: "Claude writes exam-style questions from your notes and marks your answers.", label: "Quiz me", run: () => show("questions") };
+    }
+    const card = make("div", "pr-next-card");
+    const badge = make("span", "pr-next-icon");
+    badge.appendChild(svgIcon(it.icon));
+    const body = make("div", "pr-next-body");
+    body.append(make("p", "pr-eyebrow", it.kicker), make("h2", "pr-next-title", it.title), make("p", "small muted", it.text));
+    const b = make("button", "primary pr-next-go", it.label);
+    b.type = "button";
+    b.addEventListener("click", it.run);
+    card.append(badge, body, b);
+    box.appendChild(card);
+  }
+
+  function drawTiles(coach, sessions, decks) {
+    const box = $("[data-today-tiles]");
+    const tile = (icon, value, label, sub, cls = "") => {
+      const d = make("div", `pr-tile ${cls}`.trim());
+      const top = make("div", "pr-tile-top");
+      top.append(svgIcon(icon), make("span", "pr-tile-label", label));
+      const v = make("strong", "pr-tile-value", value);
+      countUp(v, value);
+      d.append(top, v, make("span", "small muted pr-tile-sub", sub));
+      return d;
+    };
+    const last = sessions.find((x) => x.status === "marked");
+    box.appendChild(last
+      ? tile("i-chart", `${last.score} / ${last.total}`, "Last score", `${pct(last.score, last.total)}% · ${shortTitle(last.title)}`, markClass(pct(last.score, last.total)))
+      : tile("i-chart", "–", "Last score", "Nothing marked yet"));
+    const streak = streakOf(sessions);
+    box.appendChild(tile("i-flame", String(streak), "Day streak", streak ? (streak === 1 ? "Hand one in tomorrow to keep it going" : "Days in a row with a quiz handed in") : "Hand in a quiz today to start one", streak ? "is-streak" : ""));
+    const due = decks.reduce((a, d) => a + (d.due || 0), 0);
+    box.appendChild(tile("i-cards", String(due), "Cards due", decks.length ? (due ? `across ${plural(decks.filter((d) => d.due).length, "deck")}` : "All caught up") : "No flashcard decks yet"));
+    const st = coach && coach.stats;
+    box.appendChild(st && st.answers
+      ? tile("i-target", `${Math.round(st.percent)}%`, "All your marks", `${st.got} of ${st.of} marks over ${plural(st.answers, "answer")}`, markClass(st.percent))
+      : tile("i-target", "–", "All your marks", "Answer some questions to see this"));
+  }
+
+  function drawRecent(sessions) {
+    const box = $("[data-today-recent]");
+    const list = sessions.filter((x) => x.status === "marked" || x.status === "ready").slice(0, 5);
+    if (!list.length) { box.appendChild(make("p", "small muted pr-block-empty", "Nothing answered yet. Your quizzes and their marks appear here.")); return; }
+    const ul = make("ul", "pr-recent");
+    for (const x of list) {
+      const li = make("li");
+      const b = make("button", "pr-recent-item");
+      b.type = "button";
+      const p = pct(x.score, x.total);
+      b.append(
+        x.status === "marked" ? make("span", `pr-mark ${markClass(p)}`, `${p}%`) : make("span", "pr-mark is-pending", "To do"),
+        make("span", "pr-recent-title", shortTitle(x.title)),
+        make("span", "small muted pr-recent-when", when(x.createdAt)),
+      );
+      b.title = x.status === "marked" ? `${x.score} / ${x.total}: open to see the marking` : "Not handed in yet: open to answer";
+      b.addEventListener("click", () => openSession(x.id));
+      li.appendChild(b);
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+  }
+
+  function drawFocus(coach) {
+    const box = $("[data-today-topics]");
+    if (!coach) { box.appendChild(make("p", "small muted pr-block-empty", "The coach's grades could not be loaded.")); return; }
+    if (!coach.graded) {
+      box.appendChild(make("p", "small muted pr-block-empty", coach.answers ? "Your topics have not been graded yet. The exam coach grades each one red, amber or green from your answers." : "Once you have answered some questions, the exam coach grades each topic red, amber or green."));
+      return;
+    }
+    const order = { red: 0, amber: 1 };
+    const weak = (coach.topics || []).filter((t) => t.grade === "red" || t.grade === "amber").sort((a, b) => order[a.grade] - order[b.grade]);
+    if (!weak.length) { box.appendChild(make("p", "small muted pr-block-empty", "Every graded topic is green. Try a harder quiz, or past paper questions.")); return; }
+    const ul = make("ul", "pr-focus-list");
+    for (const t of weak.slice(0, 5)) {
+      const li = make("li", "pr-focus-item");
+      const main = make("div", "pr-focus-main");
+      const name = make("span", "pr-focus-name");
+      name.append(make("span", `pr-rag-dot is-${t.grade}`), document.createTextNode(` ${t.topic}`));
+      main.appendChild(name);
+      if (t.reason) main.appendChild(make("span", "small muted pr-focus-reason", t.reason));
+      const b = make("button", "pr-row-cta small", "Quiz me");
+      b.type = "button";
+      b.addEventListener("click", () => quizOn([t.topic]));
+      li.append(main, b);
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+    if (weak.length > 5) box.appendChild(make("p", "small muted", `And ${weak.length - 5} more in the exam coach.`));
+  }
+
   // ---------- links into a tab with filters set (from the admin page's past papers) ----------
   // #hub?years=2024, #hub?spec=1.2 Networks&source=, #hub?paper=12, #questions?paper=3 (a paper guide's id).
   function openFromHash() {
     const [tab, query] = location.hash.slice(1).split("?");
-    if (!TABS.includes(tab)) { show("questions"); return; }
+    if (tab.startsWith("quiz/")) {
+      const id = tab.slice(5);
+      if (id && id !== quiz.id) openSession(id, { fromAddress: true });
+      return;
+    }
+    if (!TABS.includes(tab)) { show("today"); return; }
     const p = new URLSearchParams(query || "");
     if (tab === "hub" && query) {
       clearFilters();

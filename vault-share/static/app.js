@@ -1,9 +1,164 @@
 // Small progressive enhancements. Loaded from 'self' only (strict CSP, no inline script).
+
+// ---------- UI: the site's own confirm dialog and toasts (instead of the browser's) ----------
+// UI.confirm({ title, body, confirm, cancel, danger }) resolves true or false. body is plain text; a blank line
+// starts a new paragraph. UI.toast(text, kind, { action: { label, run }, timeout }) shows a message that goes
+// away by itself; kind is "ok", "error" or "info". Both are plain DOM (no inline styles, for the CSP).
+window.UI = (() => {
+  const make = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  };
+  const icon = (id) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "ic");
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", `#${id}`);
+    svg.appendChild(use);
+    return svg;
+  };
+
+  let open = null;
+  function confirm(opts) {
+    const o = typeof opts === "string" ? { body: opts } : opts || {};
+    // A dialog already open answers "no" before the next one shows.
+    if (open) open(false);
+    if (typeof HTMLDialogElement !== "function") return Promise.resolve(window.confirm([o.title, o.body].filter(Boolean).join("\n\n")));
+    return new Promise((resolve) => {
+      const d = make("dialog", `ui-dialog${o.danger ? " is-danger" : ""}`);
+      const id = `ui-dlg-${Date.now()}`;
+      d.setAttribute("aria-labelledby", `${id}-t`);
+      const head = make("div", "ui-dialog-head");
+      const badge = make("span", "ui-dialog-icon");
+      badge.appendChild(icon(o.danger ? "i-trash" : "i-help"));
+      const title = make("h2", "ui-dialog-title", o.title || "Are you sure?");
+      title.id = `${id}-t`;
+      head.append(badge, title);
+      d.appendChild(head);
+      if (o.body) {
+        const body = make("div", "ui-dialog-body");
+        body.id = `${id}-b`;
+        d.setAttribute("aria-describedby", body.id);
+        for (const para of String(o.body).split(/\n{2,}/)) body.appendChild(make("p", "", para.trim()));
+        d.appendChild(body);
+      }
+      const act = make("div", "ui-dialog-actions");
+      const no = make("button", "", o.cancel || "Cancel");
+      no.type = "button";
+      const yes = make("button", o.danger ? "danger-solid" : "primary", o.confirm || "OK");
+      yes.type = "button";
+      act.append(no, yes);
+      d.appendChild(act);
+      const finish = (answer) => {
+        if (open !== finish) return;
+        open = null;
+        d.classList.add("is-closing");
+        const gone = () => { d.close(); d.remove(); };
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) gone(); else setTimeout(gone, 150);
+        resolve(answer);
+      };
+      open = finish;
+      no.addEventListener("click", () => finish(false));
+      yes.addEventListener("click", () => finish(true));
+      d.addEventListener("cancel", (e) => { e.preventDefault(); finish(false); });
+      // A click on the backdrop (outside the box) is a cancel.
+      d.addEventListener("click", (e) => {
+        if (e.target !== d) return;
+        const r = d.getBoundingClientRect();
+        if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) finish(false);
+      });
+      document.body.appendChild(d);
+      d.showModal();
+      // A destructive action starts on Cancel, so Enter does not delete by accident.
+      (o.danger ? no : yes).focus();
+    });
+  }
+
+  let stack = null;
+  const ICON = { ok: "i-check-circle", error: "i-alert", info: "i-info" };
+  function toast(text, kind = "ok", { action = null, timeout } = {}) {
+    if (!stack) {
+      stack = make("div", "ui-toasts");
+      stack.setAttribute("role", "status");
+      stack.setAttribute("aria-live", "polite");
+      document.body.appendChild(stack);
+    }
+    const t = make("div", `ui-toast is-${kind}`);
+    t.appendChild(icon(ICON[kind] || ICON.info));
+    t.appendChild(make("span", "ui-toast-text", text));
+    let timer = 0;
+    const close = () => {
+      window.clearTimeout(timer);
+      t.classList.remove("is-on");
+      setTimeout(() => t.remove(), 220);
+    };
+    if (action) {
+      const b = make("button", "ui-toast-action", action.label);
+      b.type = "button";
+      b.addEventListener("click", () => { close(); action.run(); });
+      t.appendChild(b);
+    }
+    const x = make("button", "ui-toast-close");
+    x.type = "button";
+    x.setAttribute("aria-label", "Dismiss");
+    x.appendChild(icon("i-x"));
+    x.addEventListener("click", close);
+    t.appendChild(x);
+    stack.appendChild(t);
+    // No more than three at once: the oldest goes.
+    while (stack.children.length > 3) stack.firstElementChild.remove();
+    requestAnimationFrame(() => t.classList.add("is-on"));
+    const ms = timeout ?? (kind === "error" ? 7000 : action ? 6000 : 3500);
+    const arm = () => { timer = window.setTimeout(close, ms); };
+    // Hovering or focusing a toast keeps it on screen.
+    t.addEventListener("pointerenter", () => window.clearTimeout(timer));
+    t.addEventListener("pointerleave", arm);
+    t.addEventListener("focusin", () => window.clearTimeout(timer));
+    arm();
+    return close;
+  }
+
+  return { confirm, toast };
+})();
+
+// ---------- phones: the top bar slides away while scrolling down and comes back when scrolling up ----------
+// (CSS: html.topbar-away, and --sticky-top for the bars that stick under it.)
+(() => {
+  const phone = window.matchMedia("(max-width: 640px)");
+  const root = document.documentElement;
+  let lastY = window.scrollY;
+  let ticking = false;
+  const update = () => {
+    ticking = false;
+    const y = window.scrollY;
+    // A dialog or sheet being open, or being near the top, always shows the bar.
+    if (!phone.matches || y < 80 || document.querySelector("dialog[open]")) root.classList.remove("topbar-away");
+    else if (y > lastY + 6) root.classList.add("topbar-away");
+    else if (y < lastY - 6) root.classList.remove("topbar-away");
+    if (Math.abs(y - lastY) > 6) lastY = y;
+  };
+  window.addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(update); } }, { passive: true });
+  phone.addEventListener("change", update);
+  // Keyboard focus moving into the bar brings it back.
+  document.addEventListener("focusin", (e) => { if (e.target.closest && e.target.closest(".topbar")) root.classList.remove("topbar-away"); });
+})();
+
 document.addEventListener("submit", (e) => {
   const form = e.target;
   const msg = form.getAttribute("data-confirm");
-  if (msg && !window.confirm(msg)) {
+  if (msg && !form._confirmed) {
     e.preventDefault();
+    const danger = form.hasAttribute("data-danger") || /\b(delete|remove|clear|wipe|reset)\b/i.test(msg);
+    window.UI.confirm({ title: form.getAttribute("data-confirm-title") || "Are you sure?", body: msg, confirm: form.getAttribute("data-confirm-ok") || "Continue", danger }).then((ok) => {
+      if (!ok) return;
+      form._confirmed = true;
+      // requestSubmit runs this handler again (now confirmed), so uploads keep their progress bar.
+      if (form.requestSubmit) form.requestSubmit(e.submitter || undefined); else form.submit();
+      form._confirmed = false;
+    });
     return;
   }
   // With no file chosen (a new, empty vault) there is nothing to show progress for: submit normally.

@@ -177,6 +177,7 @@ pub async fn dashboard(
         attachments: s.attachments,
         topics: s.topics,
         topics_index: s.topics_index,
+        practice_skip: s.practice_skip,
         image_min_kb: s.image_min_kb,
         folder_indexes: s.folder_indexes,
         saved: q.saved.as_deref() == Some("microsidian"),

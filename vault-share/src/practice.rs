@@ -62,6 +62,116 @@ pub async fn ask(
     schema: Option<Value>,
     max_tokens: u64,
 ) -> Result<Value, String> {
+    ask_inner(st, who, vault_id, what, system, extra_system, messages, schema, max_tokens, None).await
+}
+
+/// The same call as `ask` (text replies only), with the reply's text sent to `sink` piece by piece as Claude writes
+/// it, so the page can show it coming in. The whole reply is still returned at the end, and recorded the same way.
+/// A closed sink (the page went away) does not stop the call.
+#[allow(clippy::too_many_arguments)]
+pub async fn ask_streaming(
+    st: &AppState,
+    who: &Who,
+    vault_id: &str,
+    what: &str,
+    system: &str,
+    extra_system: Option<String>,
+    messages: Value,
+    max_tokens: u64,
+    sink: tokio::sync::mpsc::UnboundedSender<String>,
+) -> Result<Value, String> {
+    ask_inner(st, who, vault_id, what, system, extra_system, messages, None, max_tokens, Some(sink)).await
+}
+
+/// Read a streamed Messages API reply (server-sent events) into the same shape as a whole reply: its text as one
+/// text block, its usage, model and stop reason. Text is passed to `sink` as it arrives. An error event becomes an
+/// `error` object, as a failed whole reply has.
+async fn read_stream(mut res: reqwest::Response, sink: &tokio::sync::mpsc::UnboundedSender<String>) -> Result<Value, String> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut text = String::new();
+    let mut usage = serde_json::Map::new();
+    let mut model = Value::Null;
+    let mut stop = Value::Null;
+    let mut error = Value::Null;
+    let mut handle = |data: &str, text: &mut String| {
+        let Ok(ev) = serde_json::from_str::<Value>(data) else { return };
+        match ev.get("type").and_then(Value::as_str) {
+            Some("message_start") => {
+                if let Some(m) = ev.get("message") {
+                    model = m.get("model").cloned().unwrap_or(Value::Null);
+                    if let Some(u) = m.get("usage").and_then(Value::as_object) {
+                        usage.extend(u.clone());
+                    }
+                }
+            }
+            Some("content_block_delta") => {
+                let d = ev.get("delta");
+                if d.and_then(|d| d.get("type")).and_then(Value::as_str) == Some("text_delta") {
+                    if let Some(t) = d.and_then(|d| d.get("text")).and_then(Value::as_str) {
+                        text.push_str(t);
+                        let _ = sink.send(t.to_string());
+                    }
+                }
+            }
+            Some("message_delta") => {
+                if let Some(s) = ev.pointer("/delta/stop_reason") {
+                    if !s.is_null() {
+                        stop = s.clone();
+                    }
+                }
+                // Output tokens are a running total; the other counts are only repeated when known.
+                if let Some(u) = ev.get("usage").and_then(Value::as_object) {
+                    for (k, v) in u {
+                        if !v.is_null() {
+                            usage.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            Some("error") => error = ev.get("error").cloned().unwrap_or(json!({ "message": "no details" })),
+            _ => {}
+        }
+    };
+    loop {
+        let chunk = res.chunk().await.map_err(|_| "The reply from the Anthropic API was cut off.".to_string())?;
+        let Some(chunk) = chunk else { break };
+        // Carriage returns are dropped, so an event always ends with "\n\n".
+        buf.extend(chunk.iter().copied().filter(|b| *b != b'\r'));
+        // Events end with a blank line; each has a "data:" line holding its JSON.
+        while let Some(end) = buf.windows(2).position(|w| w == b"\n\n") {
+            let event: Vec<u8> = buf.drain(..end + 2).collect();
+            let event = String::from_utf8_lossy(&event);
+            for line in event.lines() {
+                if let Some(data) = line.strip_prefix("data:") {
+                    handle(data.trim_start(), &mut text);
+                }
+            }
+        }
+    }
+    if !error.is_null() {
+        return Ok(json!({ "type": "error", "error": error }));
+    }
+    Ok(json!({
+        "content": [{ "type": "text", "text": text }],
+        "usage": Value::Object(usage),
+        "model": model,
+        "stop_reason": stop,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn ask_inner(
+    st: &AppState,
+    who: &Who,
+    vault_id: &str,
+    what: &str,
+    system: &str,
+    extra_system: Option<String>,
+    messages: Value,
+    schema: Option<Value>,
+    max_tokens: u64,
+    sink: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+) -> Result<Value, String> {
     let s = Settings::load(&st.db).await.map_err(|_| "The settings could not be read.".to_string())?;
     let key = s.api_key.clone().ok_or("No Anthropic API key is set. An admin can add one under Admin → Claude settings.")?;
     if !ingest::allow_call(st, who.0, false) {
@@ -83,6 +193,9 @@ pub async fn ask(
     if let Some(schema) = schema.as_ref() {
         body["output_config"]["format"] = json!({ "type": "json_schema", "schema": schema });
     }
+    if sink.is_some() {
+        body["stream"] = json!(true);
+    }
     let haiku = model.contains("haiku");
     let mut req = st
         .http
@@ -99,8 +212,14 @@ pub async fn ask(
         "Could not reach the Anthropic API from the server.".to_string()
     })?;
     let status = res.status();
-    let bytes = res.bytes().await.map_err(|_| "The reply from the Anthropic API was cut off.".to_string())?;
-    let reply: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let reply: Value = match &sink {
+        // A streamed reply arrives as events; a failed request is a plain JSON error either way.
+        Some(sink) if status.is_success() => read_stream(res, sink).await?,
+        _ => {
+            let bytes = res.bytes().await.map_err(|_| "The reply from the Anthropic API was cut off.".to_string())?;
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        }
+    };
 
     // Keep what it cost, for the spend chart, and audit it.
     let usage = reply.get("usage").cloned().unwrap_or(Value::Null);
@@ -149,6 +268,12 @@ pub async fn ask(
             529 | 503 => "Claude is overloaded at the moment. Try again in a few minutes.".into(),
             s => format!("The Anthropic API returned an error ({s}): {msg}"),
         });
+    }
+    // An error part-way through a streamed reply (the request itself succeeded).
+    if reply.get("type").and_then(Value::as_str) == Some("error") {
+        let kind = reply.pointer("/error/type").and_then(Value::as_str).unwrap_or("");
+        let msg = reply.pointer("/error/message").and_then(Value::as_str).unwrap_or("no details");
+        return Err(if kind == "overloaded_error" { "Claude is overloaded at the moment. Try again in a few minutes.".into() } else { format!("The Anthropic API returned an error: {msg}") });
     }
     match reply.get("stop_reason").and_then(Value::as_str) {
         Some("refusal") => return Err("Claude declined this request.".into()),
@@ -1227,18 +1352,56 @@ impl Db {
 
 // ---------------------------------------------------------------- notes as context
 
-/// The vault's topics: the notes in its topics folder (Admin → Claude settings), by name, without the topics index.
+/// The vault's topics: the notes in its topics folder (Admin → Claude settings), by name, without the topics index
+/// and without the notes on the "left out of Practice" list (exam-skills and resource notes, which are not topics).
 pub fn vault_topics(idx: &VaultIndex, s: &Settings) -> Vec<String> {
     let prefix = format!("{}/", s.topics.trim_end_matches('/'));
+    let skip: Vec<String> = s.practice_skip.lines().map(|l| l.trim().to_lowercase()).filter(|l| !l.is_empty()).collect();
     let mut out: Vec<String> = idx
         .notes()
         .filter(|p| p.starts_with(&prefix))
         .map(|p| p.rsplit('/').next().unwrap_or(p).trim_end_matches(".md").to_string())
         .filter(|n| !n.eq_ignore_ascii_case(&s.topics_index) && !n.to_lowercase().ends_with(" - index"))
+        .filter(|n| !skip.iter().any(|pat| name_matches(pat, &n.to_lowercase())))
         .collect();
     out.sort_by_key(|a| a.to_lowercase());
     out.dedup();
     out
+}
+
+/// Whether a (lower-case) name matches a (lower-case) pattern where `*` stands for any text.
+fn name_matches(pattern: &str, name: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == name;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !name.starts_with(first) || !name.ends_with(last) || name.len() < first.len() + last.len() {
+        return false;
+    }
+    let mut rest = &name[first.len()..name.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod skip_tests {
+    use super::name_matches;
+    #[test]
+    fn patterns() {
+        assert!(name_matches("command words", "command words"));
+        assert!(!name_matches("command words", "command words 2"));
+        assert!(name_matches("*resources", "btec it unit 1 resources"));
+        assert!(!name_matches("*resources", "resource management"));
+        assert!(name_matches("exam*", "exam technique"));
+        assert!(name_matches("*unit*", "btec it unit 2 resources"));
+        assert!(!name_matches("ab*ba", "aba"));
+    }
 }
 
 /// A note's own text: no frontmatter and no Connections block.

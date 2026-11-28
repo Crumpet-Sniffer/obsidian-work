@@ -29,6 +29,52 @@ fn who(u: &CurrentUser) -> Who {
     (u.id, u.username.clone())
 }
 
+// ---------------------------------------------------------------- replies streamed to the page
+
+/// Whether the page asked for Claude's reply to be streamed to it as it is written.
+fn wants_stream(headers: &HeaderMap) -> bool {
+    headers.get(axum::http::header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|a| a.contains("application/x-ndjson"))
+}
+
+/// What an error says to the student.
+fn err_text(e: ApiErr) -> String {
+    match e {
+        ApiErr::Bad(m) | ApiErr::Forbidden(m) | ApiErr::TooLarge(m) => m,
+        ApiErr::NotFound => "Not found.".into(),
+        _ => "Something went wrong on the server. Try again.".into(),
+    }
+}
+
+/// A reply streamed to the page, one JSON object per line: `{"delta": text}` for each piece Claude writes, then
+/// `{"done": view}` with the conversation as saved, or `{"error": message}`. `text` ends when the call to Claude has
+/// finished (its sender is dropped); `finish` then gives the last line. The call goes on, and its reply is saved,
+/// even if the page stops reading.
+fn ndjson_reply<F>(mut text: tokio::sync::mpsc::UnboundedReceiver<String>, finish: F) -> axum::response::Response
+where
+    F: std::future::Future<Output = Result<Value, String>> + Send + 'static,
+{
+    let (out, rx) = tokio::sync::mpsc::channel::<String>(64);
+    tokio::spawn(async move {
+        while let Some(piece) = text.recv().await {
+            // A page that went away is not an error: keep draining so the call is not held up.
+            let _ = out.send(format!("{}\n", json!({ "delta": piece }))).await;
+        }
+        let last = match finish.await {
+            Ok(view) => json!({ "done": view }),
+            Err(e) => json!({ "error": e }),
+        };
+        let _ = out.send(format!("{last}\n")).await;
+    });
+    let body = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|line| (Ok::<_, std::convert::Infallible>(line), rx)) });
+    axum::response::Response::builder()
+        // text/event-stream so proxies pass each line on as it comes instead of holding the reply back.
+        .header(axum::http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+        .header(axum::http::header::CACHE_CONTROL, "no-cache, no-transform")
+        .header("x-accel-buffering", "no")
+        .body(axum::body::Body::from_stream(body))
+        .unwrap_or_else(|_| axum::response::IntoResponse::into_response(ApiErr::Bad("The reply could not be sent.".into())))
+}
+
 fn new_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -1462,10 +1508,43 @@ async fn write_cards(st: &AppState, who: &Who, vault: &str, topics: &[String], d
     Ok(json!(cards))
 }
 
+/// A deck's progress as saved: each card's last answer ("known" or "again", by card number) and, under "sr", when
+/// each card is next due for review (spaced repetition: `{"3": {"box": 2, "due": 1767000000}}`, boxes 1 to 5).
+/// Anything else, or a card number past the end of the deck, is dropped.
+fn clean_progress(progress: serde_json::Map<String, Value>, n: usize) -> serde_json::Map<String, Value> {
+    let is_card = |k: &str| k.parse::<usize>().is_ok_and(|i| i < n);
+    let mut out: serde_json::Map<String, Value> = serde_json::Map::new();
+    for (k, v) in progress {
+        if is_card(&k) && matches!(v.as_str(), Some("known" | "again")) {
+            out.insert(k, v);
+        } else if k == "sr" {
+            let sr: serde_json::Map<String, Value> = v
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .filter(|(i, _)| is_card(i))
+                        .filter_map(|(i, e)| {
+                            let bx = e.get("box").and_then(Value::as_i64)?.clamp(1, 5);
+                            let due = e.get("due").and_then(Value::as_i64)?.max(0);
+                            Some((i.clone(), json!({ "box": bx, "due": due })))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.insert("sr".into(), Value::Object(sr));
+        }
+    }
+    out
+}
+
 fn deck_json(d: &practice::Deck, with_cards: bool) -> Value {
     let n = d.cards.as_array().map(|a| a.len()).unwrap_or(0);
     let known = d.progress.as_object().map(|o| o.values().filter(|v| v.as_str() == Some("known")).count()).unwrap_or(0);
-    let mut v = json!({ "id": d.id, "title": d.title, "status": d.status, "error": d.error, "cards": n, "known": known, "createdAt": d.created_at, "settings": d.settings });
+    // Cards to study now: those never reviewed, and those whose review date has come.
+    let now = chrono::Utc::now().timestamp();
+    let sr = d.progress.get("sr").and_then(Value::as_object);
+    let due = (0..n).filter(|i| sr.and_then(|m| m.get(&i.to_string())).and_then(|e| e.get("due")).and_then(Value::as_i64).is_none_or(|t| t <= now)).count();
+    let mut v = json!({ "id": d.id, "title": d.title, "status": d.status, "error": d.error, "cards": n, "known": known, "due": due, "createdAt": d.created_at, "settings": d.settings });
     if with_cards {
         v["items"] = d.cards.clone();
         v["progress"] = d.progress.clone();
@@ -1503,11 +1582,7 @@ pub async fn deck_progress(State(st): State<AppState>, user: CurrentUser, Path((
     authorize(&st, &user, &id).await?;
     let d = own_deck(&st, &user, &did).await?;
     let n = d.cards.as_array().map(|a| a.len()).unwrap_or(0);
-    let clean: serde_json::Map<String, Value> = b
-        .progress
-        .into_iter()
-        .filter(|(k, v)| k.parse::<usize>().is_ok_and(|i| i < n) && matches!(v.as_str(), Some("known" | "again")))
-        .collect();
+    let clean = clean_progress(b.progress, n);
     st.db.set_deck_progress(d.id, user.id, Value::Object(clean)).await?;
     ok(json!({ "ok": true }))
 }
@@ -1539,8 +1614,7 @@ pub async fn deck_cards(State(st): State<AppState>, user: CurrentUser, Path((id,
         return Err(ApiErr::Bad("A deck needs at least one card with a front and a back. Delete the deck instead.".into()));
     }
     let n = cards.len();
-    let progress: serde_json::Map<String, Value> =
-        b.progress.into_iter().filter(|(k, v)| k.parse::<usize>().is_ok_and(|i| i < n) && matches!(v.as_str(), Some("known" | "again"))).collect();
+    let progress = clean_progress(b.progress, n);
     st.db.set_deck_cards(d.id.clone(), user.id, json!(cards), Value::Object(progress)).await?;
     let d = own_deck(&st, &user, &did).await?;
     ok(deck_json(&d, true))
@@ -1754,8 +1828,15 @@ pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id):
     }
     let st2 = st.clone();
     let (w, vid, prompt, th) = (who(&user), v.id.clone(), s.coach_prompt().to_string(), thread.clone());
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let stream = wants_stream(&headers);
     let task = tokio::spawn(async move {
-        let r = practice::ask(&st2, &w, &vid, "exam coach", &prompt, Some(context), json!(msgs), None, 6000).await;
+        let r = if stream {
+            practice::ask_streaming(&st2, &w, &vid, "exam coach", &prompt, Some(context), json!(msgs), 6000, tx).await
+        } else {
+            drop(tx);
+            practice::ask(&st2, &w, &vid, "exam coach", &prompt, Some(context), json!(msgs), None, 6000).await
+        };
         if let Ok(Value::String(reply)) = &r {
             let (mut kept, set) = take_assignments(reply, &with_docs);
             let mut added = Vec::new();
@@ -1771,6 +1852,16 @@ pub async fn coach_send(State(st): State<AppState>, user: CurrentUser, Path(id):
         }
         r
     });
+    if stream {
+        let (st3, user3, vid3) = (st.clone(), user.clone(), v.id.clone());
+        return Ok(ndjson_reply(rx, async move {
+            match task.await {
+                Ok(Ok(_)) => coach_view(&st3, &user3, &vid3, &thread).await.map_err(err_text),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err("Something went wrong on the server. Try again.".into()),
+            }
+        }));
+    }
     match task.await {
         Ok(Ok(_)) => ok(coach_view(&st, &user, &v.id, &thread).await?),
         Ok(Err(e)) => Err(ApiErr::Bad(e)),
@@ -2075,13 +2166,30 @@ pub async fn chat_send(State(st): State<AppState>, user: CurrentUser, Path(id): 
     );
     let st2 = st.clone();
     let (w, vid, th) = (who(&user), v.id.clone(), thread.clone());
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let stream = wants_stream(&headers);
     let task = tokio::spawn(async move {
-        let r = practice::ask(&st2, &w, &vid, "ask Claude", crate::prompts::CHAT, Some(context), json!(msgs), None, 8000).await;
+        let r = if stream {
+            practice::ask_streaming(&st2, &w, &vid, "ask Claude", crate::prompts::CHAT, Some(context), json!(msgs), 8000, tx).await
+        } else {
+            drop(tx);
+            practice::ask(&st2, &w, &vid, "ask Claude", crate::prompts::CHAT, Some(context), json!(msgs), None, 8000).await
+        };
         if let Ok(Value::String(reply)) = &r {
             let _ = st2.db.add_coach_message(w.0, vid.clone(), "chat", th.clone(), "assistant", reply.clone()).await;
         }
         r
     });
+    if stream {
+        let (st3, user3, vid3) = (st.clone(), user.clone(), v.id.clone());
+        return Ok(ndjson_reply(rx, async move {
+            match task.await {
+                Ok(Ok(_)) => conversation_view(&st3, &user3, &vid3, "chat", &thread).await.map_err(err_text),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err("Something went wrong on the server. Try again.".into()),
+            }
+        }));
+    }
     match task.await {
         Ok(Ok(_)) => ok(conversation_view(&st, &user, &v.id, "chat", &thread).await?),
         Ok(Err(e)) => Err(ApiErr::Bad(e)),

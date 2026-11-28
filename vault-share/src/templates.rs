@@ -267,6 +267,7 @@ pub struct MsView {
     pub attachments: String,
     pub topics: String,
     pub topics_index: String,
+    pub practice_skip: String,
     pub image_min_kb: u32,
     pub folder_indexes: bool,
     pub saved: bool,
